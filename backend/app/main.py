@@ -1,0 +1,349 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from sqlalchemy import text
+from pathlib import Path
+
+from app.core.config import settings
+from app.core.db import Base, engine, SessionLocal
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router
+from app.services.seed import ensure_admin
+from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
+from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
+from app.models.role import Role  # noqa: F401 – registers table
+from app.models.kpi import KpiScheduledDay, KpiShiftTransfer, KpiAuditLog  # noqa: F401 – registers tables
+
+app = FastAPI(title=settings.app_name)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+def ensure_import_logs_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(import_logs)")).fetchall()]
+        if cols and "username" not in cols:
+            conn.execute(text("ALTER TABLE import_logs ADD COLUMN username VARCHAR(50) DEFAULT ''"))
+
+def ensure_users_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
+        if cols and "phone" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(30) DEFAULT ''"))
+        if cols and "nickname" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN nickname VARCHAR(100) DEFAULT ''"))
+        if cols and "base_role" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN base_role VARCHAR(50) DEFAULT ''"))
+            # Populate base_role from role for existing users
+            conn.execute(text("UPDATE users SET base_role = role WHERE base_role = '' OR base_role IS NULL"))
+
+_ROLE_PERMISSIONS = {
+    "admin":           "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,admin_panel,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count",
+    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count",
+    "manager":         "dashboard,imports,reports,order,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count",
+    "warehouse_clerk": "order,calendar,kpi_checklist,kpi_approvals",
+    "accountant":      "dashboard,reports,accounts_receivable,order,calendar,kpi_checklist,kpi_approvals,sales_report",
+}
+
+def ensure_roles_schema():
+    """Add permissions column to roles table if missing."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(roles)")).fetchall()]
+        if cols and "permissions" not in cols:
+            conn.execute(text("ALTER TABLE roles ADD COLUMN permissions VARCHAR(500) DEFAULT ''"))
+
+def ensure_roles_seeded():
+    """Seed the 5 system roles and ensure permissions are set."""
+    from app.models.role import Role as RoleModel
+    db = SessionLocal()
+    try:
+        if db.query(RoleModel).count() == 0:
+            system_roles = [
+                RoleModel(value="admin",           label="Админ",            color="bg-rose-100 text-rose-700",    base_role="admin",           permissions=_ROLE_PERMISSIONS["admin"],           is_system=True),
+                RoleModel(value="supervisor",      label="Хянагч",           color="bg-blue-100 text-blue-700",    base_role="supervisor",      permissions=_ROLE_PERMISSIONS["supervisor"],      is_system=True),
+                RoleModel(value="manager",         label="Менежер",          color="bg-emerald-100 text-emerald-700", base_role="manager",      permissions=_ROLE_PERMISSIONS["manager"],         is_system=True),
+                RoleModel(value="warehouse_clerk", label="Агуулахын нярав",  color="bg-orange-100 text-orange-700",base_role="warehouse_clerk", permissions=_ROLE_PERMISSIONS["warehouse_clerk"], is_system=True),
+                RoleModel(value="accountant",      label="Нягтлан",          color="bg-violet-100 text-violet-700",base_role="accountant",      permissions=_ROLE_PERMISSIONS["accountant"],      is_system=True),
+            ]
+            db.add_all(system_roles)
+            db.commit()
+        else:
+            # Always sync system role permissions with _ROLE_PERMISSIONS
+            for r in db.query(RoleModel).filter(RoleModel.is_system == True).all():
+                if r.value in _ROLE_PERMISSIONS:
+                    r.permissions = _ROLE_PERMISSIONS[r.value]
+            db.commit()
+    finally:
+        db.close()
+
+def ensure_products_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
+        if cols and "warehouse_name" not in cols:
+            conn.execute(text("ALTER TABLE products ADD COLUMN warehouse_name VARCHAR(200) DEFAULT ''"))
+
+def ensure_po_lines_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(purchase_order_lines)")).fetchall()]
+        if cols and "line_remark" not in cols:
+            conn.execute(text("ALTER TABLE purchase_order_lines ADD COLUMN line_remark VARCHAR(500) DEFAULT ''"))
+
+def ensure_price_schema():
+    with engine.begin() as conn:
+        cols_p = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
+        if cols_p and "last_purchase_price" not in cols_p:
+            conn.execute(text("ALTER TABLE products ADD COLUMN last_purchase_price FLOAT DEFAULT 0"))
+        cols_l = [r[1] for r in conn.execute(text("PRAGMA table_info(purchase_order_lines)")).fetchall()]
+        if cols_l and "unit_price" not in cols_l:
+            conn.execute(text("ALTER TABLE purchase_order_lines ADD COLUMN unit_price FLOAT DEFAULT 0"))
+
+def ensure_extra_lines_brand():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(order_extra_lines)")).fetchall()]
+        if cols and "brand" not in cols:
+            conn.execute(text("ALTER TABLE order_extra_lines ADD COLUMN brand VARCHAR(100) DEFAULT ''"))
+
+def ensure_brand_code_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
+        if cols and "brand_code" not in cols:
+            conn.execute(text("ALTER TABLE products ADD COLUMN brand_code VARCHAR(50) DEFAULT ''"))
+
+def ensure_shipment_lines_schema():
+    """po_shipment_lines-д received_qty_box багана нэмнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(po_shipment_lines)")).fetchall()]
+        if cols and "received_qty_box" not in cols:
+            conn.execute(text("ALTER TABLE po_shipment_lines ADD COLUMN received_qty_box FLOAT DEFAULT 0"))
+
+def ensure_admin_task_target_schema():
+    """kpi_admin_daily_tasks-д target_employee_ids багана нэмнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(kpi_admin_daily_tasks)")).fetchall()]
+        if cols and "target_employee_ids" not in cols:
+            conn.execute(text("ALTER TABLE kpi_admin_daily_tasks ADD COLUMN target_employee_ids VARCHAR(500) DEFAULT ''"))
+
+def ensure_order_lines_schema():
+    """order_lines-д stock_qty_snapshot багана нэмнэ (Үлдэгдлийн тайланаас авсан нөөц)."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(order_lines)")).fetchall()]
+        if cols and "stock_qty_snapshot" not in cols:
+            conn.execute(text(
+                "ALTER TABLE order_lines ADD COLUMN stock_qty_snapshot FLOAT DEFAULT 0"
+            ))
+
+def ensure_kpi_admin_task_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(kpi_checklist_entries)")).fetchall()]
+        if cols and "admin_task_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE kpi_checklist_entries ADD COLUMN admin_task_id INTEGER REFERENCES kpi_admin_daily_tasks(id)"
+            ))
+
+def ensure_po_vehicle_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(purchase_orders)")).fetchall()]
+        if cols and "vehicle_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE purchase_orders ADD COLUMN vehicle_id INTEGER REFERENCES vehicles(id)"
+            ))
+
+def ensure_inventory_count_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_counts)")).fetchall()]
+        if cols and "kpi_admin_task_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE inventory_counts ADD COLUMN kpi_admin_task_id INTEGER REFERENCES kpi_admin_daily_tasks(id)"
+            ))
+
+def ensure_kpi_groups_schema():
+    with engine.begin() as conn:
+        # ── kpi_checklist_entries ────────────────────────────────────────────
+        cols_e = [r[1] for r in conn.execute(text("PRAGMA table_info(kpi_checklist_entries)")).fetchall()]
+        if cols_e and "approved_value" not in cols_e:
+            conn.execute(text("ALTER TABLE kpi_checklist_entries ADD COLUMN approved_value FLOAT"))
+        if cols_e and "task_category" not in cols_e:
+            conn.execute(text("ALTER TABLE kpi_checklist_entries ADD COLUMN task_category VARCHAR(20) DEFAULT 'daily'"))
+
+        # ── kpi_task_templates ───────────────────────────────────────────────
+        cols_t = [r[1] for r in conn.execute(text("PRAGMA table_info(kpi_task_templates)")).fetchall()]
+        if cols_t and "group_id" not in cols_t:
+            conn.execute(text(
+                "ALTER TABLE kpi_task_templates ADD COLUMN group_id INTEGER REFERENCES kpi_task_groups(id)"
+            ))
+        if cols_t and "period" not in cols_t:
+            conn.execute(text("ALTER TABLE kpi_task_templates ADD COLUMN period VARCHAR(20) DEFAULT 'daily'"))
+        for col, ddl in [
+            ("day_of_week",   "INTEGER"),
+            ("day_of_month",  "INTEGER"),
+            ("weight_points", "FLOAT DEFAULT 0"),
+            ("task_category", "VARCHAR(20) DEFAULT 'daily'"),
+        ]:
+            if cols_t and col not in cols_t:
+                conn.execute(text(f"ALTER TABLE kpi_task_templates ADD COLUMN {col} {ddl}"))
+
+        # ── kpi_admin_daily_tasks ────────────────────────────────────────────
+        cols_a = [r[1] for r in conn.execute(text("PRAGMA table_info(kpi_admin_daily_tasks)")).fetchall()]
+        if cols_a and "task_category" not in cols_a:
+            conn.execute(text("ALTER TABLE kpi_admin_daily_tasks ADD COLUMN task_category VARCHAR(20) DEFAULT 'daily'"))
+
+        # ── kpi_employee_plans (шинэ хүснэгт) ───────────────────────────────
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kpi_employee_plans (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id     INTEGER NOT NULL REFERENCES users(id),
+                year            INTEGER NOT NULL,
+                month           INTEGER NOT NULL,
+                daily_kpi_cap   FLOAT   NOT NULL DEFAULT 0,
+                monthly_max_kpi FLOAT   NOT NULL DEFAULT 0,
+                created_at      DATETIME,
+                updated_at      DATETIME,
+                UNIQUE(employee_id, year, month)
+            )
+        """))
+
+        # ── kpi_daily_checklists — attendance талбарууд ──────────────────────
+        cols_cl = [r[1] for r in conn.execute(text("PRAGMA table_info(kpi_daily_checklists)")).fetchall()]
+        if cols_cl and "attendance_status" not in cols_cl:
+            conn.execute(text("ALTER TABLE kpi_daily_checklists ADD COLUMN attendance_status VARCHAR(20) DEFAULT 'pending'"))
+        if cols_cl and "attendance_note" not in cols_cl:
+            conn.execute(text("ALTER TABLE kpi_daily_checklists ADD COLUMN attendance_note VARCHAR(500) DEFAULT ''"))
+        if cols_cl and "attendance_approved_by" not in cols_cl:
+            conn.execute(text("ALTER TABLE kpi_daily_checklists ADD COLUMN attendance_approved_by INTEGER REFERENCES users(id)"))
+        if cols_cl and "attendance_approved_at" not in cols_cl:
+            conn.execute(text("ALTER TABLE kpi_daily_checklists ADD COLUMN attendance_approved_at DATETIME"))
+
+        # ── kpi_scheduled_days (шинэ хүснэгт) ───────────────────────────────
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kpi_scheduled_days (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER NOT NULL REFERENCES users(id),
+                date        DATE    NOT NULL,
+                created_by  INTEGER REFERENCES users(id),
+                created_at  DATETIME,
+                UNIQUE(employee_id, date)
+            )
+        """))
+
+        # ── kpi_shift_transfers (шинэ хүснэгт) ──────────────────────────────
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kpi_shift_transfers (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                date                    DATE    NOT NULL,
+                original_employee_id    INTEGER NOT NULL REFERENCES users(id),
+                replacement_employee_id INTEGER NOT NULL REFERENCES users(id),
+                approver_id             INTEGER NOT NULL REFERENCES users(id),
+                status                  VARCHAR(20) DEFAULT 'pending',
+                note                    VARCHAR(500) DEFAULT '',
+                response_note           VARCHAR(500) DEFAULT '',
+                responded_at            DATETIME,
+                created_at              DATETIME
+            )
+        """))
+
+        # ── kpi_audit_logs (шинэ хүснэгт) ───────────────────────────────────
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kpi_audit_logs (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id           INTEGER NOT NULL REFERENCES users(id),
+                action             VARCHAR(50) NOT NULL,
+                target_employee_id INTEGER NOT NULL REFERENCES users(id),
+                target_date        DATE    NOT NULL,
+                old_value          VARCHAR(200) DEFAULT '',
+                new_value          VARCHAR(200) DEFAULT '',
+                reason             VARCHAR(500) NOT NULL DEFAULT '',
+                created_at         DATETIME
+            )
+        """))
+
+
+def _auto_refresh_stock(db):
+    """
+    Server эхлэх үед хамгийн сүүлийн "Үлдэгдэл тайлан" файлаас
+    Product.stock_qty автоматаар шинэчлэнэ.
+    """
+    from app.models.product import Product
+    # stock_qty > 0 бараа байвал аль хэдийн шинэчлэгдсэн → алгасна
+    has_stock = db.query(Product).filter(Product.stock_qty > 0).first()
+    if has_stock:
+        return
+
+    balance_dir = Path("app/data/uploads/Үлдэгдэл тайлан")
+    if not balance_dir.exists():
+        return
+    files = sorted(balance_dir.glob("*.xl*"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        return
+
+    try:
+        from app.services.refresh_stock_from_balance import refresh_stock_from_balance_report
+        result = refresh_stock_from_balance_report(db, str(files[0]))
+        print(f"[startup] Stock refresh from {files[0].name}: {result}")
+    except Exception as e:
+        print(f"[startup] Stock refresh failed: {e}")
+
+
+@app.on_event("startup")
+def startup():
+    Base.metadata.create_all(bind=engine)
+    ensure_extra_lines_brand()
+    ensure_import_logs_schema()
+    ensure_users_schema()
+    ensure_products_schema()
+    ensure_po_lines_schema()
+    ensure_price_schema()
+    ensure_brand_code_schema()
+    ensure_order_lines_schema()
+    ensure_kpi_admin_task_schema()
+    ensure_kpi_groups_schema()
+    ensure_po_vehicle_schema()
+    ensure_inventory_count_schema()
+    ensure_shipment_lines_schema()
+    ensure_admin_task_target_schema()
+    ensure_roles_schema()
+    ensure_roles_seeded()
+    db = SessionLocal()
+    try:
+        ensure_admin(db)
+        _auto_refresh_stock(db)
+    finally:
+        db.close()
+
+app.include_router(auth_router)
+app.include_router(admin_router)
+app.include_router(imports_router)
+app.include_router(products_router)
+app.include_router(orders_router)
+app.include_router(reports_router)
+app.include_router(accounts_receivable_router)
+app.include_router(suppliers_router)
+app.include_router(logistics_router)
+app.include_router(purchase_orders_router)
+app.include_router(calendar_router)
+app.include_router(kpi_router)
+app.include_router(new_product_router)
+app.include_router(sales_report_router)
+app.include_router(inventory_count_router)
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+# ── PWA Root CA сертификат татах (HTTP:8000) ──────────────────────────────────
+# Планшет дээр CA суулгахын тулд: http://192.168.1.198:8000/rootca.crt
+_ROOT_CA = Path("app/data/rootCA.crt")
+
+@app.get("/rootca.crt", include_in_schema=False)
+def download_rootca():
+    if not _ROOT_CA.exists():
+        from fastapi import HTTPException
+        raise HTTPException(404, "rootCA.crt олдсонгүй")
+    return FileResponse(
+        str(_ROOT_CA),
+        media_type="application/x-x509-ca-cert",
+        filename="rootCA.crt",
+    )

@@ -1,0 +1,15 @@
+from app.api.auth import router as auth_router
+from app.api.admin import router as admin_router
+from app.api.imports import router as imports_router
+from app.api.products import router as products_router
+from app.api.orders import router as orders_router
+from app.api.reports import router as reports_router
+from app.api.accounts_receivable import router as accounts_receivable_router
+from app.api.suppliers import router as suppliers_router
+from app.api.logistics import router as logistics_router
+from app.api.purchase_orders import router as purchase_orders_router
+from app.api.calendar import router as calendar_router
+from app.api.kpi import router as kpi_router
+from app.api.new_product import router as new_product_router
+from app.api.sales_report import router as sales_report_router
+from app.api.inventory_count import router as inventory_count_router

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Data & uploads
+backend/app/data/uploads/
+backend/app/data/outputs/
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Certs & secrets
+*.pem
+*.crt
+*.key
+backend/app/data/sms_config.json
+backend/app/data/sms_sent.json
+frontend/certs/
+
+# Claude
+.claude/
