@@ -553,7 +553,7 @@ export default function PurchaseOrderList() {
                 return (
                   <div
                     key={o.id}
-                    onClick={() => navigate(`/order/${o.id}`)}
+                    onClick={() => navigate(`/order/${o.id}/dashboard`)}
                     className="cursor-pointer px-4 py-3.5 active:bg-gray-50"
                   >
                     <div className="flex items-center justify-between">
@@ -606,7 +606,7 @@ export default function PurchaseOrderList() {
                     return (
                       <tr
                         key={o.id}
-                        onClick={() => navigate(`/order/${o.id}`)}
+                        onClick={() => navigate(`/order/${o.id}/dashboard`)}
                         className="cursor-pointer hover:bg-gray-50"
                       >
                         <td className="px-5 py-3.5 font-semibold text-gray-900">

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_user, require_role, parse_tag_ids
 from app.models.purchase_order import (
     PurchaseOrder, PurchaseOrderLine, PurchaseOrderBrandVehicle,
-    OrderExtraLine, POShipment, POShipmentLine,
+    PurchaseOrderBrandStatus, OrderExtraLine, POShipment, POShipmentLine,
 )
 from app.models.product import Product
 from app.models.user import User
@@ -172,6 +172,12 @@ def _serialize_order_detail(
         "computed_weight": el.computed_weight,
     } for el in o.extra_lines]
 
+    # Per-brand statuses
+    bs_rows = db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == o.id
+    ).all()
+    base["brand_statuses"] = {bs.brand: bs.status for bs in bs_rows}
+
     return base
 
 
@@ -199,6 +205,383 @@ class AddLineIn(BaseModel):
 
 class POVehicleIn(BaseModel):
     vehicle_id: Optional[int] = None
+
+
+# ── Dashboard endpoint ────────────────────────────────────────────────────────
+
+@router.get("/{order_id}/dashboard")
+def get_order_dashboard(
+    order_id: int,
+    db: Session = Depends(get_db),
+    u: User = Depends(get_current_user),
+):
+    """Захиалгын бренд-түвшний нэгтгэсэн dashboard мэдээлэл."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+
+    # Bulk load products
+    product_ids = [l.product_id for l in po.lines]
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()}
+
+    # All shipments + shipment lines for this PO
+    shipments = db.query(POShipment).filter(POShipment.purchase_order_id == order_id).order_by(POShipment.id).all()
+    all_ship_lines = (
+        db.query(POShipmentLine)
+        .join(POShipment, POShipment.id == POShipmentLine.shipment_id)
+        .filter(POShipment.purchase_order_id == order_id)
+        .all()
+    )
+
+    # assigned_map: po_line_id → total loaded across all shipments
+    assigned_map: dict[int, float] = {}
+    # shipment_map: po_line_id → set of shipment_ids
+    shipment_line_map: dict[int, set[int]] = {}
+    for sl in all_ship_lines:
+        assigned_map[sl.po_line_id] = assigned_map.get(sl.po_line_id, 0) + sl.loaded_qty_box
+        shipment_line_map.setdefault(sl.po_line_id, set()).add(sl.shipment_id)
+
+    # Shipment status map
+    shipment_status_map = {s.id: s.status for s in shipments}
+
+    # ── Group lines by brand ──
+    brand_data: dict[str, dict] = {}
+    cancelled_lines = 0
+    cancelled_brands_set: set[str] = set()
+
+    for l in po.lines:
+        p = products.get(l.product_id)
+        if not p:
+            continue
+
+        # Зөвхөн захиалга хийгдсэн (order_qty > 0) эсвэл цуцлагдсан (supplier_qty > 0 but order=0) мөрүүдийг л авна
+        # Захиалга огт хийгдээгүй (order_qty == 0 AND supplier_qty == 0) бол алгасна
+        is_cancelled = l.order_qty_box == 0 and (l.supplier_qty_box or 0) > 0
+        if l.order_qty_box <= 0 and not is_cancelled:
+            continue
+
+        brand = p.brand or "Брэнд байхгүй"
+        if brand not in brand_data:
+            brand_data[brand] = {
+                "brand": brand,
+                "line_count": 0,
+                "total_order_boxes": 0.0,
+                "total_loaded_boxes": 0.0,
+                "total_received_boxes": 0.0,
+                "total_weight": 0.0,
+                "estimated_cost": 0.0,
+                "shipment_ids": set(),
+                "vehicle_ids": set(),
+                "items": [],
+                "has_active_lines": False,
+                "all_cancelled": True,
+            }
+        bd = brand_data[brand]
+
+        loaded = assigned_map.get(l.id, 0)
+        remaining = max(0.0, l.order_qty_box - loaded)
+        weight = l.order_qty_box * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
+        lpp = float(p.last_purchase_price or 0)
+
+        if is_cancelled:
+            cancelled_lines += 1
+        else:
+            bd["all_cancelled"] = False
+
+        if l.order_qty_box > 0:
+            bd["has_active_lines"] = True
+            bd["all_cancelled"] = False
+
+        bd["line_count"] += 1
+        bd["total_order_boxes"] += l.order_qty_box
+        bd["total_loaded_boxes"] += loaded
+        bd["total_received_boxes"] += (l.received_qty_box or 0)
+        bd["total_weight"] += weight
+        bd["estimated_cost"] += lpp * l.order_qty_box
+
+        # Track shipments/vehicles
+        sids = shipment_line_map.get(l.id, set())
+        bd["shipment_ids"].update(sids)
+        for sid in sids:
+            sh = next((s for s in shipments if s.id == sid), None)
+            if sh and sh.vehicle_id:
+                bd["vehicle_ids"].add(sh.vehicle_id)
+
+        bd["items"].append({
+            "item_code": p.item_code,
+            "name": p.name,
+            "order_qty_box": l.order_qty_box,
+            "loaded_qty_box": loaded,
+            "unloaded_qty": remaining,
+            "received_qty_box": l.received_qty_box or 0,
+            "weight": round(weight, 2),
+            "is_cancelled": is_cancelled,
+        })
+
+    # Derive brand_status
+    def _brand_status(bd: dict) -> str:
+        if bd["all_cancelled"]:
+            return "cancelled"
+        if not bd["has_active_lines"]:
+            return "cancelled"
+        loaded = bd["total_loaded_boxes"]
+        ordered = bd["total_order_boxes"]
+        if ordered <= 0:
+            return "cancelled"
+        if loaded <= 0:
+            return "unloaded"
+        # Check shipment statuses for loaded lines
+        statuses = {shipment_status_map.get(sid, "loading") for sid in bd["shipment_ids"]}
+        if loaded < ordered:
+            if statuses & {"transit", "arrived", "accounting", "confirmed", "received"}:
+                return "partial"
+            return "partial"
+        # Fully loaded — return highest shipment status
+        if "received" in statuses and len(statuses) == 1:
+            return "received"
+        if statuses <= {"confirmed", "received"}:
+            return "confirmed"
+        if statuses <= {"arrived", "accounting", "confirmed", "received"}:
+            return "arrived"
+        if "transit" in statuses:
+            return "transit"
+        return "loaded"
+
+    # Load persisted brand statuses from DB
+    persisted_bs = {
+        bs.brand: bs.status
+        for bs in db.query(PurchaseOrderBrandStatus).filter(
+            PurchaseOrderBrandStatus.purchase_order_id == order_id
+        ).all()
+    }
+
+    # Build brands list
+    vehicle_cache: dict[int, Vehicle] = {}
+    brands_list = []
+    for bd in sorted(brand_data.values(), key=lambda x: x["brand"]):
+        vehicle_names = []
+        for vid in bd["vehicle_ids"]:
+            if vid not in vehicle_cache:
+                vehicle_cache[vid] = db.query(Vehicle).filter(Vehicle.id == vid).first()
+            v = vehicle_cache[vid]
+            if v:
+                vehicle_names.append(f"{v.name} ({v.plate})")
+
+        brands_list.append({
+            "brand": bd["brand"],
+            "line_count": bd["line_count"],
+            "total_order_boxes": round(bd["total_order_boxes"], 1),
+            "total_loaded_boxes": round(bd["total_loaded_boxes"], 1),
+            "total_unloaded_boxes": round(max(0, bd["total_order_boxes"] - bd["total_loaded_boxes"]), 1),
+            "total_received_boxes": round(bd["total_received_boxes"], 1),
+            "total_weight": round(bd["total_weight"], 1),
+            "estimated_cost": round(bd["estimated_cost"], 2),
+            "brand_status": persisted_bs.get(bd["brand"], _brand_status(bd)),
+            "brand_status_label": STATUS_LABEL.get(persisted_bs.get(bd["brand"], _brand_status(bd)), ""),
+            "vehicle_names": vehicle_names,
+            "items": bd["items"],
+        })
+
+    cancelled_brands_count = sum(1 for b in brands_list if b["brand_status"] == "cancelled")
+
+    # ── Extra lines ──
+    extra_brand_map: dict[str, list] = {}
+    for el in po.extra_lines:
+        b = el.brand or "Нэмэлт бараа"
+        extra_brand_map.setdefault(b, []).append({
+            "name": el.name, "item_code": el.item_code,
+            "qty_box": el.qty_box, "computed_weight": el.computed_weight,
+        })
+    extra_brands = [
+        {
+            "brand": b,
+            "items": items,
+            "total_boxes": sum(i["qty_box"] for i in items),
+            "total_weight": round(sum(i["computed_weight"] for i in items), 2),
+        }
+        for b, items in sorted(extra_brand_map.items())
+    ]
+
+    # ── Shipments with per-brand breakdown ──
+    shipments_out = []
+    for sh in shipments:
+        v = db.query(Vehicle).filter(Vehicle.id == sh.vehicle_id).first() if sh.vehicle_id else None
+        sh_lines = [sl for sl in all_ship_lines if sl.shipment_id == sh.id]
+        sh_brand_map: dict[str, dict] = {}
+        total_weight = 0.0
+        for sl in sh_lines:
+            pl = next((l for l in po.lines if l.id == sl.po_line_id), None)
+            if not pl:
+                continue
+            p = products.get(pl.product_id)
+            if not p:
+                continue
+            b = p.brand or "Брэнд байхгүй"
+            w = sl.loaded_qty_box * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
+            total_weight += w
+            if b not in sh_brand_map:
+                sh_brand_map[b] = {"brand": b, "loaded_boxes": 0, "received_boxes": 0, "weight": 0, "line_count": 0}
+            sh_brand_map[b]["loaded_boxes"] += sl.loaded_qty_box
+            sh_brand_map[b]["received_boxes"] += sl.received_qty_box
+            sh_brand_map[b]["weight"] += w
+            sh_brand_map[b]["line_count"] += 1
+
+        cap_kg = float(v.capacity_kg) if v else 0
+        shipments_out.append({
+            "id": sh.id,
+            "vehicle_id": sh.vehicle_id,
+            "vehicle_name": f"{v.name} ({v.plate})" if v else None,
+            "driver_name": v.driver_name if v else None,
+            "capacity_kg": cap_kg,
+            "status": sh.status,
+            "status_label": SHIPMENT_STATUS_LABEL.get(sh.status, sh.status),
+            "brands": sorted(sh_brand_map.values(), key=lambda x: x["brand"]),
+            "total_loaded_boxes": round(sum(sl.loaded_qty_box for sl in sh_lines), 1),
+            "total_weight": round(total_weight, 1),
+            "capacity_pct": round(total_weight / cap_kg * 100, 1) if cap_kg > 0 else 0,
+        })
+
+    # ── Unloaded pool ──
+    unloaded_brands: dict[str, dict] = {}
+    for l in po.lines:
+        if l.order_qty_box <= 0:
+            continue
+        loaded = assigned_map.get(l.id, 0)
+        remaining = l.order_qty_box - loaded
+        if remaining <= 0.001:
+            continue
+        p = products.get(l.product_id)
+        if not p:
+            continue
+        b = p.brand or "Брэнд байхгүй"
+        if b not in unloaded_brands:
+            unloaded_brands[b] = {"brand": b, "total_remaining_boxes": 0, "total_weight": 0, "items": []}
+        w = remaining * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
+        unloaded_brands[b]["total_remaining_boxes"] += remaining
+        unloaded_brands[b]["total_weight"] += w
+        unloaded_brands[b]["items"].append({
+            "item_code": p.item_code, "name": p.name,
+            "remaining_boxes": round(remaining, 1), "weight": round(w, 2),
+        })
+
+    unloaded_list = sorted(unloaded_brands.values(), key=lambda x: x["brand"])
+    for ub in unloaded_list:
+        ub["total_remaining_boxes"] = round(ub["total_remaining_boxes"], 1)
+        ub["total_weight"] = round(ub["total_weight"], 1)
+
+    active_brands = [b for b in brands_list if b["brand_status"] != "cancelled" and b["total_order_boxes"] > 0]
+
+    return {
+        "order": {
+            "id": po.id,
+            "order_date": po.order_date.isoformat(),
+            "status": po.status,
+            "status_label": STATUS_LABEL.get(po.status, po.status),
+            "notes": po.notes or "",
+        },
+        "summary": {
+            "total_brands": len(active_brands),
+            "total_boxes": round(sum(b["total_order_boxes"] for b in active_brands), 1),
+            "total_weight": round(sum(b["total_weight"] for b in active_brands), 1),
+            "total_estimated_cost": round(sum(b["estimated_cost"] for b in active_brands), 2),
+            "cancelled_lines": cancelled_lines,
+            "cancelled_brands": cancelled_brands_count,
+        },
+        "brands": brands_list,
+        "extra_brands": extra_brands,
+        "shipments": shipments_out,
+        "unloaded_pool": {
+            "brands": unloaded_list,
+            "total_remaining_boxes": round(sum(ub["total_remaining_boxes"] for ub in unloaded_list), 1),
+            "total_weight": round(sum(ub["total_weight"] for ub in unloaded_list), 1),
+        },
+    }
+
+
+# ── Per-brand status endpoints ────────────────────────────────────────────────
+
+@router.patch("/{order_id}/brand-advance")
+def advance_brand_status(
+    order_id: int,
+    brand: str = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(get_current_user),
+):
+    """Тухайн брендийн статусыг дараагийн stage руу шилжүүлнэ."""
+
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+
+    bs = db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id,
+        PurchaseOrderBrandStatus.brand == brand,
+    ).first()
+    if not bs:
+        raise HTTPException(404, f"'{brand}' брендийн статус олдсонгүй")
+
+    next_st = _next_status(bs.status)
+    if not next_st:
+        raise HTTPException(400, "Эцсийн статуст хүрсэн")
+
+    # Role check (same logic as advance_status)
+    if u.role == "warehouse_clerk":
+        raise HTTPException(403, "Статус шилжүүлэх эрхгүй")
+    if u.role == "accountant" and bs.status not in ("accounting", "confirmed"):
+        raise HTTPException(403, "Нягтлан зөвхөн accounting/confirmed статусыг шилжүүлнэ")
+
+    # Side effect: arrived → accounting → pre-fill unit_price for this brand's lines
+    if bs.status == "arrived" and next_st == "accounting":
+        product_ids = [l.product_id for l in po.lines]
+        products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()}
+        for line in po.lines:
+            p = products.get(line.product_id)
+            if p and p.brand == brand:
+                if (line.unit_price or 0) == 0 and (p.last_purchase_price or 0) > 0:
+                    line.unit_price = p.last_purchase_price
+
+    bs.status = next_st
+    db.commit()
+
+    _sync_po_status_from_brands(order_id, db)
+
+    return {
+        "brand": brand,
+        "new_status": next_st,
+        "new_status_label": STATUS_LABEL.get(next_st, next_st),
+        "po_status": po.status,
+    }
+
+
+@router.get("/{order_id}/brand-detail")
+def get_brand_detail(
+    order_id: int,
+    brand: str = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(get_current_user),
+):
+    """Тухайн брендийн дэлгэрэнгүй мэдээлэл (filtered detail)."""
+
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+
+    bs = db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id,
+        PurchaseOrderBrandStatus.brand == brand,
+    ).first()
+
+    brand_status = bs.status if bs else po.status
+
+    # Filter lines to this brand
+    detail = _serialize_order_detail(po, db)
+    detail["lines"] = [l for l in detail["lines"] if l["brand"] == brand]
+    detail["brand_filter"] = brand
+    detail["brand_status"] = brand_status
+    detail["brand_next_status"] = _next_status(brand_status)
+    detail["brand_next_status_label"] = STATUS_LABEL.get(_next_status(brand_status) or "", "")
+
+    return detail
 
 
 @router.patch("/{order_id}/vehicle")
@@ -509,6 +892,16 @@ def advance_status(
                 line.unit_price = float(p.last_purchase_price)
 
     po.status = next_st
+
+    # Batch advance all brand statuses that are at the old PO status
+    old_st = STATUS_SEQUENCE[STATUS_SEQUENCE.index(next_st) - 1]
+    brand_rows = db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id,
+        PurchaseOrderBrandStatus.status == old_st,
+    ).all()
+    for bs in brand_rows:
+        bs.status = next_st
+
     db.commit()
     return {
         "ok": True,
@@ -533,6 +926,11 @@ def force_status(
     if body.status not in STATUS_SEQUENCE:
         raise HTTPException(400, "Буруу статус")
     po.status = body.status
+    # Force all brand statuses to the same value
+    for bs in db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id
+    ).all():
+        bs.status = body.status
     db.commit()
     return {"ok": True, "new_status": po.status, "new_status_label": STATUS_LABEL.get(po.status, po.status)}
 
@@ -556,8 +954,19 @@ def set_lines(
         allowed_statuses = ["preparing", "reviewing", "loading", "arrived", "accounting"]
     else:
         allowed_statuses = ["preparing", "reviewing", "loading"]
+    # Per-brand status lookup
+    brand_status_map: dict[str, str] = {}
+    for bs in db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id
+    ).all():
+        brand_status_map[bs.brand] = bs.status
+
+    # PO-level check (fallback for backward compat)
     if po.status not in allowed_statuses:
-        raise HTTPException(400, "Энэ статуст тоо өөрчлөх боломжгүй")
+        # Per-brand: any brand in an allowed status?
+        has_allowed_brand = any(s in allowed_statuses for s in brand_status_map.values())
+        if not has_allowed_brand:
+            raise HTTPException(400, "Энэ статуст тоо өөрчлөх боломжгүй")
 
     # Permission check
     if u.role not in ("manager", "warehouse_clerk", "admin", "supervisor", "accountant"):
@@ -576,18 +985,19 @@ def set_lines(
         if not p:
             continue
         # Clerk cannot update products outside their warehouses.
-        # Products with warehouse_tag_id=0 are shared — editable by anyone.
         if clerk_tag_ids and p.warehouse_tag_id != 0 and p.warehouse_tag_id not in clerk_tag_ids:
             continue
         line = line_map[li.product_id]
-        if po.status == "arrived":
-            # Warehouse clerk enters received qty only
+
+        # Use per-brand status if available, fallback to PO status
+        effective_st = brand_status_map.get(p.brand, po.status)
+
+        if effective_st == "arrived":
             if li.received_qty_box is not None:
                 line.received_qty_box = float(li.received_qty_box)
             if li.remark is not None:
                 line.line_remark = li.remark
-        elif po.status == "accounting":
-            # Accountant edits unit_price (and may fix received qty / remark)
+        elif effective_st == "accounting":
             if li.unit_price is not None:
                 line.unit_price = float(li.unit_price)
             if li.received_qty_box is not None:
@@ -602,13 +1012,18 @@ def set_lines(
             line.order_qty_box = qty_box
             line.order_qty_pcs = qty_pcs
             line.computed_weight = weight
-            if po.status == "loading":
+            if effective_st == "loading":
                 if li.supplier_qty_box is not None:
                     line.supplier_qty_box = float(li.supplier_qty_box)
                 if li.loaded_qty_box is not None:
                     line.loaded_qty_box = float(li.loaded_qty_box)
 
     db.commit()
+
+    # Ensure brand status records exist for any new brands
+    _ensure_brand_statuses(order_id, db)
+    db.commit()
+
     return {"ok": True}
 
 
@@ -817,6 +1232,7 @@ class ERPExcelConfigIn(BaseModel):
     account: str = ""                # Данс (e.g. 150101)
     warehouse_map: dict = {}         # buten_orgil: {warehouse_name: erp_location_code}
     single_location: str = ""        # orgil_khorum: single location code
+    brand_filter: str = ""           # Тодорхой бренд шүүх (хоосон = бүгд)
 
 
 @router.post("/{order_id}/export-erp-excel")
@@ -870,12 +1286,16 @@ def export_erp_excel(
 
     # ── Build data rows ──
     # Only lines with received_qty_box > 0, sorted by brand then item_code
+    brand_filter = (body.brand_filter or "").strip()
     valid = []
     for line in po.lines:
         if not (line.received_qty_box and line.received_qty_box > 0):
             continue
         p = product_map.get(line.product_id)
         if not p:
+            continue
+        # Brand filter
+        if brand_filter and (p.brand or "") != brand_filter:
             continue
         if body.company == "orgil_khorum":
             location = body.single_location
@@ -935,7 +1355,10 @@ def export_erp_excel(
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    filename = f"erp_import_{po.order_date.strftime('%Y%m%d')}.xlsx"
+    import re
+    date_str = po.order_date.strftime("%Y%m%d")
+    brand_part = re.sub(r'[\\/:*?"<>|]', '_', brand_filter) if brand_filter else "all"
+    filename = f"{date_str}_PO{po.id}_{brand_part}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1425,7 +1848,13 @@ def create_shipment(
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
     if po.status != "loading":
-        raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' статуст ачилт үүсгэх боломжтой")
+        # Per-brand: ядаж 1 бренд "loading" статуст байвал зөвшөөрнө
+        has_loading_brand = db.query(PurchaseOrderBrandStatus).filter(
+            PurchaseOrderBrandStatus.purchase_order_id == order_id,
+            PurchaseOrderBrandStatus.status == "loading",
+        ).first()
+        if not has_loading_brand:
+            raise HTTPException(400, "Ачилт үүсгэхэд loading статустай бренд байхгүй")
 
     sh = POShipment(
         purchase_order_id=order_id,
@@ -1524,6 +1953,14 @@ def assign_brand_to_shipment(
     if sh.status != "loading":
         raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' статуст бараа нэмж болно")
 
+    # Brand status шалгалт
+    brand_bs = db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id,
+        PurchaseOrderBrandStatus.brand == body.brand,
+    ).first()
+    if brand_bs and brand_bs.status != "loading":
+        raise HTTPException(400, f"'{body.brand}' бренд 'loading' статуст байх ёстой")
+
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
 
     # All shipment lines for this PO (to compute assigned qty)
@@ -1596,7 +2033,39 @@ def advance_shipment(
     sh.status = next_st
     db.commit()
 
-    # Auto-advance PO status if all shipments advanced
+    # Sync brand statuses based on shipment brands
+    # Find which brands are in this shipment
+    sh_lines = db.query(POShipmentLine).filter(POShipmentLine.shipment_id == sh.id).all()
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if po and sh_lines:
+        po_line_ids = [sl.po_line_id for sl in sh_lines]
+        po_lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.id.in_(po_line_ids)).all()
+        prod_ids = [pl.product_id for pl in po_lines]
+        products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()}
+        brands_in_shipment = {products[pl.product_id].brand for pl in po_lines if pl.product_id in products and products[pl.product_id].brand}
+
+        # Map shipment status to brand status (shipment stages start from "loading")
+        shipment_to_brand = {
+            "loading": "loading", "transit": "transit", "arrived": "arrived",
+            "accounting": "accounting", "confirmed": "confirmed", "received": "received",
+        }
+        target_brand_status = shipment_to_brand.get(next_st)
+        if target_brand_status:
+            for brand in brands_in_shipment:
+                bs = db.query(PurchaseOrderBrandStatus).filter(
+                    PurchaseOrderBrandStatus.purchase_order_id == order_id,
+                    PurchaseOrderBrandStatus.brand == brand,
+                ).first()
+                if bs:
+                    bs_idx = STATUS_SEQUENCE.index(bs.status) if bs.status in STATUS_SEQUENCE else 0
+                    target_idx = STATUS_SEQUENCE.index(target_brand_status)
+                    if target_idx > bs_idx:
+                        bs.status = target_brand_status
+            db.commit()
+
+    # Auto-advance PO status from brands
+    _sync_po_status_from_brands(order_id, db)
+    # Fallback to legacy shipment sync if no brand statuses
     _sync_po_status(order_id, db)
 
     return _serialize_shipment(sh, db)
@@ -1739,6 +2208,65 @@ def move_shipment_line(
     db.delete(sl)
     db.commit()
     return {"ok": True, "action": "moved", "target_shipment_id": body.target_shipment_id}
+
+
+# ── Brand status helpers ──────────────────────────────────────────────────────
+
+def _ensure_brand_statuses(order_id: int, db: Session):
+    """PO lines-аас бренд олж, brand_status record байхгүй бол үүсгэнэ."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        return
+
+    lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == order_id).all()
+    prod_ids = [l.product_id for l in lines]
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()}
+
+    # Brands with order_qty > 0
+    active_brands: set[str] = set()
+    for l in lines:
+        if l.order_qty_box > 0:
+            p = products.get(l.product_id)
+            if p and p.brand and p.brand.lower() != "nan":
+                active_brands.add(p.brand)
+
+    existing = {
+        bs.brand
+        for bs in db.query(PurchaseOrderBrandStatus).filter(
+            PurchaseOrderBrandStatus.purchase_order_id == order_id
+        ).all()
+    }
+
+    for brand in active_brands - existing:
+        db.add(PurchaseOrderBrandStatus(
+            purchase_order_id=order_id,
+            brand=brand,
+            status=po.status,  # inherit current PO status
+        ))
+
+    if active_brands - existing:
+        db.flush()
+
+
+def _sync_po_status_from_brands(order_id: int, db: Session):
+    """Бүх brand status-аас PO.status = min(brand statuses) тооцоолно."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        return
+
+    brand_statuses = db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id
+    ).all()
+    if not brand_statuses:
+        return  # no brand records yet — don't touch PO status
+
+    min_idx = min(
+        STATUS_SEQUENCE.index(bs.status)
+        for bs in brand_statuses
+        if bs.status in STATUS_SEQUENCE
+    )
+    po.status = STATUS_SEQUENCE[min_idx]
+    db.commit()
 
 
 # ── Sync PO status from shipment statuses ─────────────────────────────────────

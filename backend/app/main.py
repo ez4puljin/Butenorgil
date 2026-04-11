@@ -11,6 +11,7 @@ from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
 from app.models.role import Role  # noqa: F401 – registers table
+from app.models.purchase_order import PurchaseOrderBrandStatus  # noqa: F401 – registers table
 from app.models.kpi import KpiScheduledDay, KpiShiftTransfer, KpiAuditLog  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
@@ -151,6 +152,35 @@ def ensure_po_vehicle_schema():
             conn.execute(text(
                 "ALTER TABLE purchase_orders ADD COLUMN vehicle_id INTEGER REFERENCES vehicles(id)"
             ))
+
+def ensure_po_brand_status_table():
+    """po_brand_statuses хүснэгт үүсгэж, одоо байгаа PO-уудад backfill хийнэ."""
+    with engine.begin() as conn:
+        # Table already created by Base.metadata.create_all, but backfill if empty
+        try:
+            count = conn.execute(text("SELECT COUNT(*) FROM po_brand_statuses")).scalar()
+        except Exception:
+            return  # Table doesn't exist yet, create_all will handle it
+        if count > 0:
+            return  # Already backfilled
+
+        # Backfill: for each PO, find brands with order_qty > 0
+        rows = conn.execute(text("""
+            SELECT DISTINCT po.id as po_id, po.status, p.brand
+            FROM purchase_orders po
+            JOIN purchase_order_lines pl ON pl.purchase_order_id = po.id
+            JOIN products p ON p.id = pl.product_id
+            WHERE pl.order_qty_box > 0
+              AND p.brand IS NOT NULL AND p.brand != '' AND LOWER(p.brand) != 'nan'
+        """)).fetchall()
+        for r in rows:
+            try:
+                conn.execute(text(
+                    "INSERT OR IGNORE INTO po_brand_statuses (purchase_order_id, brand, status) VALUES (:po_id, :brand, :status)"
+                ), {"po_id": r[0], "brand": r[2], "status": r[1]})
+            except Exception:
+                pass
+
 
 def ensure_inventory_count_schema():
     with engine.begin() as conn:
@@ -302,6 +332,7 @@ def startup():
     ensure_kpi_groups_schema()
     ensure_po_vehicle_schema()
     ensure_inventory_count_schema()
+    ensure_po_brand_status_table()
     ensure_shipment_lines_schema()
     ensure_admin_task_target_schema()
     ensure_roles_schema()

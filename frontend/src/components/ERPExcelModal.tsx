@@ -39,11 +39,12 @@ const defaultConfig = (orderDate: string): ERPConfig => ({
 interface Props {
   order: PODetail;
   onClose: () => void;
+  brandFilter?: string;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function ERPExcelModal({ order, onClose }: Props) {
+export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
   // Unique warehouse names from order lines (only lines with received_qty_box > 0)
   const warehouses = [
     ...new Set(
@@ -90,13 +91,17 @@ export default function ERPExcelModal({ order, onClose }: Props) {
     try {
       const res = await api.post(
         `/purchase-orders/${order.id}/export-erp-excel`,
-        cfg,
+        { ...cfg, brand_filter: brandFilter ?? "" },
         { responseType: "blob" }
       );
+      // Filename from Content-Disposition header or fallback
+      const disposition = res.headers?.["content-disposition"] ?? "";
+      const match = disposition.match(/filename=([^\s;]+)/);
+      const fname = match?.[1] ?? `${order.order_date.replaceAll("-", "")}_PO${order.id}.xlsx`;
       const url = URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement("a");
       a.href = url;
-      a.download = `erp_import_${order.order_date.replaceAll("-", "")}.xlsx`;
+      a.download = fname;
       a.click();
       URL.revokeObjectURL(url);
       onClose();

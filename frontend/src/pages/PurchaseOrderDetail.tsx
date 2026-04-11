@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, Fragment } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ChevronLeft, RefreshCw, CheckCircle2, Save, FileDown,
   Trash2, Plus, Search, X, Package, AlertCircle, CheckCheck,
@@ -16,10 +16,12 @@ import {
 } from "../store/purchaseOrderStore";
 import PDFExportModal from "../components/PDFExportModal";
 import ERPExcelModal from "../components/ERPExcelModal";
-import LogisticsOptModal from "../components/LogisticsOptModal";
 
 export default function PurchaseOrderDetail() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const brandFilter = searchParams.get("brand");
+  const brandMode = !!brandFilter;
   const { role } = useAuthStore();
   const store = usePurchaseOrderStore();
   const navigate = useNavigate();
@@ -31,7 +33,6 @@ export default function PurchaseOrderDetail() {
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [showPDFModal, setShowPDFModal] = useState(false);
   const [showERPModal, setShowERPModal] = useState(false);
-  const [showLogisticsModal, setShowLogisticsModal] = useState(false);
 
   // Vehicle assignment
   const [vehicles, setVehicles] = useState<{ id: number; name: string; plate: string; is_active: boolean }[]>([]);
@@ -195,7 +196,9 @@ export default function PurchaseOrderDetail() {
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await api.get(`/purchase-orders/${id}`);
+      const res = brandMode
+        ? await api.get(`/purchase-orders/${id}/brand-detail`, { params: { brand: brandFilter } })
+        : await api.get(`/purchase-orders/${id}`);
       store.setCurrentOrder(res.data);
       store.initQuantities(res.data.lines);
       const bvMap: Record<string, number | null> = {};
@@ -242,7 +245,7 @@ export default function PurchaseOrderDetail() {
 
   // Loading/transit/arrived status-т shipments ачаална
   useEffect(() => {
-    if (order && ["loading", "transit", "arrived", "accounting", "confirmed", "received"].includes(order.status)) {
+    if (order && ["loading", "transit", "arrived", "accounting", "confirmed", "received"].includes(effectiveStatus)) {
       loadShipments();
     }
   }, [order?.status, order?.id]);
@@ -282,14 +285,20 @@ export default function PurchaseOrderDetail() {
     }
   };
 
+  // Brand mode: use brand_status instead of order.status for UI decisions
+  const effectiveStatus = (brandMode && order)
+    ? ((order as any).brand_status ?? (order as any).brand_statuses?.[brandFilter!] ?? order.status)
+    : order?.status ?? "preparing";
+
   const canEdit = (() => {
     if (!order) return false;
+    const st = effectiveStatus;
     if (role === "warehouse_clerk")
-      return order.status === "preparing" || order.status === "arrived";
+      return st === "preparing" || st === "arrived";
     if (role === "accountant")
-      return order.status === "accounting";
+      return st === "accounting";
     if (role === "manager" || role === "supervisor")
-      return ["preparing", "reviewing", "loading"].includes(order.status);
+      return ["preparing", "reviewing", "loading"].includes(st);
     if (role === "admin")
       return true;
     return false;
@@ -309,7 +318,7 @@ export default function PurchaseOrderDetail() {
         remark: remarkInputs[l.product_id] ?? l.remark ?? "",
       }));
       await api.post(`/purchase-orders/${order.id}/set-lines`, payload);
-      if (order.status === "loading" && Object.keys(brandVehicles).length > 0) {
+      if (effectiveStatus === "loading" && Object.keys(brandVehicles).length > 0) {
         const bvPayload = Object.entries(brandVehicles).map(([brand, vehicle_id]) => ({ brand, vehicle_id: vehicle_id ?? null }));
         await api.post(`/purchase-orders/${order.id}/brand-vehicles`, bvPayload);
       }
@@ -336,8 +345,13 @@ export default function PurchaseOrderDetail() {
     if (!order) return;
     setAdvancing(true);
     try {
-      await api.patch(`/purchase-orders/${order.id}/status`);
-      flash("Статус шинэчлэгдлээ");
+      if (brandMode && brandFilter) {
+        await api.patch(`/purchase-orders/${order.id}/brand-advance`, null, { params: { brand: brandFilter } });
+        flash(`${brandFilter} — Статус шинэчлэгдлээ`);
+      } else {
+        await api.patch(`/purchase-orders/${order.id}/status`);
+        flash("Статус шинэчлэгдлээ");
+      }
       await loadOrder();
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
@@ -397,27 +411,31 @@ export default function PurchaseOrderDetail() {
 
   const canAdvance = () => {
     if (!order) return false;
-    if (order.status === "received") return false;
+    const st = effectiveStatus;
+    if (st === "received") return false;
     if (role === "warehouse_clerk") return false;
-    // accountant: accounting → confirmed, confirmed → received
-    if (role === "accountant") return order.status === "accounting" || order.status === "confirmed";
+    if (role === "accountant") return st === "accounting" || st === "confirmed";
     if (role === "manager" || role === "supervisor" || role === "admin") return true;
     return false;
   };
 
   const advanceLabel = () => {
-    if (!order) return "";
-    if (order.status === "preparing") return "Хянуулахаар илгээх";
-    if (order.status === "reviewing") return "Захиалга илгээх";
-    if (order.status === "arrived") return "Нягтлан руу илгээх";
-    if (order.status === "accounting") return "Нягтлан Баталгаажуулах";
-    if (order.status === "confirmed") return "Орлого авагдсан болгох";
-    const nextLabel = order.next_status_label;
+    const st = effectiveStatus;
+    if (st === "preparing") return "Хянуулахаар илгээх";
+    if (st === "reviewing") return "Захиалга илгээх";
+    if (st === "arrived") return "Нягтлан руу илгээх";
+    if (st === "accounting") return "Нягтлан Баталгаажуулах";
+    if (st === "confirmed") return "Орлого авагдсан болгох";
+    if (brandMode) {
+      const nextLabel = (order as any)?.brand_next_status_label;
+      return nextLabel ? `→ ${nextLabel}` : "Дэвшүүлэх";
+    }
+    const nextLabel = order?.next_status_label;
     return nextLabel ? `→ ${nextLabel}` : "Дэвшүүлэх";
   };
 
   // warehouse_clerk preparing үед бүх бараанд тоо оруулах боломжтой
-  const isEnteringQty = role === "warehouse_clerk" && order?.status === "preparing";
+  const isEnteringQty = role === "warehouse_clerk" && effectiveStatus === "preparing";
 
   // qty шүүлт хэрэглэсэн суурь мөрүүд
   const baseLines = order
@@ -488,15 +506,15 @@ export default function PurchaseOrderDetail() {
       }, 0)
     : 0;
 
-  const currentIdx = order ? STATUS_SEQUENCE.indexOf(order.status as any) : -1;
+  const currentIdx = STATUS_SEQUENCE.indexOf(effectiveStatus as any);
 
-  const showStockCols = order ? ["preparing", "reviewing"].includes(order.status) : false;
-  const showEstCostCols = order ? ["preparing", "reviewing", "sending"].includes(order.status) : false;
-  const showLoadingCols = order?.status === "loading";
-  const showTransitCols = order?.status === "transit"; // transit: зөвхөн ачигдсан тоо (read-only), захиалах нуугдана
-  const showReceivedCols = order ? ["arrived", "accounting", "confirmed", "received"].includes(order.status) : false;
-  const showPriceCols = order ? ["accounting", "confirmed", "received"].includes(order.status) : false;
-  const showPriceDiff = order?.status === "accounting"; // Нягтлан stage-д зөрүү харуулна
+  const showStockCols = ["preparing", "reviewing"].includes(effectiveStatus);
+  const showEstCostCols = ["preparing", "reviewing", "sending"].includes(effectiveStatus);
+  const showLoadingCols = effectiveStatus === "loading";
+  const showTransitCols = effectiveStatus === "transit";
+  const showReceivedCols = ["arrived", "accounting", "confirmed", "received"].includes(effectiveStatus);
+  const showPriceCols = ["accounting", "confirmed", "received"].includes(effectiveStatus);
+  const showPriceDiff = effectiveStatus === "accounting";
 
   const colCount = (() => {
     const base = showStockCols ? 9 : 7;
@@ -562,23 +580,33 @@ export default function PurchaseOrderDetail() {
         {/* Top row: back + title + status */}
         <div className="flex flex-wrap items-center gap-3">
           <button
-            onClick={() => navigate("/order")}
+            onClick={() => navigate(brandMode ? `/order/${id}/dashboard` : "/order")}
             className="flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-gray-700 transition-colors"
           >
             <ChevronLeft size={15} />
-            Буцах
+            {brandMode ? "Dashboard" : "Буцах"}
           </button>
           <div className="h-4 w-px bg-gray-200" />
           <h1 className="text-xl font-bold tracking-tight text-gray-900">
             {order.order_date.replaceAll("-", "/")}
           </h1>
           <span className="text-sm text-gray-400">захиалга #{order.id}</span>
+          {brandMode && brandFilter && (
+            <>
+              <div className="h-4 w-px bg-gray-200" />
+              <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-bold text-blue-700">
+                {brandFilter}
+              </span>
+            </>
+          )}
           <span
             className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-              STATUS_COLOR[order.status] ?? "bg-gray-100 text-gray-600"
+              STATUS_COLOR[effectiveStatus] ?? "bg-gray-100 text-gray-600"
             }`}
           >
-            {order.status_label}
+            {brandMode
+              ? STATUS_LABEL[effectiveStatus as keyof typeof STATUS_LABEL] ?? effectiveStatus
+              : order.status_label}
           </span>
         </div>
 
@@ -604,7 +632,7 @@ export default function PurchaseOrderDetail() {
                 Хадгалах
               </button>
             )}
-            {order.status === "sending" && (
+            {effectiveStatus === "sending" && (
               <button
                 onClick={() => setShowPDFModal(true)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors"
@@ -613,7 +641,7 @@ export default function PurchaseOrderDetail() {
                 PDF татах
               </button>
             )}
-            {(role === "accountant" || role === "admin") && order.status === "accounting" && (
+            {(role === "accountant" || role === "admin") && effectiveStatus === "accounting" && (
               <button
                 onClick={revertStatus}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 shadow-sm hover:bg-amber-100 transition-colors"
@@ -622,7 +650,7 @@ export default function PurchaseOrderDetail() {
                 Ачаа ирсэн рүү буцаах
               </button>
             )}
-            {order.status === "confirmed" && (
+            {effectiveStatus === "confirmed" && (
               <>
                 <button
                   onClick={async () => {
@@ -687,10 +715,7 @@ export default function PurchaseOrderDetail() {
             )}
             {canAdvance() && (
               <button
-                onClick={() => {
-                  if (order.status === "reviewing") setShowLogisticsModal(true);
-                  else advanceStatus();
-                }}
+                onClick={() => advanceStatus()}
                 disabled={advancing}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-[#0071E3] px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#0064c8] disabled:opacity-50 transition-colors"
               >
@@ -758,7 +783,7 @@ export default function PurchaseOrderDetail() {
       </div>
 
       {/* ── Shipment Panel (loading+) ── */}
-      {order && ["loading", "transit", "arrived", "accounting", "confirmed", "received"].includes(order.status) && (
+      {order && ["loading", "transit", "arrived", "accounting", "confirmed", "received"].includes(effectiveStatus) && (
         <div className="mt-3 space-y-3">
           {/* Shipment list */}
           <div className="rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 overflow-hidden">
@@ -767,7 +792,7 @@ export default function PurchaseOrderDetail() {
                 <span className="text-sm font-bold text-gray-700">Ачилтууд</span>
                 <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">{shipments.length}</span>
               </div>
-              {order.status === "loading" && (role === "admin" || role === "supervisor" || role === "manager") && (
+              {effectiveStatus === "loading" && (role === "admin" || role === "supervisor" || role === "manager") && (
                 <div className="flex items-center gap-2">
                   <select
                     id="add-vehicle-select"
@@ -799,7 +824,7 @@ export default function PurchaseOrderDetail() {
 
             {shipments.length === 0 ? (
               <div className="p-6 text-center text-sm text-gray-400">
-                {order.status === "loading" ? "Машин нэмээд бараанууд хуваарилна уу" : "Ачилт байхгүй"}
+                {effectiveStatus === "loading" ? "Машин нэмээд бараанууд хуваарилна уу" : "Ачилт байхгүй"}
               </div>
             ) : (
               <div className="divide-y divide-gray-50">
@@ -970,7 +995,7 @@ export default function PurchaseOrderDetail() {
           </div>
 
           {/* Unassigned items — only in loading status */}
-          {order.status === "loading" && unassignedLines.length > 0 && shipments.length > 0 && (
+          {effectiveStatus === "loading" && unassignedLines.length > 0 && shipments.length > 0 && (
             <div className="rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 overflow-hidden">
               <div className="border-b border-gray-100 bg-amber-50/50 px-4 py-3">
                 <span className="text-sm font-bold text-amber-700">Хуваарилагдаагүй бараанууд</span>
@@ -1105,7 +1130,7 @@ export default function PurchaseOrderDetail() {
             <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">
               {filteredLines.length} бараа
             </span>
-            {(order.status === "preparing" || order.status === "loading") &&
+            {(effectiveStatus === "preparing" || effectiveStatus === "loading") &&
               (role === "manager" || role === "admin" || role === "supervisor") && (
               <button
                 onClick={() => { setShowAddModal(true); setAddSearch(""); setAddResults([]); }}
@@ -1236,7 +1261,7 @@ export default function PurchaseOrderDetail() {
                               </span>
                             </>
                           )}
-                          {order.status === "loading" && (role === "manager" || role === "admin" || role === "supervisor") && (
+                          {effectiveStatus === "loading" && (role === "manager" || role === "admin" || role === "supervisor") && (
                             <button
                               onClick={() => openAddExtra(brand)}
                               className="ml-auto inline-flex items-center gap-1 rounded-md border border-amber-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-amber-600 hover:bg-amber-50 transition-colors"
@@ -1244,7 +1269,7 @@ export default function PurchaseOrderDetail() {
                               <Plus size={10} /> Нэмэлт мөр
                             </button>
                           )}
-                          {order.status === "loading" && (
+                          {effectiveStatus === "loading" && (
                             <select
                               value={brandVehicles[brand] ?? ""}
                               onChange={(e) => {
@@ -1259,7 +1284,7 @@ export default function PurchaseOrderDetail() {
                               ))}
                             </select>
                           )}
-                          {order.status !== "loading" && (() => {
+                          {effectiveStatus !== "loading" && (() => {
                             const bvInfo = order.brand_vehicles?.find((b) => b.brand === brand);
                             return bvInfo?.vehicle_name ? (
                               <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-600">
@@ -1393,7 +1418,7 @@ export default function PurchaseOrderDetail() {
                             const loaded = l.loaded_qty_box ?? 0;
                             const received = receivedQtys[l.product_id] ?? l.received_qty_box ?? 0;
                             const diff = loaded - received;
-                            const canEditReceived = (role === "warehouse_clerk" || role === "admin") && order.status === "arrived";
+                            const canEditReceived = (role === "warehouse_clerk" || role === "admin") && effectiveStatus === "arrived";
                             return (
                               <>
                                 <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-500">{loaded.toFixed(0)}</td>
@@ -1449,7 +1474,7 @@ export default function PurchaseOrderDetail() {
                             const received = receivedQtys[l.product_id] ?? l.received_qty_box ?? 0;
                             const price = priceInputs[l.product_id] ?? l.unit_price ?? 0;
                             const lineTotal = received * price;
-                            const canEditPrice = (role === "accountant" || role === "admin") && order.status === "accounting";
+                            const canEditPrice = (role === "accountant" || role === "admin") && effectiveStatus === "accounting";
                             return (
                               <>
                                 <td className="px-4 py-2 text-right">
@@ -1623,19 +1648,10 @@ export default function PurchaseOrderDetail() {
         <ERPExcelModal
           order={order}
           onClose={() => setShowERPModal(false)}
+          brandFilter={brandFilter ?? undefined}
         />
       )}
 
-      {showLogisticsModal && (
-        <LogisticsOptModal
-          orderId={order.id}
-          orderDate={order.order_date.replaceAll("-", "/")}
-          lines={order.lines}
-          quantities={store.quantities}
-          onClose={() => setShowLogisticsModal(false)}
-          onAdvance={advanceStatus}
-        />
-      )}
 
       {/* Extra Line Modal */}
       <AnimatePresence>

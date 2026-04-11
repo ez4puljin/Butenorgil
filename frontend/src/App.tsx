@@ -21,6 +21,7 @@ import KpiAdmin from "./pages/KpiAdmin";
 import NewProduct from "./pages/NewProduct";
 import SalesReportDetail from "./pages/SalesReportDetail";
 import InventoryCount from "./pages/InventoryCount";
+import OrderDashboard from "./pages/OrderDashboard";
 
 // Permissions → route mapping (Shell-ийн navItems-тай дараалал таарна)
 export const PAGE_ROUTES: { key: string; path: string }[] = [
@@ -106,6 +107,7 @@ export default function App() {
                       : <PurchaseOrderList />
                   }
                 />
+                <Route path="/order/:id/dashboard" element={<OrderDashboard />} />
                 <Route path="/order/:id" element={<PurchaseOrderDetail />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/accounts-receivable" element={<AccountsReceivable />} />

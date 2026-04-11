@@ -70,6 +70,17 @@ class PurchaseOrderBrandVehicle(Base):
     vehicle_id        = Column(Integer, ForeignKey("vehicles.id"), nullable=True)
 
 
+class PurchaseOrderBrandStatus(Base):
+    """Бренд тус бүрийн тусдаа статус. PO.status = min(all brand statuses)."""
+    __tablename__ = "po_brand_statuses"
+    __table_args__ = (UniqueConstraint("purchase_order_id", "brand"),)
+
+    id                = Column(Integer, primary_key=True, index=True)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
+    brand             = Column(String(100), nullable=False)
+    status            = Column(String(20), default="preparing")
+
+
 # ── Shipment (машинаар ачилт) ─────────────────────────────────────────────────
 
 class POShipment(Base):
