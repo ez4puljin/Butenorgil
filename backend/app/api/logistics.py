@@ -43,26 +43,40 @@ class OptimizeIn(BaseModel):
 def list_vehicles(db: Session = Depends(get_db), _=Depends(require_role("admin", "supervisor", "manager"))):
     rows = db.query(Vehicle).order_by(Vehicle.name).all()
 
-    # Машин бүрийн ачилтын статистик (po_shipments-аас)
+    # Bulk load all data in 4 queries (instead of thousands)
     all_shipments = db.query(POShipment).all()
+    all_ship_lines = db.query(POShipmentLine).all()
+    all_po_lines = db.query(PurchaseOrderLine).all()
+    all_products = db.query(Product).all()
+    all_pos = db.query(PurchaseOrder).all()
+
+    # Build lookup maps
+    po_line_map = {pl.id: pl for pl in all_po_lines}
+    product_map = {p.id: p for p in all_products}
+    po_map = {po.id: po for po in all_pos}
+
+    # Group shipment lines by shipment_id
+    ship_lines_by_sid: dict[int, list] = {}
+    for sl in all_ship_lines:
+        ship_lines_by_sid.setdefault(sl.shipment_id, []).append(sl)
+
+    # Build vehicle stats
     vehicle_stats: dict[int, dict] = {}
     for sh in all_shipments:
         if not sh.vehicle_id:
             continue
         if sh.vehicle_id not in vehicle_stats:
             vehicle_stats[sh.vehicle_id] = {"trip_count": 0, "total_weight": 0.0, "shipments": []}
-        # Зөвхөн transit болон түүнээс дээш status тоолно (loading бол ачигдаж байгаа)
         if sh.status not in ("loading",):
             vehicle_stats[sh.vehicle_id]["trip_count"] += 1
-        # Жин тооцоолох
-        for sl in db.query(POShipmentLine).filter(POShipmentLine.shipment_id == sh.id).all():
-            pl = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.id == sl.po_line_id).first()
+        # Weight from pre-loaded data
+        for sl in ship_lines_by_sid.get(sh.id, []):
+            pl = po_line_map.get(sl.po_line_id)
             if pl:
-                p = db.query(Product).filter(Product.id == pl.product_id).first()
+                p = product_map.get(pl.product_id)
                 if p:
                     vehicle_stats[sh.vehicle_id]["total_weight"] += sl.loaded_qty_box * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
-        # Ачилт мэдээлэл
-        po = db.query(PurchaseOrder).filter(PurchaseOrder.id == sh.purchase_order_id).first()
+        po = po_map.get(sh.purchase_order_id)
         vehicle_stats[sh.vehicle_id]["shipments"].append({
             "shipment_id": sh.id,
             "po_id": sh.purchase_order_id,

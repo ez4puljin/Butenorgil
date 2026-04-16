@@ -40,3 +40,14 @@ frontend/certs/
 
 # Claude
 .claude/
+
+# Erkhet automation
+erkhet-automation/.env
+erkhet-automation/venv/
+erkhet-automation/cookies/
+erkhet-automation/downloads/
+erkhet-automation/logs/
+erkhet-automation/screenshots/
+erkhet-automation/__pycache__/
+erkhet-automation/**/__pycache__/
+erkhet-automation/schedule_config.json

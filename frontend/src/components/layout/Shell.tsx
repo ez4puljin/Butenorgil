@@ -4,7 +4,7 @@ import {
   LayoutGrid, Upload, ClipboardList, Shield, LogOut,
   FileText, Building2, Truck, X, CalendarDays, CheckSquare,
   BadgeCheck, Settings2, Sparkles, BarChart3, MoreHorizontal,
-  ChevronRight, User, Menu, ClipboardCheck,
+  ChevronRight, User, Menu, ClipboardCheck, Bot,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 
@@ -31,6 +31,7 @@ const navItems: NavItem[] = [
   { to: "/new-product",         label: "Шинэ бараа",          icon: Sparkles,      pageKey: "new_product" },
   { to: "/sales-report-detail", label: "Борлуулалтын тайлан", icon: BarChart3,     pageKey: "sales_report" },
   { to: "/inventory-count",     label: "Тооллогоны тайлан",  icon: ClipboardCheck, pageKey: "inventory_count" },
+  { to: "/erkhet-auto",         label: "Erkhet автомат",     icon: Bot,            pageKey: "erkhet_auto" },
 ];
 
 const BOTTOM_NAV_MAX = 4;

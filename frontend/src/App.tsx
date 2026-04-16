@@ -22,6 +22,7 @@ import NewProduct from "./pages/NewProduct";
 import SalesReportDetail from "./pages/SalesReportDetail";
 import InventoryCount from "./pages/InventoryCount";
 import OrderDashboard from "./pages/OrderDashboard";
+import ErkhetAuto from "./pages/ErkhetAuto";
 
 // Permissions → route mapping (Shell-ийн navItems-тай дараалал таарна)
 export const PAGE_ROUTES: { key: string; path: string }[] = [
@@ -40,6 +41,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "new_product",         path: "/new-product" },
   { key: "sales_report",        path: "/sales-report-detail" },
   { key: "inventory_count",     path: "/inventory-count" },
+  { key: "erkhet_auto",         path: "/erkhet-auto" },
 ];
 
 // Permissions-аас эхний зөвшөөрөгдсөн хуудасны замыг олно
@@ -77,6 +79,7 @@ export default function App() {
       new_product:  ["admin", "supervisor", "manager"],
       sales_report:    ["admin", "supervisor", "manager", "accountant"],
       inventory_count: ["admin", "supervisor", "manager"],
+      erkhet_auto:     ["admin", "supervisor"],
       kpi_checklist:["admin", "supervisor", "manager", "warehouse_clerk", "accountant"],
       kpi_approvals:["admin", "supervisor", "manager", "warehouse_clerk", "accountant"],
     };
@@ -143,6 +146,10 @@ export default function App() {
                 <Route
                   path="/inventory-count"
                   element={can("inventory_count") ? <InventoryCount /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/erkhet-auto"
+                  element={can("erkhet_auto") ? <ErkhetAuto /> : <DefaultRedirect />}
                 />
                 <Route path="*" element={<DefaultRedirect />} />
               </Routes>

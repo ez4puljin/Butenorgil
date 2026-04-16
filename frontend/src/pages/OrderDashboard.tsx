@@ -116,12 +116,9 @@ export default function OrderDashboard() {
   const load = async () => {
     setLoading(true); setLoadError(null);
     try {
-      const [dashRes, vehRes] = await Promise.all([
-        api.get(`/purchase-orders/${id}/dashboard`),
-        api.get("/logistics/vehicles").catch(() => ({ data: [] })),
-      ]);
+      const dashRes = await api.get(`/purchase-orders/${id}/dashboard`);
       setData(dashRes.data);
-      setVehicles(vehRes.data.filter((v: any) => v.is_active));
+      setVehicles(dashRes.data.available_vehicles ?? []);
     } catch (e: any) {
       setData(null);
       setLoadError(e?.response?.data?.detail ?? "Dashboard ачаалахад алдаа гарлаа");

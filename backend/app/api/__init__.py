@@ -13,3 +13,4 @@ from app.api.kpi import router as kpi_router
 from app.api.new_product import router as new_product_router
 from app.api.sales_report import router as sales_report_router
 from app.api.inventory_count import router as inventory_count_router
+from app.api.erkhet_auto import router as erkhet_auto_router

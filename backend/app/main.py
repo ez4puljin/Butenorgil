@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -43,8 +43,8 @@ def ensure_users_schema():
             conn.execute(text("UPDATE users SET base_role = role WHERE base_role = '' OR base_role IS NULL"))
 
 _ROLE_PERMISSIONS = {
-    "admin":           "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,admin_panel,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count",
-    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count",
+    "admin":           "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,admin_panel,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto",
+    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto",
     "manager":         "dashboard,imports,reports,order,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count",
     "warehouse_clerk": "order,calendar,kpi_checklist,kpi_approvals",
     "accountant":      "dashboard,reports,accounts_receivable,order,calendar,kpi_checklist,kpi_approvals,sales_report",
@@ -359,6 +359,7 @@ app.include_router(kpi_router)
 app.include_router(new_product_router)
 app.include_router(sales_report_router)
 app.include_router(inventory_count_router)
+app.include_router(erkhet_auto_router)
 
 @app.get("/health")
 def health():

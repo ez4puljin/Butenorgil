@@ -24,11 +24,14 @@ interface Props {
   orderDate: string;
   brands: string[];
   onClose: () => void;
+  brandFilter?: string; // Brand mode-д зөвхөн энэ бренд
 }
 
-const STORAGE_KEY = "pdf_export_v1";
+const STORAGE_KEY = "pdf_export_v2"; // v2: per-template storage
 
-function loadSaved(): { template: TemplateKey; header: PDFHeader } | null {
+type PerTemplateData = Record<TemplateKey, PDFHeader>;
+
+function loadSaved(): { template: TemplateKey; headers: Partial<PerTemplateData> } | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
@@ -38,9 +41,11 @@ function loadSaved(): { template: TemplateKey; header: PDFHeader } | null {
   }
 }
 
-export default function PDFExportModal({ orderId, orderDate, brands, onClose }: Props) {
+export default function PDFExportModal({ orderId, orderDate, brands, onClose, brandFilter }: Props) {
   const [templates, setTemplates] = useState<Record<TemplateKey, PDFHeader> | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateKey>("buten_orgil");
+  // Per-template saved headers
+  const [savedHeaders, setSavedHeaders] = useState<Partial<PerTemplateData>>({});
   const [header, setHeader] = useState<PDFHeader>({
     company_name: "",
     address: "",
@@ -49,47 +54,66 @@ export default function PDFExportModal({ orderId, orderDate, brands, onClose }: 
     driver: "",
     extra_note: "",
   });
-  const [selectedBrand, setSelectedBrand] = useState<string>("");
+  const [selectedBrand, setSelectedBrand] = useState<string>(brandFilter ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const backdropRef = useRef<HTMLDivElement>(null);
 
-  // Load templates then restore saved state (or use template defaults)
+  // Load templates then restore saved state
   useEffect(() => {
     api.get("/purchase-orders/pdf-templates").then((res) => {
       setTemplates(res.data);
       const saved = loadSaved();
-      if (saved?.header?.company_name) {
-        // Restore last used values
-        setSelectedTemplate(saved.template ?? "buten_orgil");
-        setHeader(saved.header);
+      const lastTemplate = saved?.template ?? "buten_orgil";
+      const allHeaders = saved?.headers ?? {};
+      setSavedHeaders(allHeaders);
+      setSelectedTemplate(lastTemplate);
+
+      // Restore the last used header for this template
+      const savedH = allHeaders[lastTemplate];
+      if (savedH?.company_name) {
+        setHeader(savedH);
       } else {
-        // First time: use default template
-        const tpl = res.data["buten_orgil"] as PDFHeader;
+        const tpl = res.data[lastTemplate] as PDFHeader;
         if (tpl) setHeader({ ...tpl, truck_location: "", driver: "", extra_note: "" });
       }
       setReady(true);
     });
   }, []);
 
-  // Persist to localStorage whenever values change (after initial load)
+  // Persist to localStorage whenever values change
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ template: selectedTemplate, header }));
+    const updated = { ...savedHeaders, [selectedTemplate]: header };
+    setSavedHeaders(updated);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ template: selectedTemplate, headers: updated }));
   }, [header, selectedTemplate, ready]);
 
-  // When template button clicked: update company/address/phone, keep truck/driver/note
+  // When template button clicked: save current header, switch to other template's saved header
   const handleTemplateChange = (key: TemplateKey) => {
+    if (key === selectedTemplate) return;
+    // Save current before switching
+    const updated = { ...savedHeaders, [selectedTemplate]: header };
+    setSavedHeaders(updated);
+
     setSelectedTemplate(key);
-    if (!templates) return;
-    const tpl = templates[key];
-    setHeader((prev) => ({
-      ...prev,
-      company_name: tpl.company_name,
-      address: tpl.address,
-      phone: tpl.phone,
-    }));
+
+    // Restore saved header for the new template, or use API defaults
+    const savedH = updated[key];
+    if (savedH?.company_name) {
+      setHeader(savedH);
+    } else if (templates) {
+      const tpl = templates[key];
+      setHeader({
+        company_name: tpl.company_name,
+        address: tpl.address,
+        phone: tpl.phone,
+        truck_location: "",
+        driver: "",
+        extra_note: "",
+      });
+    }
   };
 
   const handleExport = async () => {
@@ -155,35 +179,44 @@ export default function PDFExportModal({ orderId, orderDate, brands, onClose }: 
         </div>
 
         <div className="space-y-4 px-6 py-5">
-          {/* Brand selector */}
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-600">Брэнд сонгох</label>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                onClick={() => setSelectedBrand("")}
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                  selectedBrand === ""
-                    ? "border-[#0071E3] bg-[#0071E3] text-white"
-                    : "border-gray-200 text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                Бүгд
-              </button>
-              {brands.map((b) => (
+          {/* Brand selector — hidden in brand mode */}
+          {brandFilter ? (
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-gray-600">Бренд:</label>
+              <span className="rounded-full border border-[#0071E3] bg-[#0071E3] px-3 py-1 text-xs font-medium text-white">
+                {brandFilter}
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-600">Брэнд сонгох</label>
+              <div className="flex flex-wrap gap-1.5">
                 <button
-                  key={b}
-                  onClick={() => setSelectedBrand(b === selectedBrand ? "" : b)}
+                  onClick={() => setSelectedBrand("")}
                   className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                    selectedBrand === b
+                    selectedBrand === ""
                       ? "border-[#0071E3] bg-[#0071E3] text-white"
                       : "border-gray-200 text-gray-600 hover:bg-gray-50"
                   }`}
                 >
-                  {b}
+                  Бүгд
                 </button>
-              ))}
+                {brands.map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => setSelectedBrand(b === selectedBrand ? "" : b)}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                      selectedBrand === b
+                        ? "border-[#0071E3] bg-[#0071E3] text-white"
+                        : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Template selector */}
           <div className="flex flex-col gap-1">

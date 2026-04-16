@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.api.deps import get_db, get_current_user, require_role, parse_tag_ids
 from app.models.purchase_order import (
@@ -87,17 +88,50 @@ def _serialize_order_detail(
 ) -> dict:
     """Full detail including product info for each line.
     If filter_tag_ids is provided, only lines whose product belongs to those warehouses are returned.
-    Uses a single bulk query for products to avoid N+1.
+    Uses SQL queries instead of lazy-loading 10K+ lines into memory.
     """
-    base = _serialize_order(o, db)
+    # Use SQL aggregate for base stats (don't lazy-load o.lines for summary)
+    agg = db.query(
+        func.count(PurchaseOrderLine.id),
+        func.sum(PurchaseOrderLine.order_qty_box),
+        func.sum(PurchaseOrderLine.computed_weight),
+    ).filter(PurchaseOrderLine.purchase_order_id == o.id).first()
 
-    # Bulk load all products for this order in one query
-    product_ids = [l.product_id for l in o.lines]
-    products = db.query(Product).filter(Product.id.in_(product_ids)).all()
+    creator = db.query(User).filter(User.id == o.created_by_user_id).first()
+    vehicle = db.query(Vehicle).filter(Vehicle.id == o.vehicle_id).first() if o.vehicle_id else None
+
+    base = {
+        "id": o.id,
+        "order_date": o.order_date.isoformat(),
+        "status": o.status,
+        "status_label": STATUS_LABEL.get(o.status, o.status),
+        "created_by_username": creator.username if creator else "",
+        "line_count": agg[0] or 0,
+        "total_boxes": round(float(agg[1] or 0), 2),
+        "total_weight": round(float(agg[2] or 0), 2),
+        "created_at": o.created_at.isoformat() if o.created_at else None,
+        "vehicle_id": o.vehicle_id,
+        "vehicle_name": f"{vehicle.name} ({vehicle.plate})" if vehicle else None,
+        "notes": o.notes or "",
+    }
+
+    # Load lines via explicit query (NOT lazy o.lines which loads ALL 10K+ rows)
+    # For preparing stage: load all lines (user needs to enter quantities for any product)
+    # For other stages: only load lines with order_qty_box > 0 (or supplier_qty > 0 for cancelled tracking)
+    lines_q = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == o.id)
+    if o.status not in ("preparing",):
+        lines_q = lines_q.filter(
+            (PurchaseOrderLine.order_qty_box > 0) | (PurchaseOrderLine.supplier_qty_box > 0)
+        )
+    all_lines = lines_q.all()
+
+    # Bulk load products
+    product_ids = [l.product_id for l in all_lines]
+    products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
     product_map = {p.id: p for p in products}
 
     lines_out = []
-    for l in o.lines:
+    for l in all_lines:
         p = product_map.get(l.product_id)
         if not p:
             continue
@@ -149,9 +183,12 @@ def _serialize_order_detail(
     bvs = db.query(PurchaseOrderBrandVehicle).filter(
         PurchaseOrderBrandVehicle.purchase_order_id == o.id
     ).all()
+    # Bulk load vehicles for brand-vehicle assignments
+    bv_vehicle_ids = {bv.vehicle_id for bv in bvs if bv.vehicle_id}
+    bv_vehicles = {v.id: v for v in db.query(Vehicle).filter(Vehicle.id.in_(bv_vehicle_ids)).all()} if bv_vehicle_ids else {}
     bv_out = []
     for bv in bvs:
-        vehicle = db.query(Vehicle).filter(Vehicle.id == bv.vehicle_id).first() if bv.vehicle_id else None
+        vehicle = bv_vehicles.get(bv.vehicle_id)
         bv_out.append({
             "brand": bv.brand,
             "vehicle_id": bv.vehicle_id,
@@ -220,9 +257,15 @@ def get_order_dashboard(
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
 
-    # Bulk load products
-    product_ids = [l.product_id for l in po.lines]
-    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()}
+    # Load only active lines (NOT lazy po.lines which loads ALL 10K+ rows)
+    active_lines = db.query(PurchaseOrderLine).filter(
+        PurchaseOrderLine.purchase_order_id == order_id,
+        (PurchaseOrderLine.order_qty_box > 0) | (PurchaseOrderLine.supplier_qty_box > 0)
+    ).all()
+
+    # Bulk load products for active lines only
+    product_ids = [l.product_id for l in active_lines]
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
 
     # All shipments + shipment lines for this PO
     shipments = db.query(POShipment).filter(POShipment.purchase_order_id == order_id).order_by(POShipment.id).all()
@@ -249,16 +292,12 @@ def get_order_dashboard(
     cancelled_lines = 0
     cancelled_brands_set: set[str] = set()
 
-    for l in po.lines:
+    for l in active_lines:
         p = products.get(l.product_id)
         if not p:
             continue
 
-        # Зөвхөн захиалга хийгдсэн (order_qty > 0) эсвэл цуцлагдсан (supplier_qty > 0 but order=0) мөрүүдийг л авна
-        # Захиалга огт хийгдээгүй (order_qty == 0 AND supplier_qty == 0) бол алгасна
         is_cancelled = l.order_qty_box == 0 and (l.supplier_qty_box or 0) > 0
-        if l.order_qty_box <= 0 and not is_cancelled:
-            continue
 
         brand = p.brand or "Брэнд байхгүй"
         if brand not in brand_data:
@@ -355,15 +394,21 @@ def get_order_dashboard(
         ).all()
     }
 
+    # Bulk load all vehicles referenced by brands
+    all_vehicle_ids: set[int] = set()
+    for bd in brand_data.values():
+        all_vehicle_ids.update(bd["vehicle_ids"])
+    for sh in shipments:
+        if sh.vehicle_id:
+            all_vehicle_ids.add(sh.vehicle_id)
+    vehicle_map = {v.id: v for v in db.query(Vehicle).filter(Vehicle.id.in_(all_vehicle_ids)).all()} if all_vehicle_ids else {}
+
     # Build brands list
-    vehicle_cache: dict[int, Vehicle] = {}
     brands_list = []
     for bd in sorted(brand_data.values(), key=lambda x: x["brand"]):
         vehicle_names = []
         for vid in bd["vehicle_ids"]:
-            if vid not in vehicle_cache:
-                vehicle_cache[vid] = db.query(Vehicle).filter(Vehicle.id == vid).first()
-            v = vehicle_cache[vid]
+            v = vehicle_map.get(vid)
             if v:
                 vehicle_names.append(f"{v.name} ({v.plate})")
 
@@ -403,14 +448,15 @@ def get_order_dashboard(
     ]
 
     # ── Shipments with per-brand breakdown ──
+    active_line_by_id = {l.id: l for l in active_lines}
     shipments_out = []
     for sh in shipments:
-        v = db.query(Vehicle).filter(Vehicle.id == sh.vehicle_id).first() if sh.vehicle_id else None
+        v = vehicle_map.get(sh.vehicle_id) if sh.vehicle_id else None
         sh_lines = [sl for sl in all_ship_lines if sl.shipment_id == sh.id]
         sh_brand_map: dict[str, dict] = {}
         total_weight = 0.0
         for sl in sh_lines:
-            pl = next((l for l in po.lines if l.id == sl.po_line_id), None)
+            pl = active_line_by_id.get(sl.po_line_id)
             if not pl:
                 continue
             p = products.get(pl.product_id)
@@ -443,7 +489,7 @@ def get_order_dashboard(
 
     # ── Unloaded pool ──
     unloaded_brands: dict[str, dict] = {}
-    for l in po.lines:
+    for l in active_lines:
         if l.order_qty_box <= 0:
             continue
         loaded = assigned_map.get(l.id, 0)
@@ -495,6 +541,10 @@ def get_order_dashboard(
             "total_remaining_boxes": round(sum(ub["total_remaining_boxes"] for ub in unloaded_list), 1),
             "total_weight": round(sum(ub["total_weight"] for ub in unloaded_list), 1),
         },
+        "available_vehicles": [
+            {"id": v.id, "name": v.name, "plate": v.plate, "is_active": v.is_active}
+            for v in db.query(Vehicle).filter(Vehicle.is_active == True).order_by(Vehicle.name).all()
+        ],
     }
 
 
@@ -694,7 +744,49 @@ def list_purchase_orders(
         q = q.filter(PurchaseOrder.order_date <= date_to)
 
     orders = q.order_by(PurchaseOrder.order_date.desc()).all()
-    return [_serialize_order(o, db) for o in orders]
+    if not orders:
+        return []
+
+    # SQL aggregate for line stats (avoids loading 100K+ lines into memory)
+    order_ids = [o.id for o in orders]
+    line_stats = {
+        row[0]: {"line_count": row[1], "total_boxes": float(row[2] or 0), "total_weight": float(row[3] or 0)}
+        for row in db.query(
+            PurchaseOrderLine.purchase_order_id,
+            func.count(PurchaseOrderLine.id),
+            func.sum(PurchaseOrderLine.order_qty_box),
+            func.sum(PurchaseOrderLine.computed_weight),
+        ).filter(
+            PurchaseOrderLine.purchase_order_id.in_(order_ids)
+        ).group_by(PurchaseOrderLine.purchase_order_id).all()
+    }
+
+    # Bulk load users + vehicles
+    user_ids = {o.created_by_user_id for o in orders if o.created_by_user_id}
+    vehicle_ids = {o.vehicle_id for o in orders if o.vehicle_id}
+    user_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+    vehicle_map = {v.id: v for v in db.query(Vehicle).filter(Vehicle.id.in_(vehicle_ids)).all()} if vehicle_ids else {}
+
+    result = []
+    for o in orders:
+        creator = user_map.get(o.created_by_user_id)
+        vehicle = vehicle_map.get(o.vehicle_id)
+        stats = line_stats.get(o.id, {"line_count": 0, "total_boxes": 0, "total_weight": 0})
+        result.append({
+            "id": o.id,
+            "order_date": o.order_date.isoformat(),
+            "status": o.status,
+            "status_label": STATUS_LABEL.get(o.status, o.status),
+            "created_by_username": creator.username if creator else "",
+            "line_count": stats["line_count"],
+            "total_boxes": round(stats["total_boxes"], 2),
+            "total_weight": round(stats["total_weight"], 2),
+            "created_at": o.created_at.isoformat() if o.created_at else None,
+            "vehicle_id": o.vehicle_id,
+            "vehicle_name": f"{vehicle.name} ({vehicle.plate})" if vehicle else None,
+            "notes": o.notes or "",
+        })
+    return result
 
 
 @router.post("")
@@ -788,10 +880,16 @@ def list_shipments_by_status(
         .all()
     )
 
+    # Bulk load POs and Vehicles to avoid N+1
+    po_ids = {sh.purchase_order_id for sh in shipments}
+    vehicle_ids = {sh.vehicle_id for sh in shipments if sh.vehicle_id}
+    po_map = {po.id: po for po in db.query(PurchaseOrder).filter(PurchaseOrder.id.in_(po_ids)).all()} if po_ids else {}
+    vehicle_bulk = {v.id: v for v in db.query(Vehicle).filter(Vehicle.id.in_(vehicle_ids)).all()} if vehicle_ids else {}
+
     # Vehicle-аар групплэх
     vehicle_groups: dict[int | None, list] = {}
     for sh in shipments:
-        po = db.query(PurchaseOrder).filter(PurchaseOrder.id == sh.purchase_order_id).first()
+        po = po_map.get(sh.purchase_order_id)
         if not po:
             continue
         data = _serialize_shipment(sh, db)
@@ -805,8 +903,7 @@ def list_shipments_by_status(
 
     result = []
     for vid, ship_list in vehicle_groups.items():
-        # Vehicle мэдээлэл
-        vehicle = db.query(Vehicle).filter(Vehicle.id == vid).first() if vid else None
+        vehicle = vehicle_bulk.get(vid) if vid else None
         all_brands: set[str] = set()
         order_ids: set[int] = set()
         total_loaded = 0.0
@@ -1169,8 +1266,13 @@ def export_excel(
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
 
-    product_ids = [l.product_id for l in po.lines]
-    products = db.query(Product).filter(Product.id.in_(product_ids)).all()
+    # Load only lines with order_qty > 0 (NOT lazy po.lines)
+    export_lines = db.query(PurchaseOrderLine).filter(
+        PurchaseOrderLine.purchase_order_id == po.id,
+        PurchaseOrderLine.order_qty_box > 0,
+    ).all()
+    product_ids = [l.product_id for l in export_lines]
+    products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
     product_map = {p.id: p for p in products}
 
     wb = Workbook()
@@ -1192,9 +1294,9 @@ def export_excel(
 
     # Data rows sorted by brand, item_code
     lines_data = []
-    for l in po.lines:
+    for l in export_lines:
         p = product_map.get(l.product_id)
-        if not p or l.order_qty_box <= 0:
+        if not p:
             continue
         diff = round((l.loaded_qty_box or 0) - (l.received_qty_box or 0), 2)
         lines_data.append([
@@ -1252,8 +1354,13 @@ def export_erp_excel(
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
 
-    product_ids = [l.product_id for l in po.lines]
-    products = db.query(Product).filter(Product.id.in_(product_ids)).all()
+    # Load only received lines (NOT lazy po.lines)
+    recv_lines = db.query(PurchaseOrderLine).filter(
+        PurchaseOrderLine.purchase_order_id == po.id,
+        PurchaseOrderLine.received_qty_box > 0,
+    ).all()
+    product_ids = [l.product_id for l in recv_lines]
+    products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
     product_map = {p.id: p for p in products}
 
     # Parse date
@@ -1285,10 +1392,14 @@ def export_erp_excel(
         c.alignment = Alignment(horizontal="center")
 
     # ── Build data rows ──
-    # Only lines with received_qty_box > 0, sorted by brand then item_code
+    # Only lines with received_qty_box > 0 (SQL filter instead of lazy load)
     brand_filter = (body.brand_filter or "").strip()
+    erp_lines = db.query(PurchaseOrderLine).filter(
+        PurchaseOrderLine.purchase_order_id == po.id,
+        PurchaseOrderLine.received_qty_box > 0,
+    ).all()
     valid = []
-    for line in po.lines:
+    for line in erp_lines:
         if not (line.received_qty_box and line.received_qty_box > 0):
             continue
         p = product_map.get(line.product_id)
@@ -1406,16 +1517,20 @@ def _build_pdf(po: PurchaseOrder, body: PDFHeaderIn, db: Session) -> bytes:
 
     generated_at = datetime.now().strftime("%Y/%m/%d %H:%M")
 
-    # Gather lines with qty > 0, grouped by brand
-    product_ids = [l.product_id for l in po.lines]
-    products = db.query(Product).filter(Product.id.in_(product_ids)).all()
+    # Gather lines with qty > 0, grouped by brand (SQL filter instead of lazy load)
+    active_lines = db.query(PurchaseOrderLine).filter(
+        PurchaseOrderLine.purchase_order_id == po.id,
+        PurchaseOrderLine.order_qty_box > 0,
+    ).all()
+    product_ids = [l.product_id for l in active_lines]
+    products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
     product_map = {p.id: p for p in products}
 
     grouped: dict[str, list[dict]] = {}
     total_boxes = 0.0
     total_weight = 0.0
     brand_filter = (body.brand_filter or "").strip()
-    for l in po.lines:
+    for l in active_lines:
         if l.order_qty_box <= 0:
             continue
         p = product_map.get(l.product_id)

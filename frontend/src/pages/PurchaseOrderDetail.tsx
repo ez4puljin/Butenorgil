@@ -1641,6 +1641,7 @@ export default function PurchaseOrderDetail() {
           orderDate={order.order_date.replaceAll("-", "/")}
           brands={[...new Set(order.lines.filter(l => (l.order_qty_box ?? 0) > 0).map(l => l.brand))].filter(Boolean).sort()}
           onClose={() => setShowPDFModal(false)}
+          brandFilter={brandFilter ?? undefined}
         />
       )}
 
