@@ -13,6 +13,9 @@ import {
   Calendar,
   ArrowRight,
   Save,
+  Search,
+  Archive,
+  ArchiveRestore,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -95,11 +98,26 @@ export default function PurchaseOrderList() {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createForm, setCreateForm] = useState({
+  const [createForm, setCreateForm] = useState<{
+    order_date: string;
+    notes: string;
+    mode: "all" | "brands";
+    brands: string[];
+  }>({
     order_date: new Date().toISOString().slice(0, 10),
     notes: "",
+    mode: "all",
+    brands: [],
   });
   const [creating, setCreating] = useState(false);
+
+  // Brand list for the "Сонгосон бренд" mode
+  const [allBrands, setAllBrands] = useState<string[]>([]);
+  const [brandSearch, setBrandSearch] = useState("");
+  const [brandsLoaded, setBrandsLoaded] = useState(false);
+
+  // Archive view toggle (admin/manager/supervisor)
+  const [archiveMode, setArchiveMode] = useState<"false" | "only">("false");
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   // ── Shipment-төвтэй view (transit/arrived tab) state ──
@@ -123,6 +141,7 @@ export default function PurchaseOrderList() {
     try {
       const params: Record<string, string> = {};
       if (activeTab) params.status = activeTab;
+      params.archived = archiveMode;
       const res = await api.get("/purchase-orders", { params });
       store.setOrders(res.data);
     } finally {
@@ -278,19 +297,31 @@ export default function PurchaseOrderList() {
   useEffect(() => {
     if (isShipmentView) loadShipments();
     else loadOrders();
-  }, [activeTab]);
+  }, [activeTab, archiveMode]);
 
   const createOrder = async () => {
     if (!createForm.order_date) {
       flash("Огноо сонгоно уу", false);
       return;
     }
+    if (createForm.mode === "brands" && createForm.brands.length === 0) {
+      flash("Ядаж нэг бренд сонгоно уу", false);
+      return;
+    }
     setCreating(true);
     try {
-      const res = await api.post("/purchase-orders", createForm);
+      const payload: any = {
+        order_date: createForm.order_date,
+        notes: createForm.notes,
+      };
+      if (createForm.mode === "brands" && createForm.brands.length > 0) {
+        payload.brands = createForm.brands;
+      }
+      const res = await api.post("/purchase-orders", payload);
       flash(`Захиалга үүслээ — ${res.data.line_count} бараа нэмэгдлээ`);
       setShowCreateModal(false);
-      setCreateForm({ order_date: new Date().toISOString().slice(0, 10), notes: "" });
+      setCreateForm({ order_date: new Date().toISOString().slice(0, 10), notes: "", mode: "all", brands: [] });
+      setBrandSearch("");
       await loadOrders();
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
@@ -299,30 +330,50 @@ export default function PurchaseOrderList() {
     }
   };
 
+  const archiveOrder = async (id: number, archive: boolean) => {
+    if (!confirm(archive ? "Захиалгыг архивлах уу?" : "Архиваас буцаах уу?")) return;
+    try {
+      await api.patch(`/purchase-orders/${id}/archive`, { archived: archive });
+      flash(archive ? "Архивлагдлаа" : "Архиваас буцаагдлаа");
+      await loadOrders();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
+    }
+  };
+
+  const loadBrandsIfNeeded = async () => {
+    if (brandsLoaded) return;
+    try {
+      const r = await api.get("/products/all-brands");
+      setAllBrands(r.data);
+      setBrandsLoaded(true);
+    } catch {}
+  };
+
   const filtered: POSummary[] = store.orders;
 
   const canCreate = role === "manager" || role === "admin" || role === "supervisor";
 
   return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="overflow-x-hidden">
       {/* ── Header ── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900 sm:text-2xl">Захиалга</h1>
-          <p className="mt-0.5 text-sm text-gray-500">Захиалгын жагсаалт ба статус хяналт</p>
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Захиалга</h1>
+          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Захиалгын жагсаалт ба статус хяналт</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Master status */}
           {store.masterExists === true && (
-            <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700">
-              <CheckCircle2 size={13} />
+            <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-100">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"/>
               Master бэлэн
             </div>
           )}
           {store.masterExists === false && (
-            <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
-              <AlertTriangle size={13} />
+            <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-100">
+              <AlertTriangle size={11} />
               Master байхгүй
             </div>
           )}
@@ -336,14 +387,15 @@ export default function PurchaseOrderList() {
                 }
                 setShowCreateModal(true);
               }}
-              className={`inline-flex items-center gap-2 rounded-apple px-4 py-2 text-sm text-white ${
+              className={`inline-flex h-10 items-center gap-2 rounded-apple px-4 text-sm font-semibold text-white shadow-sm transition-colors ${
                 store.masterExists === false
                   ? "cursor-not-allowed bg-gray-400"
-                  : "bg-[#0071E3] hover:opacity-90"
+                  : "bg-[#0071E3] hover:bg-[#005BB5] active:bg-[#004aad]"
               }`}
             >
-              <Plus size={15} />
-              Шинэ захиалга
+              <Plus size={16} />
+              <span className="hidden sm:inline">Шинэ захиалга</span>
+              <span className="sm:hidden">Шинэ</span>
             </button>
           )}
         </div>
@@ -526,18 +578,44 @@ export default function PurchaseOrderList() {
            ЗАХИАЛГА-ТӨВТЭЙ VIEW (бусад tab-ууд)
          ═════════════════════════════════════════════════════════════ */}
       {!isShipmentView && (
-      <div className="mt-4 rounded-apple bg-white shadow-sm">
+      <div className="mt-4 rounded-apple bg-white shadow-sm ring-1 ring-gray-100">
         {/* Toolbar */}
-        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-          <span className="text-sm text-gray-500">{filtered.length} захиалга</span>
-          <button
-            onClick={loadOrders}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 rounded-apple border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
-          >
-            <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-            Шинэчлэх
-          </button>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 px-3 py-2.5 sm:px-4 sm:py-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs font-medium text-gray-600 sm:text-sm">
+              <span className="tabular-nums text-gray-900">{filtered.length}</span> захиалга
+            </span>
+            {archiveMode === "only" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-100">
+                <Archive size={10}/> Архив
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {(role === "admin" || role === "manager" || role === "supervisor") && (
+              <button
+                onClick={() => setArchiveMode(m => m === "only" ? "false" : "only")}
+                className={`inline-flex h-9 items-center gap-1.5 rounded-apple border px-2.5 text-[11px] font-medium sm:text-xs ${
+                  archiveMode === "only"
+                    ? "border-amber-300 bg-amber-50 text-amber-700"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50 active:bg-gray-100"
+                }`}
+              >
+                {archiveMode === "only" ? <ArchiveRestore size={13}/> : <Archive size={13}/>}
+                <span className="hidden sm:inline">{archiveMode === "only" ? "Үндсэн жагсаалт" : "Архив харах"}</span>
+                <span className="sm:hidden">{archiveMode === "only" ? "Үндсэн" : "Архив"}</span>
+              </button>
+            )}
+            <button
+              onClick={loadOrders}
+              disabled={loading}
+              aria-label="Шинэчлэх"
+              className="inline-flex h-9 items-center gap-1.5 rounded-apple border border-gray-200 bg-white px-2.5 text-[11px] font-medium text-gray-600 hover:bg-gray-50 active:bg-gray-100 sm:text-xs"
+            >
+              <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+              <span className="hidden sm:inline">Шинэчлэх</span>
+            </button>
+          </div>
         </div>
 
         {filtered.length === 0 && !loading ? (
@@ -551,35 +629,49 @@ export default function PurchaseOrderList() {
               {filtered.map((o) => {
                 const stColor = STATUS_COLOR[o.status] ?? "bg-gray-100 text-gray-600";
                 return (
-                  <div
+                  <button
                     key={o.id}
+                    type="button"
                     onClick={() => navigate(`/order/${o.id}/dashboard`)}
-                    className="cursor-pointer px-4 py-3.5 active:bg-gray-50"
+                    className="block w-full text-left px-4 py-3.5 transition-colors active:bg-gray-50"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="text-base font-semibold text-gray-900">
-                        {o.order_date.replaceAll("-", "/")}
-                      </span>
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${stColor}`}>
-                        {o.status_label}
-                      </span>
-                    </div>
-                    <div className="mt-1.5 flex items-center justify-between text-xs text-gray-500">
-                      <span>{o.created_by_username}</span>
-                      <span>
-                        {o.line_count} бараа · {o.total_boxes.toFixed(0)} хайрцаг ·{" "}
-                        {o.total_weight.toFixed(1)} кг
-                      </span>
-                    </div>
-                    {o.vehicle_name && (
-                      <div className="mt-1 flex items-center gap-1 text-xs text-blue-500">
-                        <Truck size={11} /> {o.vehicle_name}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-lg font-bold tabular-nums tracking-tight text-gray-900 leading-none">
+                          {o.order_date.replaceAll("-", "/")}
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-400">
+                          #{o.id} · {o.created_by_username}
+                        </div>
                       </div>
-                    )}
-                    <div className="mt-1.5 flex justify-end">
-                      <ChevronRight size={14} className="text-gray-300" />
+                      <div className="flex items-center gap-1">
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ring-black/5 ${stColor}`}>
+                          <span className="h-1.5 w-1.5 rounded-full bg-current opacity-60"/>
+                          {o.status_label}
+                        </span>
+                        <ChevronRight size={15} className="text-gray-300 shrink-0" />
+                      </div>
                     </div>
-                  </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-500">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="font-semibold text-gray-700 tabular-nums">{o.line_count}</span>
+                        бараа
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="font-semibold text-gray-700 tabular-nums">{o.total_boxes.toFixed(0)}</span>
+                        хайрцаг
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="font-semibold text-gray-700 tabular-nums">{o.total_weight.toFixed(1)}</span>
+                        кг
+                      </span>
+                      {o.vehicle_name && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-100">
+                          <Truck size={10} /> {o.vehicle_name}
+                        </span>
+                      )}
+                    </div>
+                  </button>
                 );
               })}
             </div>
@@ -634,8 +726,19 @@ export default function PurchaseOrderList() {
                           {o.notes || <span className="text-gray-300">—</span>}
                         </td>
                         <td className="px-5 py-3.5 text-gray-500">{o.created_by_username}</td>
-                        <td className="px-5 py-3.5 text-gray-300">
-                          <ChevronRight size={16} />
+                        <td className="px-5 py-3.5">
+                          <div className="flex items-center gap-1">
+                            {(role === "admin" || role === "manager" || role === "supervisor") && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); archiveOrder(o.id, !(o as any).is_archived); }}
+                                title={(o as any).is_archived ? "Архиваас буцаах" : "Архивлах"}
+                                className="rounded-md p-1 text-gray-300 hover:bg-amber-50 hover:text-amber-600"
+                              >
+                                {(o as any).is_archived ? <ArchiveRestore size={14}/> : <Archive size={14}/>}
+                              </button>
+                            )}
+                            <ChevronRight size={16} className="text-gray-300" />
+                          </div>
                         </td>
                       </tr>
                     );
@@ -650,56 +753,144 @@ export default function PurchaseOrderList() {
 
       {/* ── Create modal ── */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center sm:p-4">
-          <div className="w-full max-w-sm rounded-t-2xl bg-white p-6 shadow-xl sm:rounded-apple">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">Шинэ захиалга үүсгэх</h2>
-              <button onClick={() => setShowCreateModal(false)} className="text-gray-400 hover:text-gray-700">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-4">
+          <div className="flex w-full max-w-md max-h-[92vh] flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl sm:rounded-apple"
+               style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+            {/* Grabber (mobile bottom sheet) */}
+            <div className="flex justify-center py-2 sm:hidden">
+              <div className="h-1 w-10 rounded-full bg-gray-300"/>
+            </div>
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 sm:px-6 sm:py-4">
+              <h2 className="text-base font-semibold text-gray-900 sm:text-lg">Шинэ захиалга үүсгэх</h2>
+              <button onClick={() => setShowCreateModal(false)} className="grid h-9 w-9 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700">
                 <X size={18} />
               </button>
             </div>
 
-            {store.masterExists && store.masterUpdatedAt && (
-              <div className="mt-3 flex items-center gap-1.5 rounded-apple bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                <CheckCircle2 size={13} />
-                Master:{" "}
-                {new Date(store.masterUpdatedAt).toLocaleString("mn-MN")}
-              </div>
-            )}
+            <div className="flex-1 overflow-y-auto px-5 py-4 sm:px-6 space-y-4">
+              {store.masterExists && store.masterUpdatedAt && (
+                <div className="flex items-center gap-1.5 rounded-apple bg-emerald-50 px-3 py-2 text-xs text-emerald-700 ring-1 ring-inset ring-emerald-100">
+                  <CheckCircle2 size={13} />
+                  Master: {new Date(store.masterUpdatedAt).toLocaleString("mn-MN")}
+                </div>
+              )}
 
-            <div className="mt-4 space-y-3">
               <div>
-                <label className="mb-1 block text-xs text-gray-500">Захиалгын огноо</label>
+                <label className="mb-1.5 block text-xs font-semibold text-gray-600">Захиалгын огноо</label>
                 <input
                   type="date"
                   value={createForm.order_date}
                   onChange={(e) => setCreateForm((f) => ({ ...f, order_date: e.target.value }))}
-                  className="w-full rounded-apple border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#0071E3]"
+                  className="w-full rounded-apple border border-gray-200 px-3 py-2.5 text-base outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15"
                 />
               </div>
+
+              {/* Mode toggle */}
               <div>
-                <label className="mb-1 block text-xs text-gray-500">Тэмдэглэл</label>
+                <label className="mb-1.5 block text-xs font-semibold text-gray-600">Бараа дуудах горим</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setCreateForm(f => ({ ...f, mode: "all" }))}
+                    className={`flex-1 rounded-apple border py-2.5 text-xs font-semibold transition-colors ${
+                      createForm.mode === "all"
+                        ? "border-[#0071E3] bg-[#0071E3] text-white shadow-sm"
+                        : "border-gray-200 bg-white text-gray-700 active:bg-gray-50"
+                    }`}
+                  >
+                    Нэгдсэн захиалга
+                  </button>
+                  <button
+                    onClick={() => { setCreateForm(f => ({ ...f, mode: "brands" })); loadBrandsIfNeeded(); }}
+                    className={`flex-1 rounded-apple border py-2.5 text-xs font-semibold transition-colors ${
+                      createForm.mode === "brands"
+                        ? "border-[#0071E3] bg-[#0071E3] text-white shadow-sm"
+                        : "border-gray-200 bg-white text-gray-700 active:bg-gray-50"
+                    }`}
+                  >
+                    Сонгосон бренд
+                  </button>
+                </div>
+                <p className="mt-1.5 text-[11px] text-gray-400">
+                  {createForm.mode === "all"
+                    ? "Бүх брэнд, бүх бараа нэг захиалгад ачаалагдана."
+                    : "Зөвхөн сонгосон брэндүүдийн бараа ачаалагдана."}
+                </p>
+              </div>
+
+              {/* Brand picker */}
+              {createForm.mode === "brands" && (
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold text-gray-600">
+                    Брэнд сонгох <span className="text-gray-300 font-normal">({createForm.brands.length} сонгосон)</span>
+                  </label>
+                  <div className="flex items-center gap-2 rounded-apple border border-gray-200 bg-white px-3 py-2.5">
+                    <Search size={14} className="text-gray-400"/>
+                    <input
+                      value={brandSearch}
+                      onChange={e => setBrandSearch(e.target.value)}
+                      placeholder="Брэнд хайх..."
+                      className="flex-1 bg-transparent text-base outline-none sm:text-sm"
+                    />
+                  </div>
+                  {createForm.brands.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {createForm.brands.map(b => (
+                        <span key={b} className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                          {b}
+                          <button
+                            onClick={() => setCreateForm(f => ({ ...f, brands: f.brands.filter(x => x !== b) }))}
+                            className="hover:text-blue-900"
+                          >
+                            <X size={10}/>
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-2 max-h-48 overflow-y-auto rounded-apple border border-gray-100 bg-gray-50/50 p-1">
+                    {allBrands
+                      .filter(b => !createForm.brands.includes(b))
+                      .filter(b => !brandSearch.trim() || b.toLowerCase().includes(brandSearch.toLowerCase()))
+                      .slice(0, 50)
+                      .map(b => (
+                        <button
+                          key={b}
+                          onClick={() => setCreateForm(f => ({ ...f, brands: [...f.brands, b] }))}
+                          className="block w-full rounded px-2 py-1 text-left text-xs text-gray-700 hover:bg-white"
+                        >
+                          {b}
+                        </button>
+                      ))}
+                    {allBrands.length === 0 && (
+                      <div className="px-2 py-3 text-center text-xs text-gray-400">Брэнд байхгүй</div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-gray-600">Тэмдэглэл</label>
                 <textarea
                   value={createForm.notes}
                   onChange={(e) => setCreateForm((f) => ({ ...f, notes: e.target.value }))}
                   rows={2}
-                  className="w-full rounded-apple border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#0071E3]"
+                  className="w-full rounded-apple border border-gray-200 px-3 py-2.5 text-base outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15 sm:text-sm"
                   placeholder="Нэмэлт тэмдэглэл..."
                 />
               </div>
             </div>
 
-            <div className="mt-5 flex justify-end gap-2">
+            <div className="flex flex-col-reverse gap-2 border-t border-gray-100 px-5 py-3 sm:flex-row sm:justify-end sm:px-6">
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="rounded-apple border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                className="h-11 rounded-apple border border-gray-200 bg-white px-4 text-sm font-medium text-gray-700 hover:bg-gray-50 active:bg-gray-100"
               >
                 Болих
               </button>
               <button
                 onClick={createOrder}
                 disabled={creating}
-                className="inline-flex items-center gap-2 rounded-apple bg-[#0071E3] px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-apple bg-[#0071E3] px-4 text-sm font-semibold text-white shadow-sm hover:bg-[#005BB5] active:bg-[#004aad] disabled:opacity-50"
               >
                 {creating && <RefreshCw size={14} className="animate-spin" />}
                 Үүсгэх

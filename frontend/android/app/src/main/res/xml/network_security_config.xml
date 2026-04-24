@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Cleartext (HTTP) traffic-ийг бүх домэйнд зөвшөөрнө. LAN дах backend (жишээ:
+         192.168.x.x:8000) руу хандах бол хэрэгтэй. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

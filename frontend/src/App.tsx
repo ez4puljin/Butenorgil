@@ -7,6 +7,7 @@ import Dashboard from "./pages/Dashboard";
 import Imports from "./pages/Imports";
 import Reports from "./pages/Reports";
 import Admin from "./pages/Admin";
+import AdminMinStock from "./pages/AdminMinStock";
 import ManagerOrders from "./pages/ManagerOrders";
 import OrderSupervisor from "./pages/OrderSupervisor";
 import AccountsReceivable from "./pages/AccountsReceivable";
@@ -23,6 +24,12 @@ import SalesReportDetail from "./pages/SalesReportDetail";
 import InventoryCount from "./pages/InventoryCount";
 import OrderDashboard from "./pages/OrderDashboard";
 import ErkhetAuto from "./pages/ErkhetAuto";
+import ReceivingList from "./pages/ReceivingList";
+import ReceivingDetail from "./pages/ReceivingDetail";
+import ServerConfig from "./pages/ServerConfig";
+import { useEffect, useState } from "react";
+import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
+import { setApiBaseUrl } from "./lib/api";
 
 // Permissions → route mapping (Shell-ийн navItems-тай дараалал таарна)
 export const PAGE_ROUTES: { key: string; path: string }[] = [
@@ -66,6 +73,30 @@ export default function App() {
   const { role, baseRole, permissions } = useAuthStore();
   const br = baseRole ?? role ?? "";
 
+  // Native app (APK) — localStorage-г sync уншина. Background-т Preferences-ээс survive-ийг шалгана.
+  const native = (() => { try { return isNativeApp(); } catch { return false; } })();
+  const [hasServer, setHasServer] = useState<boolean>(!!getServerUrlSync());
+  useEffect(() => {
+    // Axios baseURL synchronously suulgah (if have saved URL)
+    const saved = getServerUrlSync();
+    if (saved) {
+      try { setApiBaseUrl(saved); } catch {}
+    }
+    if (!native) return;
+    // Preferences (reinstall survival) background check — non-blocking
+    (async () => {
+      try {
+        const url = await bootstrapServerUrlIntoLocalStorage();
+        if (url && !saved) {
+          try { setApiBaseUrl(url); } catch {}
+          setHasServer(true);
+        }
+      } catch (e) {
+        console.error("bootstrap error", e);
+      }
+    })();
+  }, [native]);
+
   // Page access: permissions array (from role DB) эсвэл baseRole fallback (хуучин session)
   const can = (pageKey: string) => {
     if (permissions.length > 0) return permissions.includes(pageKey);
@@ -86,8 +117,18 @@ export default function App() {
     return fallback[pageKey]?.includes(br) ?? true;
   };
 
+  // Native app дотор server URL байхгүй бол → ServerConfig
+  if (native && !hasServer) {
+    return (
+      <Routes>
+        <Route path="*" element={<ServerConfig />} />
+      </Routes>
+    );
+  }
+
   return (
     <Routes>
+      <Route path="/server-config" element={<ServerConfig />} />
       <Route path="/login" element={<Login />} />
 
       <Route
@@ -112,6 +153,8 @@ export default function App() {
                 />
                 <Route path="/order/:id/dashboard" element={<OrderDashboard />} />
                 <Route path="/order/:id" element={<PurchaseOrderDetail />} />
+                <Route path="/receivings" element={<ReceivingList />} />
+                <Route path="/receivings/:id" element={<ReceivingDetail />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/accounts-receivable" element={<AccountsReceivable />} />
                 <Route
@@ -125,6 +168,10 @@ export default function App() {
                 <Route
                   path="/admin"
                   element={can("admin_panel") ? <Admin /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/admin/min-stock"
+                  element={can("admin_panel") ? <AdminMinStock /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/kpi/checklist"

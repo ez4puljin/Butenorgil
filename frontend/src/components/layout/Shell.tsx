@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   LayoutGrid, Upload, ClipboardList, Shield, LogOut,
   FileText, Building2, Truck, X, CalendarDays, CheckSquare,
   BadgeCheck, Settings2, Sparkles, BarChart3, MoreHorizontal,
-  ChevronRight, User, Menu, ClipboardCheck, Bot,
+  ChevronRight, User, Menu, ClipboardCheck, Bot, PackageCheck,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 
@@ -17,6 +18,7 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { to: "/order",               label: "Захиалга",            icon: ClipboardList, pageKey: "order" },
+  { to: "/receivings",          label: "Бараа тулгаж авах",  icon: PackageCheck,  pageKey: "order" },
   { to: "/kpi/checklist",       label: "Өдрийн даалгавар",   icon: CheckSquare,   pageKey: "kpi_checklist" },
   { to: "/dashboard",           label: "Хянах самбар",        icon: LayoutGrid,    pageKey: "dashboard" },
   { to: "/kpi/approvals",       label: "KPI зөвшөөрөл",      icon: BadgeCheck,    pageKey: "kpi_approvals" },
@@ -27,6 +29,7 @@ const navItems: NavItem[] = [
   { to: "/logistics",           label: "Логистик",            icon: Truck,         pageKey: "logistics" },
   { to: "/calendar",            label: "Календар",            icon: CalendarDays,  pageKey: "calendar" },
   { to: "/admin",               label: "Удирдлага",           icon: Shield,        pageKey: "admin_panel" },
+  { to: "/admin/min-stock",     label: "Доод үлдэгдэл",      icon: ClipboardCheck, pageKey: "admin_panel" },
   { to: "/kpi/admin",           label: "KPI тохиргоо",        icon: Settings2,     pageKey: "kpi_admin" },
   { to: "/new-product",         label: "Шинэ бараа",          icon: Sparkles,      pageKey: "new_product" },
   { to: "/sales-report-detail", label: "Борлуулалтын тайлан", icon: BarChart3,     pageKey: "sales_report" },
@@ -95,74 +98,104 @@ export default function Shell(props: { children: React.ReactNode }) {
   const visible = navItems.filter(n => permissions.includes(n.pageKey));
   const bottomItems = visible.slice(0, BOTTOM_NAV_MAX);
 
-  // ── Slide-over Drawer (tablet) ───────────────────────────────────────
+  // Илүү өндөр specificity бүхий nav path байгаа бол (жишээ /admin/min-stock vs /admin)
+  // богино path-ыг active гэж үзэхгүй.
+  const isNavActive = (to: string) => {
+    const path = loc.pathname;
+    if (path === to) return true;
+    if (!path.startsWith(to + "/")) return false;
+    // Илүү гүн (deeper) тохирох өөр nav байвал энэ нь active биш
+    const deeper = visible.some(x => x.to !== to && x.to.startsWith(to + "/") && (path === x.to || path.startsWith(x.to + "/")));
+    return !deeper;
+  };
+
+  // Current page title for mobile top bar
+  const currentNav = visible.find(n => isNavActive(n.to));
+  const pageTitle = currentNav?.label ?? "Bto";
+
+  // User initials for avatar
+  const initials = (displayName || "U").trim().slice(0, 2).toUpperCase();
+
+  // ── Slide-over Drawer (tablet / mobile) ────────────────────────────
   const Drawer = (
-    <>
+    <AnimatePresence>
       {drawerOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 lg:hidden"
-          onClick={() => setDrawerOpen(false)} />
-      )}
-      <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-2xl flex flex-col
-        transition-transform duration-300 ease-in-out lg:hidden
-        ${drawerOpen ? "translate-x-0" : "-translate-x-full"}`}>
-
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 shrink-0">
-          <div>
-            <p className="text-xs text-gray-400">Дотоод нөөцийн систем</p>
-            <p className="text-sm font-bold text-gray-900">Нэгтгэл ба захиалга</p>
-          </div>
-          <button onClick={() => setDrawerOpen(false)}
-            className="rounded-xl p-2 text-gray-400 hover:bg-gray-100 active:bg-gray-200">
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* User */}
-        <div className="mx-4 mt-3 rounded-2xl bg-gradient-to-br from-[#0071E3] to-[#004aad] px-4 py-3 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20">
-              <User size={18} className="text-white" />
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="fixed inset-0 z-50 bg-black/50 lg:hidden"
+            onClick={() => setDrawerOpen(false)}
+          />
+          <motion.div
+            initial={{ x: "-100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "-100%" }}
+            transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+            className="fixed inset-y-0 left-0 z-50 flex w-[86%] max-w-[320px] flex-col bg-white shadow-2xl lg:hidden"
+            style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 shrink-0">
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wider text-gray-400">Дотоод нөөцийн систем</p>
+                <p className="text-sm font-bold text-gray-900 truncate">Нэгтгэл ба захиалга</p>
+              </div>
+              <button onClick={() => setDrawerOpen(false)}
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-gray-400 hover:bg-gray-100 active:bg-gray-200">
+                <X size={20} />
+              </button>
             </div>
-            <div className="min-w-0">
-              <p className="text-sm font-bold text-white truncate">{displayName}</p>
-              <p className="text-xs text-blue-200">{roleLabel}</p>
-            </div>
-          </div>
-        </div>
 
-        {/* Nav items */}
-        <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">
-          {visible.map(n => {
-            const active = loc.pathname.startsWith(n.to);
-            const Icon = n.icon;
-            return (
-              <Link key={n.to} to={n.to} onClick={() => setDrawerOpen(false)}
-                className={`flex items-center justify-between rounded-xl px-4 py-3 text-sm font-medium transition-all active:scale-[0.98] ${
-                  active
-                    ? "bg-[#0071E3] text-white shadow-[0_4px_12px_rgba(0,113,227,0.25)]"
-                    : "text-gray-700 hover:bg-gray-100 active:bg-gray-200"
-                }`}>
-                <div className="flex items-center gap-3">
-                  <Icon size={17} />
-                  {n.label}
+            {/* User card */}
+            <div className="mx-4 mt-3 rounded-2xl bg-gradient-to-br from-[#0071E3] to-[#004aad] px-4 py-3.5 shrink-0 shadow-sm shadow-blue-500/20">
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm ring-1 ring-white/25">
+                  <span className="text-sm font-bold text-white">{initials}</span>
                 </div>
-                {active && <ChevronRight size={14} className="opacity-60" />}
-              </Link>
-            );
-          })}
-        </nav>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-white truncate">{displayName}</p>
+                  <p className="text-[11px] text-blue-100">{roleLabel}</p>
+                </div>
+              </div>
+            </div>
 
-        {/* Logout */}
-        <div className="border-t border-gray-100 p-4 shrink-0">
-          <button onClick={logout}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 px-4 py-3 text-sm font-medium text-gray-600 hover:bg-gray-50 active:bg-gray-100">
-            <LogOut size={16} />
-            Системээс гарах
-          </button>
-        </div>
-      </div>
-    </>
+            {/* Nav items */}
+            <nav className="flex-1 overflow-y-auto overscroll-contain px-3 py-3 space-y-0.5">
+              {visible.map(n => {
+                const active = isNavActive(n.to);
+                const Icon = n.icon;
+                return (
+                  <Link key={n.to} to={n.to} onClick={() => setDrawerOpen(false)}
+                    className={`flex min-h-[48px] items-center justify-between rounded-xl px-4 text-sm font-medium transition-colors active:scale-[0.99] ${
+                      active
+                        ? "bg-[#0071E3] text-white shadow-sm shadow-blue-500/25"
+                        : "text-gray-700 hover:bg-gray-100 active:bg-gray-200"
+                    }`}>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Icon size={18} className="shrink-0"/>
+                      <span className="truncate">{n.label}</span>
+                    </div>
+                    {active && <ChevronRight size={15} className="opacity-70 shrink-0" />}
+                  </Link>
+                );
+              })}
+            </nav>
+
+            {/* Logout */}
+            <div className="border-t border-gray-100 p-4 shrink-0">
+              <button onClick={logout}
+                className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50 active:bg-gray-100">
+                <LogOut size={16} />
+                Системээс гарах
+              </button>
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   );
 
   return (
@@ -204,7 +237,7 @@ export default function Shell(props: { children: React.ReactNode }) {
                 {/* Nav */}
                 <nav className="space-y-0.5">
                   {visible.map(n => {
-                    const active = loc.pathname.startsWith(n.to);
+                    const active = isNavActive(n.to);
                     const Icon = n.icon;
                     return (
                       <Link key={n.to} to={n.to}
@@ -246,29 +279,55 @@ export default function Shell(props: { children: React.ReactNode }) {
 
       {/* ══ TABLET / MOBILE (below lg) ══════════════════════════════════ */}
       <div className="flex flex-col lg:hidden min-h-screen">
-        <main className="flex-1 p-3 pb-[72px]">
+        {/* Top bar — compact page title + menu + avatar */}
+        <header
+          className="sticky top-0 z-30 flex items-center gap-2 border-b border-gray-100 bg-white/90 px-3 backdrop-blur-md"
+          style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top))", paddingBottom: "0.5rem" }}
+        >
+          <button
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Цэс нээх"
+            className="grid h-10 w-10 place-items-center rounded-xl text-gray-600 hover:bg-gray-100 active:bg-gray-200"
+          >
+            <Menu size={20}/>
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-gray-400 leading-tight">Bto</p>
+            <h1 className="truncate text-sm font-semibold text-gray-900 leading-tight">{pageTitle}</h1>
+          </div>
+          <button
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Профайл"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-gradient-to-br from-[#0071E3] to-[#004aad] text-[11px] font-bold text-white shadow-sm active:scale-95 transition-transform"
+            title={displayName}
+          >
+            {initials}
+          </button>
+        </header>
+
+        <main className="flex-1 overflow-x-hidden p-3 pb-[calc(76px+env(safe-area-inset-bottom))]">
           {props.children}
         </main>
 
         {/* ── Bottom Navigation — scroll хийхэд автоматаар нуугддаг ── */}
-        <nav className={`fixed bottom-0 inset-x-0 z-40 flex h-16 items-stretch
-          bg-white border-t border-gray-100 shadow-[0_-4px_20px_rgba(0,0,0,0.08)]
-          transition-transform duration-300 ease-in-out
+        <nav className={`fixed bottom-0 inset-x-0 z-40 flex items-stretch
+          bg-white/95 border-t border-gray-100 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] backdrop-blur-md
+          transition-transform duration-300 ease-out
           ${bottomNavVisible ? "translate-y-0" : "translate-y-full"}`}
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
 
           {bottomItems.map(n => {
-            const active = loc.pathname.startsWith(n.to);
+            const active = isNavActive(n.to);
             const Icon = n.icon;
             return (
               <Link key={n.to} to={n.to}
-                className={`relative flex flex-1 flex-col items-center justify-center gap-1
-                  transition-all active:scale-95 select-none
+                className={`relative flex flex-1 flex-col items-center justify-center gap-0.5 min-h-[56px] py-1.5
+                  transition-colors active:bg-gray-50 select-none
                   ${active ? "text-[#0071E3]" : "text-gray-400"}`}>
                 {active && (
-                  <span className="absolute top-0 left-1/2 -translate-x-1/2 h-0.5 w-10 rounded-full bg-[#0071E3]" />
+                  <span className="absolute top-0 left-1/2 -translate-x-1/2 h-0.5 w-8 rounded-full bg-[#0071E3]" />
                 )}
-                <Icon size={22} strokeWidth={active ? 2.5 : 1.8} />
+                <Icon size={21} strokeWidth={active ? 2.4 : 1.8} />
                 <span className="text-[10px] font-semibold leading-none tracking-tight">
                   {n.label.length > 6 ? n.label.slice(0, 6) + "…" : n.label}
                 </span>
@@ -278,8 +337,8 @@ export default function Shell(props: { children: React.ReactNode }) {
 
           {/* Цэс товч */}
           <button onClick={() => setDrawerOpen(true)}
-            className="flex flex-1 flex-col items-center justify-center gap-1 text-gray-400 active:scale-95 select-none">
-            <MoreHorizontal size={22} strokeWidth={1.8} />
+            className="flex flex-1 flex-col items-center justify-center gap-0.5 min-h-[56px] py-1.5 text-gray-400 active:bg-gray-50 select-none">
+            <MoreHorizontal size={21} strokeWidth={1.8} />
             <span className="text-[10px] font-semibold leading-none">Цэс</span>
           </button>
         </nav>
@@ -288,9 +347,10 @@ export default function Shell(props: { children: React.ReactNode }) {
         {!bottomNavVisible && (
           <button
             onClick={() => setBottomNavVisible(true)}
-            className="fixed bottom-4 right-4 z-50 flex h-12 w-12 items-center justify-center
-              rounded-full bg-[#0071E3]/90 shadow-lg backdrop-blur-sm
-              active:scale-95 transition-all">
+            className="fixed bottom-4 right-4 z-50 grid h-12 w-12 place-items-center
+              rounded-full bg-[#0071E3]/95 shadow-lg backdrop-blur-sm
+              active:scale-95 transition-all"
+            style={{ marginBottom: "env(safe-area-inset-bottom)" }}>
             <Menu size={20} className="text-white" />
           </button>
         )}

@@ -11,6 +11,7 @@ from app.models.user import User
 from app.services.import_runner import run_script_import
 from app.services.master_refresh import refresh_products_from_master
 from app.services.price_refresh import refresh_prices_from_file
+from app.services.refresh_prices_from_income_report import refresh_prices_from_income_report
 from app.services.refresh_stock_from_balance import refresh_stock_from_balance_report
 from app.models.import_log import ImportLog
 
@@ -25,7 +26,7 @@ IMPORT_MAP = {
     "erxes_sales":          {"module": "erxes_sales",          "refresh_master": False, "folder": "Эрксэс бараа"},
     "erkhet_stock":         {"module": "erkhet_stock",         "refresh_master": False, "folder": "Эрхэт бараа"},
     "master_merge":         {"module": "master_merge",         "refresh_master": True,  "folder": "Мастер нэгтгэл"},
-    "returns":              {"module": "returns_merge",        "refresh_master": False, "folder": "Орлого тайлан"},
+    "returns":              {"module": "returns_merge",        "refresh_master": False, "refresh_income_prices": True, "folder": "Орлого тайлан"},
     "purchase_inbound":     {"module": "purchase_inbound",     "refresh_master": False, "folder": "Хөдөлгөөний тайлан"},
     "sales_plan":           {"module": "sales_plan",           "refresh_master": False, "folder": "Борлуулалт тайлан"},
     "transfer_order":       {"module": "transfer_order",       "refresh_master": False, "folder": "Үлдэгдэл тайлан"},
@@ -45,7 +46,12 @@ DEFAULT_INSTRUCTIONS: dict[str, list[str]] = {
     "erkhet_stock":         ["Эрхэт системээс үлдэгдлийн тайланг Эксел файлаар экспортлоно.", "Агуулах болон огнооны нөхцөлийг тохируулна.", "Гарсан файлыг энд оруулна."],
     "erxes_sales":          ["Эрксэс системээс борлуулалтын тайланг Эксел файлаар экспортлоно.", "Огнооны муж сонгоод файл үүсгэнэ.", "Гарсан файлыг энд оруулна."],
     "master_merge":         ["Эрхэт болон Эрксэс бараа хоёуланг нь импортолсон байх ёстой.", "Нэгтгэх товч дарахад хамгийн сүүлийн файлуудыг ашиглан мастер шинэчлэгдэнэ.", "Захиалгын модуль хамгийн сүүлийн нэгтгэлийг ашиглана."],
-    "returns":              ["Орлогын тайланг Эксел файлаар экспортлоно.", "Оруулсны дараа тайлан нэгтгэх скрипт ажиллана."],
+    "returns":              [
+        "Эрхэт системээс Орлогын тайланг Excel (.xlsx) форматаар экспортлоно.",
+        "Header багануудын дунд дараах 4 багана заавал байна: 'Бараа материал код', 'Бараа материал нэр', 'Огноо', 'Нэгж үнэ'.",
+        "Бараа бүрийн хамгийн сүүлийн огноотой мөрийн нэгж үнэ авч Product.last_purchase_price шинэчлэгдэнэ.",
+        "Захиалга дотор барааны үнэ автомат fill хийхэд энэ утгыг ашиглана.",
+    ],
     "purchase_inbound":     ["Эрхэт системээс хөдөлгөөний тайланг Эксел файлаар экспортлоно.", "Гарсан файлыг энд оруулна."],
     "sales_plan":           ["Эрхэт системээс борлуулалтын тайланг Эксел файлаар экспортлоно.", "Огнооны муж сонгоод файл үүсгэнэ.", "Гарсан файлыг энд оруулна."],
     "transfer_order":       ["Эрхэт системээс үлдэгдлийн тайланг Эксел файлаар экспортлоно.", "Агуулах болон огнооны нөхцөлийг тохируулна.", "Гарсан файлыг энд оруулна."],
@@ -184,16 +190,34 @@ async def upload_and_run(
             price_result = refresh_prices_from_file(db, str(saved_path))
             result["price_update"] = price_result
 
+        # Орлого тайлан → Product.last_purchase_price-г header-based parse-аар шинэчлэх
+        if meta.get("refresh_income_prices"):
+            try:
+                income_result = refresh_prices_from_income_report(db, str(saved_path))
+                result["income_price_update"] = income_result
+            except Exception as pe:
+                result["income_price_update"] = {"error": str(pe)}
+
         # Үлдэгдлийн тайлан → Product.stock_qty шинэчлэл
+        stock_err: str | None = None
         if import_key == "transfer_order":
             try:
                 stock_result = refresh_stock_from_balance_report(db, str(saved_path))
                 result["stock_update"] = stock_result
             except Exception as se:
-                result["stock_update"] = {"error": str(se)}
+                import traceback
+                stock_err = f"{type(se).__name__}: {se}"
+                result["stock_update"] = {"error": stock_err, "traceback": traceback.format_exc()}
+                print(f"[transfer_order] STOCK REFRESH FAILED: {stock_err}\n{traceback.format_exc()}", flush=True)
 
-        log.status = "ok"
-        log.message = "done"
+        log.status = "ok" if not stock_err else "fail"
+        if stock_err:
+            log.message = f"Үлдэгдэл шинэчлэх алдаа: {stock_err}"
+        elif import_key == "transfer_order":
+            sr = result.get("stock_update") or {}
+            log.message = f"Updated {sr.get('updated', 0)} / mapped {sr.get('mapped_codes', 0)}"
+        else:
+            log.message = "done"
         db.commit()
         return {"ok": True, "saved_path": str(saved_path), "result": result}
     except Exception as e:

@@ -4,17 +4,17 @@ from datetime import date as date_type
 from typing import Optional
 from pydantic import BaseModel
 
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db, get_current_user, require_role
 from app.models.calendar_event import CalendarEvent
+from app.models.calendar_label import CalendarLabel
 from app.models.user import User
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
-# Predefined task types (kept in sync with frontend TASK_TYPES)
-VALID_TASK_TYPES = {
-    "unloading", "order", "inventory", "payment",
-    "report", "meeting", "shipment", "other",
-}
+
+def _valid_task_types(db: Session) -> set[str]:
+    """Идэвхтэй label-ийн key-ийн set."""
+    return {r.key for r in db.query(CalendarLabel).filter(CalendarLabel.is_active == True).all()}
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ def create_event(
     db: Session = Depends(get_db),
     u: User = Depends(get_current_user),
 ):
-    if body.task_type not in VALID_TASK_TYPES:
+    if body.task_type not in _valid_task_types(db):
         raise HTTPException(400, f"task_type буруу байна: {body.task_type}")
 
     ev = CalendarEvent(
@@ -108,7 +108,7 @@ def update_event(
         if u.id != ev.created_by_user_id and u.role not in ("admin", "supervisor"):
             raise HTTPException(403, "Зөвхөн үүсгэсэн хүн засах боломжтой")
         if body.task_type is not None:
-            if body.task_type not in VALID_TASK_TYPES:
+            if body.task_type not in _valid_task_types(db):
                 raise HTTPException(400, f"task_type буруу: {body.task_type}")
             ev.title = body.task_type
         if body.notes is not None:
@@ -133,3 +133,112 @@ def delete_event(
     db.delete(ev)
     db.commit()
     return {"ok": True}
+
+
+# ── Label config CRUD (admin only write) ──────────────────────────────────────
+
+class LabelIn(BaseModel):
+    key: Optional[str] = None
+    label: str
+    short: str = ""
+    color: str = "gray"
+    icon: str = "MoreHorizontal"
+    sort_order: Optional[int] = None
+    is_active: bool = True
+
+
+def _label_serialize(lb: CalendarLabel) -> dict:
+    return {
+        "id": lb.id,
+        "key": lb.key,
+        "label": lb.label,
+        "short": lb.short or lb.label,
+        "color": lb.color,
+        "icon": lb.icon,
+        "sort_order": lb.sort_order,
+        "is_active": lb.is_active,
+    }
+
+
+@router.get("/labels")
+def list_labels(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    rows = db.query(CalendarLabel).order_by(CalendarLabel.sort_order, CalendarLabel.id).all()
+    return [_label_serialize(r) for r in rows]
+
+
+@router.post("/labels")
+def create_label(
+    body: LabelIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),
+):
+    if not body.label.strip():
+        raise HTTPException(400, "Нэр хоосон байна")
+    # key автоматаар ижил нэр бус байхаар үүсгэнэ
+    import re
+    auto_key = re.sub(r"[^a-z0-9_]", "_", (body.key or body.label.lower()))[:50] or f"lbl_{int(__import__('time').time())}"
+    # Давхардалтай бол ард нь тоо залгана
+    base = auto_key
+    i = 1
+    while db.query(CalendarLabel).filter(CalendarLabel.key == auto_key).first():
+        auto_key = f"{base}_{i}"
+        i += 1
+    last_order = (db.query(CalendarLabel).order_by(CalendarLabel.sort_order.desc()).first())
+    next_order = body.sort_order if body.sort_order is not None else ((last_order.sort_order + 1) if last_order else 1)
+    lb = CalendarLabel(
+        key=auto_key,
+        label=body.label.strip(),
+        short=(body.short or body.label).strip()[:50],
+        color=body.color or "gray",
+        icon=body.icon or "MoreHorizontal",
+        sort_order=next_order,
+        is_active=body.is_active,
+    )
+    db.add(lb); db.commit(); db.refresh(lb)
+    return _label_serialize(lb)
+
+
+@router.patch("/labels/{label_id}")
+def update_label(
+    label_id: int,
+    body: LabelIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),
+):
+    lb = db.query(CalendarLabel).filter(CalendarLabel.id == label_id).first()
+    if not lb:
+        raise HTTPException(404, "Label олдсонгүй")
+    if body.label is not None:
+        lb.label = body.label.strip() or lb.label
+    if body.short is not None:
+        lb.short = body.short.strip()[:50]
+    if body.color:
+        lb.color = body.color
+    if body.icon:
+        lb.icon = body.icon
+    if body.sort_order is not None:
+        lb.sort_order = body.sort_order
+    if body.is_active is not None:
+        lb.is_active = body.is_active
+    db.commit(); db.refresh(lb)
+    return _label_serialize(lb)
+
+
+@router.delete("/labels/{label_id}")
+def delete_label(
+    label_id: int,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),
+):
+    lb = db.query(CalendarLabel).filter(CalendarLabel.id == label_id).first()
+    if not lb:
+        raise HTTPException(404, "Label олдсонгүй")
+    # Ашиглагдаж байгаа эсэхийг шалгах
+    used = db.query(CalendarEvent).filter(CalendarEvent.title == lb.key).count()
+    if used > 0:
+        # Хатуу устгахгүй, зөвхөн идэвхгүй болгоно
+        lb.is_active = False
+        db.commit()
+        return {"ok": True, "deactivated": True, "used_by_events": used}
+    db.delete(lb); db.commit()
+    return {"ok": True, "deleted": True}

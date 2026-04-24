@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "../lib/api";
+import { useAuthStore } from "../store/authStore";
 import {
   KeyRound, CheckCircle, AlertCircle, X, RefreshCw,
   Package, Download, Pencil, Trash2, ToggleLeft, ToggleRight,
@@ -421,15 +422,37 @@ export default function Admin() {
 
   const downloadMaster = async () => {
     try {
-      const res = await api.get("/admin/master-download", { responseType: "blob" });
-      const url = URL.createObjectURL(new Blob([res.data]));
+      // fetch ашиглан эргэлтгүй, кэшгүй, бүрэн бинар хэлбэрээр татна.
+      // axios + responseType:blob нь заримдаа транспорт эсвэл proxy-д хэсэгчилж
+      // файлыг таслан авчирч байсан тул fetch нь илүү найдвартай.
+      const token = useAuthStore.getState().token;
+      const base = (api.defaults.baseURL || "").replace(/\/$/, "");
+      const ts = Date.now();
+      const res = await fetch(`${base}/admin/master-download?_=${ts}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        if (res.status === 404) throw new Error("Master файл байхгүй байна.");
+        throw new Error(`HTTP ${res.status}`);
+      }
+      // arrayBuffer-аар бүх bytes цуглуулна (Content-Length-тэй таарна)
+      const buf = await res.arrayBuffer();
+      console.log(`[master-download] ${buf.byteLength} bytes downloaded`);
+      const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      const blob = new Blob([buf], { type: XLSX_MIME });
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = "master_latest.xlsx";
+      a.rel = "noopener";
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      setRefreshError("Master файл байхгүй байна.");
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e: any) {
+      setRefreshError(`Татахад алдаа: ${e?.message || e}`);
     }
   };
 

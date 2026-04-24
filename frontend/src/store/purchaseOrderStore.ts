@@ -12,6 +12,8 @@ export type POSummary = {
   created_at: string;
   vehicle_id: number | null;
   vehicle_name: string | null;
+  is_archived?: boolean;
+  notes?: string;
 };
 
 export type POLine = {
@@ -26,12 +28,16 @@ export type POLine = {
   pack_ratio: number;
   stock_qty: number;
   sales_qty: number;
+  price_tag?: string;
+  needs_reorder?: boolean;
+  min_stock_box?: number;
   order_qty_box: number;
   order_qty_pcs: number;
   computed_weight: number;
   supplier_qty_box: number;
   loaded_qty_box: number;
   received_qty_box: number;
+  received_qty_extra_pcs?: number;
   difference: number;
   unit_price: number;
   last_purchase_price: number;

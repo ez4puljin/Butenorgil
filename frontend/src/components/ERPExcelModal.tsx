@@ -24,15 +24,24 @@ const COMPANY_LABELS: Record<Company, string> = {
 
 const LS_KEY = "erp_excel_config_v1";
 
-const defaultConfig = (orderDate: string): ERPConfig => ({
-  company: "buten_orgil",
-  date: orderDate,
-  document_note: "",
-  related_account: "",
-  account: "",
-  warehouse_map: {},
-  single_location: "",
-});
+// Компани бүрт тогтмол утга
+const COMPANY_DEFAULTS: Record<Company, { related_account: string; account: string; single_location: string }> = {
+  buten_orgil:  { related_account: "310101", account: "150101", single_location: "" },
+  orgil_khorum: { related_account: "310104", account: "150101", single_location: "05" },
+};
+
+const defaultConfig = (orderDate: string, company: Company = "buten_orgil"): ERPConfig => {
+  const d = COMPANY_DEFAULTS[company];
+  return {
+    company,
+    date: orderDate,
+    document_note: "",
+    related_account: d.related_account,
+    account: d.account,
+    warehouse_map: {},
+    single_location: d.single_location,
+  };
+};
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -45,11 +54,22 @@ interface Props {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
-  // Unique warehouse names from order lines (only lines with received_qty_box > 0)
+  // Unique warehouse names from order lines (only ACTIVE lines that actually ship to ERP)
+  // Backend ERP export filter: received>0 AND (order>0 OR supplier>0)
+  // Brand filter нөхцөл байвал мөн тухайн брендийн бараанд хязгаарлана
   const warehouses = [
     ...new Set(
       order.lines
-        .filter((l) => (l.received_qty_box ?? 0) > 0)
+        .filter((l) => {
+          // Backend-тэй адил: received > 0 эсвэл loaded > 0 (fallback) + идэвхтэй + бренд тохирох
+          const received = (l.received_qty_box ?? 0) > 0
+            || ((l as any).received_qty_extra_pcs ?? 0) > 0
+            || (l.loaded_qty_box ?? 0) > 0;
+          const active = (l.order_qty_box ?? 0) > 0 || (l.supplier_qty_box ?? 0) > 0;
+          if (!received || !active) return false;
+          if (brandFilter && l.brand !== brandFilter) return false;
+          return true;
+        })
         .map((l) => l.warehouse_name)
         .filter(Boolean)
     ),
@@ -60,7 +80,17 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
       const saved = localStorage.getItem(LS_KEY);
       if (saved) {
         const parsed = JSON.parse(saved) as ERPConfig;
-        return { ...defaultConfig(order.order_date), ...parsed, date: order.order_date };
+        const company = parsed.company ?? "buten_orgil";
+        const d = COMPANY_DEFAULTS[company];
+        return {
+          ...defaultConfig(order.order_date, company),
+          ...parsed,
+          date: order.order_date,
+          // Компанийн тогтмол утгыг үргэлж зонхилгоно
+          related_account: d.related_account,
+          account: d.account,
+          single_location: d.single_location || parsed.single_location || "",
+        };
       }
     } catch {
       // ignore
@@ -95,9 +125,16 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
         { responseType: "blob" }
       );
       // Filename from Content-Disposition header or fallback
+      // RFC 5987: filename*=UTF-8''<urlencoded> -г эхэнд шалгах (Cyrillic нэртэй үед)
       const disposition = res.headers?.["content-disposition"] ?? "";
-      const match = disposition.match(/filename=([^\s;]+)/);
-      const fname = match?.[1] ?? `${order.order_date.replaceAll("-", "")}_PO${order.id}.xlsx`;
+      let fname = `${order.order_date.replaceAll("-", "")}_PO${order.id}.xlsx`;
+      const utf8Match = disposition.match(/filename\*=UTF-8''([^\s;]+)/i);
+      if (utf8Match?.[1]) {
+        try { fname = decodeURIComponent(utf8Match[1]); } catch { /* ignore */ }
+      } else {
+        const plain = disposition.match(/filename=([^;]+)/i);
+        if (plain?.[1]) fname = plain[1].trim().replace(/^"|"$/g, "");
+      }
       const url = URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement("a");
       a.href = url;
@@ -106,7 +143,23 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
       URL.revokeObjectURL(url);
       onClose();
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? "Excel үүсгэхэд алдаа гарлаа");
+      // responseType:"blob" үед алдаа Blob хэлбэрээр ирнэ — JSON-оор parse хийнэ
+      let detail = "Excel үүсгэхэд алдаа гарлаа";
+      const blob = e?.response?.data;
+      if (blob instanceof Blob) {
+        try {
+          const text = await blob.text();
+          try {
+            const j = JSON.parse(text);
+            detail = j?.detail || text || detail;
+          } catch {
+            if (text) detail = text;
+          }
+        } catch { /* keep default */ }
+      } else if (typeof blob?.detail === "string") {
+        detail = blob.detail;
+      }
+      setError(detail);
     } finally {
       setLoading(false);
     }
@@ -142,7 +195,17 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
               {(["buten_orgil", "orgil_khorum"] as Company[]).map((c) => (
                 <button
                   key={c}
-                  onClick={() => set("company", c)}
+                  onClick={() => {
+                    // Компани сонгоход тухайн компанийн тогтмол утгуудаар автоматаар сольно
+                    const d = COMPANY_DEFAULTS[c];
+                    setCfg(prev => ({
+                      ...prev,
+                      company: c,
+                      related_account: d.related_account,
+                      account: d.account,
+                      single_location: d.single_location,
+                    }));
+                  }}
                   className={`flex-1 rounded-lg border py-2 text-sm font-medium transition-colors ${
                     cfg.company === c
                       ? "border-[#0071E3] bg-[#0071E3] text-white"

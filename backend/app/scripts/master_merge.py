@@ -151,6 +151,18 @@ def main(erkhet_path: str, erxes_path: str, output_dir: str) -> dict:
     erh_raw = read_excel_noheader(erkhet_path)
     erx_raw = read_excel_noheader(erxes_path)
 
+    # ── Erkhet файл бүртгэл шалгах ─────────────────────────────────────────
+    # Ёстой product list-д 20+ багана байдаг (Код, Нэр, Ангилал код, Ангилал нэр,
+    # Гадаад нэр, Баркод, Нэгж үнэ, ...). Хэрэв багана цөөн (11 мэт)
+    # тохиолдолд энэ нь Үлдэгдлийн тайлан бөгөөд master_merge буруу боловсруулна.
+    if erh_raw.shape[1] < 15:
+        raise ValueError(
+            f"Erkhet бараа файл буруу форматтай байна.\n"
+            f"Ирсэн багана тоо: {erh_raw.shape[1]} (ёстой 15+).\n"
+            f"Та Үлдэгдлийн тайлан эсвэл өөр тайлан орлуулж оруулсан уу?\n"
+            f"Зөв: 'Эрхэт → Бараа материал → Бараа материалын жагсаалт' экспортлох."
+        )
+
     erh_raw = drop_leading_nondata_rows(erh_raw, col_to_idx(ERKHET["code"])).reset_index(drop=True)
     erx_raw = drop_leading_nondata_rows(erx_raw, col_to_idx(ERXES["code"])).reset_index(drop=True)
 

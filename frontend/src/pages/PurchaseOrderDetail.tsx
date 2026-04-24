@@ -43,6 +43,10 @@ export default function PurchaseOrderDetail() {
   type ShipmentSummary = { id: number; vehicle_id: number | null; vehicle_name: string | null; status: string; status_label: string; line_count: number; total_loaded_box: number; total_weight: number; brand_count: number; brands: string[] };
   type UnassignedLine = { po_line_id: number; product_id: number; item_code: string; name: string; brand: string; order_qty_box: number; assigned_qty_box: number; remaining_qty_box: number };
   const [shipments, setShipments] = useState<ShipmentSummary[]>([]);
+  // Brand mode-д ч гэсэн бүх shipment-уудыг хадгална (dropdown-д хэрэглэхэд)
+  const [allShipments, setAllShipments] = useState<ShipmentSummary[]>([]);
+  // product_id → [{ shipment_id, shipment_line_id, vehicle_name, loaded_qty_box }]
+  const [productShipmentMap, setProductShipmentMap] = useState<Record<number, { shipment_id: number; shipment_line_id: number; vehicle_name: string | null; loaded_qty_box: number }[]>>({});
   const [unassignedLines, setUnassignedLines] = useState<UnassignedLine[]>([]);
   const [shipmentsLoading, setShipmentsLoading] = useState(false);
   const [expandedShipment, setExpandedShipment] = useState<number | null>(null);
@@ -54,8 +58,44 @@ export default function PurchaseOrderDetail() {
     setShipmentsLoading(true);
     try {
       const res = await api.get(`/purchase-orders/${id}/shipments`);
-      setShipments(res.data.shipments);
-      setUnassignedLines(res.data.unassigned_lines);
+      const allShips = res.data.shipments as ShipmentSummary[];
+      let shipments = allShips;
+      let unassigned = res.data.unassigned_lines as UnassignedLine[];
+
+      // Brand mode: зөвхөн тухайн брендтэй холбоотой shipment + unassigned lines
+      // Гэхдээ allShipments-д бүх loading shipment-уудыг хадгална (dropdown-д хэрэглэнэ)
+      if (brandMode && brandFilter) {
+        shipments = allShips.filter((sh: any) =>
+          Array.isArray(sh.brands) && sh.brands.includes(brandFilter)
+        );
+        unassigned = unassigned.filter((u: any) => u.brand === brandFilter);
+      }
+
+      setAllShipments(allShips);
+      setShipments(shipments);
+      setUnassignedLines(unassigned);
+
+      // Build product_id → shipment[] map (parallel fetch all shipment details)
+      const shipmentDetails = await Promise.all(
+        shipments.map((sh) =>
+          api.get(`/purchase-orders/${id}/shipments/${sh.id}`)
+            .then((r) => ({ sh, lines: r.data.lines ?? [] }))
+            .catch(() => ({ sh, lines: [] as any[] }))
+        )
+      );
+      const map: Record<number, { shipment_id: number; shipment_line_id: number; vehicle_name: string | null; loaded_qty_box: number }[]> = {};
+      for (const { sh, lines } of shipmentDetails) {
+        for (const ln of lines) {
+          if (!map[ln.product_id]) map[ln.product_id] = [];
+          map[ln.product_id].push({
+            shipment_id: sh.id,
+            shipment_line_id: ln.id,
+            vehicle_name: sh.vehicle_name,
+            loaded_qty_box: ln.loaded_qty_box,
+          });
+        }
+      }
+      setProductShipmentMap(map);
     } catch { /* ignore */ }
     finally { setShipmentsLoading(false); }
   };
@@ -65,7 +105,12 @@ export default function PurchaseOrderDetail() {
     setExpandedShipment(shId);
     try {
       const res = await api.get(`/purchase-orders/${id}/shipments/${shId}`);
-      setShipmentDetail(res.data);
+      const data = res.data;
+      // Brand mode: тухайн брендийн lines-г л харуулна
+      if (brandMode && brandFilter && Array.isArray(data.lines)) {
+        data.lines = data.lines.filter((l: any) => l.brand === brandFilter);
+      }
+      setShipmentDetail(data);
     } catch { setExpandedShipment(null); }
   };
 
@@ -93,6 +138,8 @@ export default function PurchaseOrderDetail() {
   const [suppQtys, setSuppQtys] = useState<Record<number, number>>({});
   const [loadedQtys, setLoadedQtys] = useState<Record<number, number>>({});
   const [receivedQtys, setReceivedQtys] = useState<Record<number, number>>({});
+  // Ачаа ирсэн үед задгай ширхэгийн тоо (жишээ: 4 хайрцаг + 2 ширхэг)
+  const [receivedExtraPcs, setReceivedExtraPcs] = useState<Record<number, number>>({});
   const [priceInputs, setPriceInputs] = useState<Record<number, number>>({});
   const [remarkInputs, setRemarkInputs] = useState<Record<number, string>>({});
 
@@ -180,11 +227,69 @@ export default function PurchaseOrderDetail() {
   const [addResults, setAddResults] = useState<{ id: number; item_code: string; name: string; brand: string; warehouse_name: string }[]>([]);
   const [addSearching, setAddSearching] = useState(false);
 
+  // Cross-brand (admin-only special case)
+  const [crossBrandTarget, setCrossBrandTarget] = useState<string | null>(null);
+  const [crossBrandSearch, setCrossBrandSearch] = useState("");
+  const [crossBrandResults, setCrossBrandResults] = useState<{ id: number; item_code: string; name: string; brand: string; pack_ratio: number }[]>([]);
+  const [crossBrandSearching, setCrossBrandSearching] = useState(false);
+  const [crossBrandQtys, setCrossBrandQtys] = useState<Record<number, number>>({});
+  const [crossBrandSaving, setCrossBrandSaving] = useState(false);
+
+  const openCrossBrand = (brand: string) => {
+    setCrossBrandTarget(brand);
+    setCrossBrandSearch("");
+    setCrossBrandResults([]);
+    setCrossBrandQtys({});
+  };
+
+  // Debounced search
+  useEffect(() => {
+    if (!crossBrandTarget) return;
+    const term = crossBrandSearch.trim();
+    if (term.length < 2) { setCrossBrandResults([]); return; }
+    const t = setTimeout(async () => {
+      setCrossBrandSearching(true);
+      try {
+        const r = await api.get("/products/search", { params: { q: term } });
+        // Зорилтот бренд биш бараануудыг л үзүүлнэ (давхар нэмэх утгагүй)
+        setCrossBrandResults((r.data as any[]).filter((p: any) => p.brand !== crossBrandTarget));
+      } catch { setCrossBrandResults([]); }
+      finally { setCrossBrandSearching(false); }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [crossBrandSearch, crossBrandTarget]);
+
+  const saveCrossBrand = async () => {
+    if (!order || !crossBrandTarget) return;
+    const items = Object.entries(crossBrandQtys)
+      .filter(([, v]) => v > 0)
+      .map(([pid, v]) => ({ product_id: parseInt(pid), qty: v }));
+    if (items.length === 0) { flash("Бараа сонгоод хайрцагны тоо оруулна уу", false); return; }
+    setCrossBrandSaving(true);
+    try {
+      for (const it of items) {
+        await api.post(`/purchase-orders/${order.id}/add-line`, {
+          product_id: it.product_id,
+          order_qty_box: it.qty,
+          override_brand: crossBrandTarget,
+        });
+      }
+      flash(`${items.length} бараа ${crossBrandTarget} брендэд нэмэгдлээ`);
+      setCrossBrandTarget(null);
+      await loadOrder();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail ?? "Алдаа", false);
+    } finally {
+      setCrossBrandSaving(false);
+    }
+  };
+
   // Filters
   const [filterBrand, setFilterBrand] = useState("");
   const [filterWarehouse, setFilterWarehouse] = useState("");
   const [filterSearch, setFilterSearch] = useState("");
   const [onlyOrdered, setOnlyOrdered] = useState(false);
+  const [onlyReorder, setOnlyReorder] = useState(false);
 
   const flash = (text: string, ok = true) => {
     setMsg({ text, ok });
@@ -211,22 +316,34 @@ export default function PurchaseOrderDetail() {
       const rQtys: Record<number, number> = {};
       const pInputs: Record<number, number> = {};
       const rmks: Record<number, string> = {};
+      const rExtraPcs: Record<number, number> = {};
+      const orderStatus = res.data.status;
+      const isLoadingStage = ["loading", "transit", "arrived", "accounting", "confirmed", "received"].includes(orderStatus)
+        || ["loading", "transit", "arrived", "accounting", "confirmed", "received"].includes((res.data as any).brand_status ?? "");
       for (const l of res.data.lines) {
         sQtys[l.product_id] = l.supplier_qty_box ?? 0;
-        lQtys[l.product_id] = l.loaded_qty_box ?? 0;
+        // Ачигдаж байна stage-д loaded = 0 бол захиалсан тоогоор fill хийнэ (default suggestion)
+        const loadedVal = l.loaded_qty_box ?? 0;
+        lQtys[l.product_id] = (loadedVal === 0 && isLoadingStage && (l.order_qty_box ?? 0) > 0)
+          ? l.order_qty_box
+          : loadedVal;
         // received_qty_box хоосон бол loaded_qty_box-оор дүүргэнэ
+        // Харин received_qty_extra_pcs-тэй бол хэрэглэгч санаатайгаар 0 хадгалсан гэж үзнэ
+        const savedExtraPcs = (l as any).received_qty_extra_pcs ?? 0;
         rQtys[l.product_id] = (l.received_qty_box && l.received_qty_box > 0)
           ? l.received_qty_box
-          : (l.loaded_qty_box ?? 0);
+          : (savedExtraPcs > 0 ? 0 : (lQtys[l.product_id] ?? 0));
         // unit_price хоосон бол last_purchase_price-оор дүүргэнэ
         pInputs[l.product_id] = (l.unit_price && l.unit_price > 0)
           ? l.unit_price
           : (l.last_purchase_price ?? 0);
         rmks[l.product_id] = l.remark ?? "";
+        rExtraPcs[l.product_id] = (l as any).received_qty_extra_pcs ?? 0;
       }
       setSuppQtys(sQtys);
       setLoadedQtys(lQtys);
       setReceivedQtys(rQtys);
+      setReceivedExtraPcs(rExtraPcs);
       setPriceInputs(pInputs);
       setRemarkInputs(rmks);
     } catch (e: any) {
@@ -298,7 +415,7 @@ export default function PurchaseOrderDetail() {
     if (role === "accountant")
       return st === "accounting";
     if (role === "manager" || role === "supervisor")
-      return ["preparing", "reviewing", "loading"].includes(st);
+      return ["preparing", "reviewing", "loading", "accounting"].includes(st);
     if (role === "admin")
       return true;
     return false;
@@ -314,6 +431,7 @@ export default function PurchaseOrderDetail() {
         supplier_qty_box: suppQtys[l.product_id] ?? l.supplier_qty_box,
         loaded_qty_box: loadedQtys[l.product_id] ?? l.loaded_qty_box,
         received_qty_box: receivedQtys[l.product_id] ?? l.received_qty_box,
+        received_qty_extra_pcs: receivedExtraPcs[l.product_id] ?? l.received_qty_extra_pcs ?? 0,
         unit_price: priceInputs[l.product_id] ?? l.unit_price ?? 0,
         remark: remarkInputs[l.product_id] ?? l.remark ?? "",
       }));
@@ -331,10 +449,12 @@ export default function PurchaseOrderDetail() {
     }
   };
 
-  const deleteLine = async (lineId: number) => {
+  const deleteLine = async (lineId: number, confirmMessage?: string) => {
     if (!order) return;
+    if (confirmMessage && !confirm(confirmMessage)) return;
     try {
       await api.delete(`/purchase-orders/${order.id}/lines/${lineId}`);
+      flash("Мөр устгагдлаа");
       await loadOrder();
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Устгахад алдаа гарлаа", false);
@@ -364,8 +484,9 @@ export default function PurchaseOrderDetail() {
     if (!order) return;
     setShowStatusDropdown(false);
     try {
-      await api.patch(`/purchase-orders/${order.id}/force-status`, { status: newStatus });
-      flash("Статус шинэчлэгдлээ");
+      const params = brandMode && brandFilter ? { brand: brandFilter } : undefined;
+      await api.patch(`/purchase-orders/${order.id}/force-status`, { status: newStatus }, { params });
+      flash(brandMode && brandFilter ? `${brandFilter} — Статус шинэчлэгдлээ` : "Статус шинэчлэгдлээ");
       await loadOrder();
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
@@ -468,6 +589,7 @@ export default function PurchaseOrderDetail() {
   const filteredLines = baseLines.filter((l) => {
     if (filterBrand && l.brand !== filterBrand) return false;
     if (filterWarehouse && l.warehouse_name !== filterWarehouse) return false;
+    if (onlyReorder && !(l as any).needs_reorder) return false;
     if (searchTerm) {
       const hit = l.item_code.toLowerCase().includes(searchTerm) ||
                   l.name.toLowerCase().includes(searchTerm);
@@ -475,6 +597,9 @@ export default function PurchaseOrderDetail() {
     }
     return true;
   });
+
+  // Reorder count (checkbox-ийн badge)
+  const reorderCount = baseLines.filter((l) => (l as any).needs_reorder).length;
 
   // isEnteringQty горимд шүүлтгүй бол хязгаарлах (гацахгүй байхын тулд)
   const RENDER_LIMIT = 300;
@@ -501,8 +626,11 @@ export default function PurchaseOrderDetail() {
   const totalAmount = order
     ? order.lines.reduce((s, l) => {
         const received = receivedQtys[l.product_id] ?? l.received_qty_box ?? 0;
+        const extraPcs = receivedExtraPcs[l.product_id] ?? l.received_qty_extra_pcs ?? 0;
+        const packRatio = l.pack_ratio || 1;
         const price = priceInputs[l.product_id] ?? l.unit_price ?? 0;
-        return s + received * price;
+        const totalPcs = received * packRatio + extraPcs;
+        return s + price * totalPcs;
       }, 0)
     : 0;
 
@@ -518,11 +646,13 @@ export default function PurchaseOrderDetail() {
 
   const colCount = (() => {
     const base = showStockCols ? 9 : 7;
-    if (showEstCostCols) return base + 2; // Нэгж үнэ (сүүлийн) + Тооцоолсон дүн
-    if (showLoadingCols) return base + 2;
-    if (showTransitCols) return base - 1 + 1;
-    if (showReceivedCols) return base + 4 + (showPriceCols ? (showPriceDiff ? 3 : 2) : 0);
-    return base;
+    let total;
+    if (showEstCostCols) total = base + 2;
+    else if (showLoadingCols) total = base + 2;
+    else if (showTransitCols) total = base - 1 + 1;
+    else if (showReceivedCols) total = base + 4 + (showPriceCols ? (showPriceDiff ? 4 : 3) : 0);
+    else total = base;
+    return total + 1; // +1 for Машин column
   })();
 
   // ── Loading skeleton ──
@@ -553,7 +683,7 @@ export default function PurchaseOrderDetail() {
   }
 
   return (
-    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
+    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }} className="overflow-x-hidden">
 
       {/* ── Fixed toast ── */}
       <AnimatePresence>
@@ -563,22 +693,22 @@ export default function PurchaseOrderDetail() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
             transition={{ duration: 0.18 }}
-            className={`fixed right-5 top-5 z-50 flex items-center gap-2.5 rounded-xl px-4 py-3 shadow-lg text-sm font-medium ${
+            className={`fixed left-3 right-3 top-3 z-50 flex items-center gap-2.5 rounded-xl px-4 py-3 shadow-lg text-sm font-medium sm:left-auto sm:right-5 sm:top-5 sm:max-w-sm ${
               msg.ok
                 ? "bg-emerald-600 text-white"
                 : "bg-red-600 text-white"
             }`}
           >
-            {msg.ok ? <CheckCheck size={15} /> : <AlertCircle size={15} />}
-            {msg.text}
+            {msg.ok ? <CheckCheck size={15} className="shrink-0"/> : <AlertCircle size={15} className="shrink-0"/>}
+            <span className="min-w-0 break-words">{msg.text}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* ── Header card ── */}
-      <div className="rounded-2xl bg-white px-5 py-4 shadow-sm ring-1 ring-gray-100">
+      <div className="rounded-2xl bg-white px-4 py-3.5 shadow-sm ring-1 ring-gray-100 sm:px-5 sm:py-4">
         {/* Top row: back + title + status */}
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <button
             onClick={() => navigate(brandMode ? `/order/${id}/dashboard` : "/order")}
             className="flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-gray-700 transition-colors"
@@ -587,23 +717,24 @@ export default function PurchaseOrderDetail() {
             {brandMode ? "Dashboard" : "Буцах"}
           </button>
           <div className="h-4 w-px bg-gray-200" />
-          <h1 className="text-xl font-bold tracking-tight text-gray-900">
+          <h1 className="text-lg font-bold tracking-tight text-gray-900 sm:text-xl">
             {order.order_date.replaceAll("-", "/")}
           </h1>
-          <span className="text-sm text-gray-400">захиалга #{order.id}</span>
+          <span className="text-xs text-gray-400 sm:text-sm">#{order.id}</span>
           {brandMode && brandFilter && (
             <>
               <div className="h-4 w-px bg-gray-200" />
-              <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-bold text-blue-700">
+              <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-bold text-blue-700 ring-1 ring-inset ring-blue-100">
                 {brandFilter}
               </span>
             </>
           )}
           <span
-            className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset ring-black/5 ${
               STATUS_COLOR[effectiveStatus] ?? "bg-gray-100 text-gray-600"
             }`}
           >
+            <span className="h-1.5 w-1.5 rounded-full bg-current opacity-60"/>
             {brandMode
               ? STATUS_LABEL[effectiveStatus as keyof typeof STATUS_LABEL] ?? effectiveStatus
               : order.status_label}
@@ -611,22 +742,21 @@ export default function PurchaseOrderDetail() {
         </div>
 
         {/* Meta + actions row */}
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-xs text-gray-400">
-            Үүсгэсэн: <span className="font-medium text-gray-600">{order.created_by_username}</span>
+        <div className="mt-3 flex flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3">
+          <p className="text-[11px] text-gray-400 sm:text-xs">
+            <span className="font-medium text-gray-600">{order.created_by_username}</span>
             {" · "}
-            {new Date(order.created_at ?? "").toLocaleString("mn-MN")}
-            {" · "}
+            <span className="hidden sm:inline">{new Date(order.created_at ?? "").toLocaleString("mn-MN")}{" · "}</span>
             <span className="font-medium text-gray-600">{order.lines.length} нэр төрөл</span>
           </p>
 
           {/* Action buttons */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             {canEdit && (
               <button
                 onClick={saveLines}
                 disabled={saving}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50 transition-colors"
               >
                 {saving ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />}
                 Хадгалах
@@ -635,7 +765,7 @@ export default function PurchaseOrderDetail() {
             {effectiveStatus === "sending" && (
               <button
                 onClick={() => setShowPDFModal(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors"
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 active:bg-gray-100 transition-colors"
               >
                 <FileDown size={13} />
                 PDF татах
@@ -644,7 +774,7 @@ export default function PurchaseOrderDetail() {
             {(role === "accountant" || role === "admin") && effectiveStatus === "accounting" && (
               <button
                 onClick={revertStatus}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 shadow-sm hover:bg-amber-100 transition-colors"
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 text-xs font-medium text-amber-700 shadow-sm hover:bg-amber-100 active:bg-amber-200 transition-colors"
               >
                 <RotateCcw size={13} />
                 Ачаа ирсэн рүү буцаах
@@ -666,14 +796,14 @@ export default function PurchaseOrderDetail() {
                       flash("Excel татахад алдаа гарлаа", false);
                     }
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 shadow-sm hover:bg-emerald-100 transition-colors"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-700 shadow-sm hover:bg-emerald-100 active:bg-emerald-200 transition-colors"
                 >
                   <FileDown size={13} />
                   Excel татах
                 </button>
                 <button
                   onClick={() => setShowERPModal(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 shadow-sm hover:bg-blue-100 transition-colors"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 shadow-sm hover:bg-blue-100 active:bg-blue-200 transition-colors"
                 >
                   <FileDown size={13} />
                   ERP Импорт
@@ -684,7 +814,7 @@ export default function PurchaseOrderDetail() {
               <div className="relative">
                 <button
                   onClick={() => setShowStatusDropdown(v => !v)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 shadow-sm hover:bg-purple-100 transition-colors"
+                  className="inline-flex h-9 items-center gap-1 rounded-lg border border-purple-200 bg-purple-50 px-3 text-xs font-medium text-purple-700 shadow-sm hover:bg-purple-100 active:bg-purple-200 transition-colors"
                 >
                   Статус өөрчлөх
                   <ChevronDown size={12} />
@@ -707,7 +837,7 @@ export default function PurchaseOrderDetail() {
             {role === "admin" && (
               <button
                 onClick={() => setShowDeleteConfirm(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 shadow-sm hover:bg-red-100 transition-colors"
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 text-xs font-medium text-red-600 shadow-sm hover:bg-red-100 active:bg-red-200 transition-colors"
               >
                 <Trash2 size={13} />
                 Устгах
@@ -717,7 +847,7 @@ export default function PurchaseOrderDetail() {
               <button
                 onClick={() => advanceStatus()}
                 disabled={advancing}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0071E3] px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#0064c8] disabled:opacity-50 transition-colors"
+                className="order-first inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#0071E3] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#0064c8] active:bg-[#004aad] disabled:opacity-50 transition-colors sm:order-none sm:w-auto sm:py-1.5 sm:text-xs"
               >
                 {advancing && <RefreshCw size={13} className="animate-spin" />}
                 {advanceLabel()}
@@ -792,59 +922,34 @@ export default function PurchaseOrderDetail() {
                 <span className="text-sm font-bold text-gray-700">Ачилтууд</span>
                 <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">{shipments.length}</span>
               </div>
-              {effectiveStatus === "loading" && (role === "admin" || role === "supervisor" || role === "manager") && (
-                <div className="flex items-center gap-2">
-                  <select
-                    id="add-vehicle-select"
-                    defaultValue=""
-                    className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 cursor-pointer"
-                  >
-                    <option value="" disabled>Машин сонгох...</option>
-                    {vehicles.map((v) => <option key={v.id} value={v.id}>{v.name} ({v.plate})</option>)}
-                  </select>
-                  <button
-                    onClick={async () => {
-                      const sel = document.getElementById("add-vehicle-select") as HTMLSelectElement;
-                      const vid = sel?.value ? parseInt(sel.value) : null;
-                      if (!vid) { flash("Машин сонгоно уу", false); return; }
-                      try {
-                        await api.post(`/purchase-orders/${order.id}/shipments`, { vehicle_id: vid, notes: "" });
-                        await loadShipments();
-                        sel.value = "";
-                        flash("Машин нэмэгдлээ");
-                      } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#0064c8] transition-colors"
-                  >
-                    <Plus size={13} /> Машин нэмэх
-                  </button>
-                </div>
+              {effectiveStatus === "loading" && shipments.length === 0 && (
+                <span className="text-[10px] text-gray-400 italic">Dashboard-аас машин нэмнэ үү</span>
               )}
             </div>
 
             {shipments.length === 0 ? (
               <div className="p-6 text-center text-sm text-gray-400">
-                {effectiveStatus === "loading" ? "Машин нэмээд бараанууд хуваарилна уу" : "Ачилт байхгүй"}
+                {effectiveStatus === "loading" ? "Dashboard-аас машин нэмнэ үү" : "Ачилт байхгүй"}
               </div>
             ) : (
               <div className="divide-y divide-gray-50">
                 {shipments.map((sh) => {
                   const isExpanded = expandedShipment === sh.id;
                   const canEdit = sh.status === "loading" && (role === "admin" || role === "supervisor" || role === "manager");
-                  const otherLoadingShipments = shipments.filter(s => s.id !== sh.id && s.status === "loading");
+                  const otherLoadingShipments = allShipments.filter(s => s.id !== sh.id && s.status === "loading");
                   return (
                   <div key={sh.id}>
                     {/* ── Shipment header (click to expand) ── */}
                     <div
-                      className={`px-4 py-3 cursor-pointer transition-colors ${isExpanded ? "bg-blue-50/40" : "hover:bg-gray-50/40"}`}
+                      className={`px-3 py-3 cursor-pointer transition-colors sm:px-4 ${isExpanded ? "bg-blue-50/40" : "hover:bg-gray-50/40"}`}
                       onClick={() => toggleShipmentDetail(sh.id)}
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
                           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600 text-lg shrink-0">
                             {"\u{1F69A}"}
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               {/* Machine selector (loading) or name display */}
                               {canEdit ? (
@@ -887,23 +992,23 @@ export default function PurchaseOrderDetail() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2" onClick={(e) => e.stopPropagation()}>
                           {/* Advance buttons */}
                           {sh.status === "loading" && sh.line_count > 0 && (role === "admin" || role === "supervisor" || role === "manager") && (
                             <button onClick={async () => { try { await api.patch(`/purchase-orders/${order.id}/shipments/${sh.id}/advance`); await loadShipments(); await loadOrder(); flash("Замд гарлаа"); } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); } }}
-                              className="rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-600 transition-colors">Замд гаргах</button>
+                              className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-600 active:bg-blue-700 transition-colors">Замд гаргах</button>
                           )}
                           {sh.status === "transit" && (role === "admin" || role === "supervisor" || role === "warehouse_clerk") && (
                             <button onClick={async () => { try { await api.patch(`/purchase-orders/${order.id}/shipments/${sh.id}/advance`); await loadShipments(); await loadOrder(); flash("Ачаа ирсэн"); } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); } }}
-                              className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 transition-colors">Ирсэн</button>
+                              className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-600 active:bg-emerald-700 transition-colors">Ирсэн</button>
                           )}
                           {sh.status === "arrived" && (role === "admin" || role === "supervisor" || role === "warehouse_clerk") && (
                             <button onClick={async () => { try { await api.patch(`/purchase-orders/${order.id}/shipments/${sh.id}/advance`); await loadShipments(); await loadOrder(); flash("Нягтлан руу шилжлээ"); } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); } }}
-                              className="rounded-lg bg-violet-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-600 transition-colors">Нягтлан руу</button>
+                              className="rounded-lg bg-violet-500 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-600 active:bg-violet-700 transition-colors">Нягтлан руу</button>
                           )}
                           {(sh.status === "accounting" || sh.status === "confirmed") && (role === "admin" || role === "accountant") && (
                             <button onClick={async () => { try { await api.patch(`/purchase-orders/${order.id}/shipments/${sh.id}/advance`); await loadShipments(); await loadOrder(); flash("Статус шилжлээ"); } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); } }}
-                              className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700 transition-colors">{sh.status === "accounting" ? "Баталгаажуулах" : "Орлого авах"}</button>
+                              className="rounded-lg bg-green-600 px-3 py-2 text-xs font-semibold text-white hover:bg-green-700 active:bg-green-800 transition-colors">{sh.status === "accounting" ? "Баталгаажуулах" : "Орлого авах"}</button>
                           )}
                           {sh.status === "loading" && (role === "admin" || role === "supervisor") && (
                             <button onClick={async () => { if (!confirm("Энэ ачилтыг устгах уу?")) return; try { await api.delete(`/purchase-orders/${order.id}/shipments/${sh.id}`); await loadShipments(); flash("Устгагдлаа"); } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); } }}
@@ -1009,7 +1114,7 @@ export default function PurchaseOrderDetail() {
                     if (!byBrand[ul.brand]) byBrand[ul.brand] = [];
                     byBrand[ul.brand].push(ul);
                   }
-                  const loadingShipments = shipments.filter(s => s.status === "loading");
+                  const loadingShipments = allShipments.filter(s => s.status === "loading");
                   return Object.entries(byBrand).sort(([a], [b]) => a.localeCompare(b)).map(([brand, items]) => (
                     <div key={brand} className="px-4 py-2.5">
                       <div className="flex items-center justify-between">
@@ -1052,7 +1157,7 @@ export default function PurchaseOrderDetail() {
       <div className="mt-3 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
 
         {/* Toolbar */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 bg-gray-50/60 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-gray-100 bg-gray-50/60 px-3 py-2.5 sm:gap-2 sm:px-4 sm:py-3">
           <div className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 shadow-sm">
             <select
               value={filterBrand}
@@ -1126,6 +1231,22 @@ export default function PurchaseOrderDetail() {
             </label>
           )}
 
+          {/* Захиалах ёстой бараа (min-stock rule-д тохирсон, хүрэлцээгүй) */}
+          {reorderCount > 0 && (
+            <label className="flex items-center gap-1.5 cursor-pointer select-none rounded-lg border border-red-200 bg-red-50/60 px-2.5 py-1.5 shadow-sm hover:bg-red-100 transition-colors">
+              <input
+                type="checkbox"
+                checked={onlyReorder}
+                onChange={(e) => setOnlyReorder(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-red-300 text-red-600 accent-red-600"
+              />
+              <span className="text-xs font-medium text-red-700">Захиалах ёстой бараа</span>
+              <span className="rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white tabular-nums">
+                {reorderCount}
+              </span>
+            </label>
+          )}
+
           <div className="ml-auto flex items-center gap-2">
             <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">
               {filteredLines.length} бараа
@@ -1182,53 +1303,57 @@ export default function PurchaseOrderDetail() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50/40 text-left">
-                  <th className="px-4 py-2.5 text-xs font-semibold text-gray-500">Агуулах</th>
-                  <th className="px-4 py-2.5 text-xs font-semibold text-gray-500">Код</th>
-                  <th className="px-4 py-2.5 text-xs font-semibold text-gray-500">Нэр</th>
+                  <th className="hidden px-4 py-2.5 text-xs font-semibold text-gray-500 md:table-cell">Агуулах</th>
+                  <th className="hidden px-4 py-2.5 text-xs font-semibold text-gray-500 md:table-cell">Код</th>
+                  <th className="px-2 py-2.5 text-xs font-semibold text-gray-500 md:px-4">Нэр</th>
                   {showStockCols && (
                     <>
-                      <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Нөөц</th>
-                      <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Борлуулалт</th>
+                      <th className="px-2 py-2.5 text-right text-xs font-semibold text-gray-500 md:px-4">Нөөц</th>
+                      <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Борлуулалт</th>
                     </>
                   )}
-                  <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Нэгж жин</th>
-                  <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Хайрцаг/ш</th>
+                  <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Нэгж жин</th>
+                  <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Хайрцаг/ш</th>
                   {!showTransitCols && (
-                    <th className="w-28 px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Захиалах</th>
+                    <th className="w-20 px-2 py-2.5 text-right text-xs font-semibold text-gray-500 md:w-28 md:px-4">
+                      {showReceivedCols ? "Захиалсан" : "Захиалах"}
+                    </th>
                   )}
                   {showEstCostCols && (
                     <>
-                      <th className="w-28 px-4 py-2.5 text-right text-xs font-semibold text-indigo-500">Нэгж үнэ</th>
-                      <th className="w-32 px-4 py-2.5 text-right text-xs font-semibold text-indigo-600">Тооцоолсон дүн</th>
+                      <th className="hidden w-28 px-4 py-2.5 text-right text-xs font-semibold text-indigo-500 md:table-cell">Нэгж үнэ</th>
+                      <th className="hidden w-32 px-4 py-2.5 text-right text-xs font-semibold text-indigo-600 md:table-cell">Тооцоолсон дүн</th>
                     </>
                   )}
                   {showLoadingCols && (
                     <>
-                      <th className="w-28 px-4 py-2.5 text-right text-xs font-semibold text-orange-500">Ачигдсан</th>
+                      <th className="w-20 px-2 py-2.5 text-right text-xs font-semibold text-orange-500 md:w-28 md:px-4">Ачигдсан</th>
                       <th className="w-8 px-2 py-2.5" />
                     </>
                   )}
                   {showTransitCols && (
-                    <th className="w-28 px-4 py-2.5 text-right text-xs font-semibold text-orange-500">Ачигдсан</th>
+                    <th className="w-20 px-2 py-2.5 text-right text-xs font-semibold text-orange-500 md:w-28 md:px-4">Ачигдсан</th>
                   )}
                   {showReceivedCols && (
                     <>
-                      <th className="w-24 px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Ачигдсан</th>
-                      <th className="w-28 px-4 py-2.5 text-right text-xs font-semibold text-teal-600">Ирсэн тоо</th>
-                      <th className="w-24 px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Зөрүү</th>
-                      <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500">Тайлбар</th>
+                      <th className="hidden w-24 px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Ачигдсан</th>
+                      <th className="w-40 px-2 py-2.5 text-right text-xs font-semibold text-teal-600 md:px-4">Ирсэн (х × ш)</th>
+                      <th className="hidden w-24 px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Зөрүү</th>
+                      <th className="hidden px-4 py-2.5 text-left text-xs font-semibold text-gray-500 md:table-cell">Тайлбар</th>
                     </>
                   )}
                   {showPriceCols && (
                     <>
-                      <th className="w-32 px-4 py-2.5 text-right text-xs font-semibold text-purple-600">Нэгж үнэ</th>
-                      <th className="w-32 px-4 py-2.5 text-right text-xs font-semibold text-purple-700">Нийт дүн</th>
+                      <th className="hidden w-28 px-4 py-2.5 text-right text-xs font-semibold text-teal-600 md:table-cell">Нийт ширхэг</th>
+                      <th className="w-24 px-2 py-2.5 text-right text-xs font-semibold text-purple-600 md:w-32 md:px-4">Нэгж үнэ</th>
+                      <th className="hidden w-32 px-4 py-2.5 text-right text-xs font-semibold text-purple-700 md:table-cell">Нийт дүн</th>
                       {showPriceDiff && (
-                        <th className="w-28 px-4 py-2.5 text-right text-xs font-semibold text-orange-500">Үнэ зөрүү</th>
+                        <th className="hidden w-28 px-4 py-2.5 text-right text-xs font-semibold text-orange-500 md:table-cell">Үнэ зөрүү</th>
                       )}
                     </>
                   )}
-                  <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500">Жин (кг)</th>
+                  <th className="hidden px-4 py-2.5 text-xs font-semibold text-sky-600 md:table-cell">Машин</th>
+                  <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Жин (кг)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -1244,8 +1369,8 @@ export default function PurchaseOrderDetail() {
                   <Fragment key={brand}>
                     {/* Brand group header */}
                     <tr className="bg-slate-50">
-                      <td colSpan={colCount} className="px-4 py-2">
-                        <div className="flex items-center gap-3">
+                      <td colSpan={colCount} className="px-2 py-2 md:px-4">
+                        <div className="flex flex-wrap items-center gap-2">
                           <div className="h-3 w-0.5 rounded-full bg-[#0071E3]" />
                           <span className="text-xs font-bold uppercase tracking-wider text-slate-600">{brand}</span>
                           <span className="rounded-md bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
@@ -1256,7 +1381,7 @@ export default function PurchaseOrderDetail() {
                               <span className="rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600">
                                 {brandTotalBoxes.toFixed(0)} хайрцаг
                               </span>
-                              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+                              <span className="hidden rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 sm:inline-block">
                                 {brandTotalWeight.toFixed(1)} кг
                               </span>
                             </>
@@ -1269,19 +1394,66 @@ export default function PurchaseOrderDetail() {
                               <Plus size={10} /> Нэмэлт мөр
                             </button>
                           )}
+                          {role === "admin" && (effectiveStatus === "preparing" || effectiveStatus === "loading") && (
+                            <button
+                              onClick={() => openCrossBrand(brand)}
+                              className={`${effectiveStatus === "loading" && (role === "admin") ? "" : "ml-auto"} inline-flex items-center gap-1 rounded-md border border-violet-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-violet-600 hover:bg-violet-50 transition-colors`}
+                              title="Бусад брендээс нэг удаагийн бараа нэмэх (зөвхөн админ)"
+                            >
+                              <Plus size={10} /> Бусад брендээс
+                            </button>
+                          )}
                           {effectiveStatus === "loading" && (
                             <select
                               value={brandVehicles[brand] ?? ""}
-                              onChange={(e) => {
-                                const v = e.target.value ? parseInt(e.target.value) : null;
-                                setBrandVehicles((prev) => ({ ...prev, [brand]: v }));
+                              onChange={async (e) => {
+                                const vid = e.target.value ? parseInt(e.target.value) : null;
+                                setBrandVehicles((prev) => ({ ...prev, [brand]: vid }));
+                                if (vid && order) {
+                                  try {
+                                    const targetShip = allShipments.find((s) => s.vehicle_id === vid && s.status === "loading");
+                                    if (!targetShip) {
+                                      flash("Тухайн машин Dashboard-д нэмэгдээгүй байна", false);
+                                      return;
+                                    }
+                                    // 1) Одоо өөр shipment-д байгаа brand-ийн бүх line-уудыг target руу шилжүүлэх
+                                    const brandProductIds = new Set(lines.map((ln) => ln.product_id));
+                                    const movePromises: Promise<any>[] = [];
+                                    for (const pid of brandProductIds) {
+                                      const current = productShipmentMap[pid] ?? [];
+                                      for (const s of current) {
+                                        if (s.shipment_id !== targetShip.id) {
+                                          movePromises.push(
+                                            api.post(`/purchase-orders/${order.id}/shipments/move-line`, {
+                                              shipment_line_id: s.shipment_line_id,
+                                              target_shipment_id: targetShip.id,
+                                            })
+                                          );
+                                        }
+                                      }
+                                    }
+                                    if (movePromises.length > 0) {
+                                      await Promise.all(movePromises);
+                                    }
+                                    // 2) Хуваарилагдаагүй барааг assign хийх
+                                    await api.post(`/purchase-orders/${order.id}/shipments/${targetShip.id}/assign-brand`, { brand });
+                                    await loadShipments();
+                                    flash(`${brand} → ${targetShip.vehicle_name} рүү шилжлээ`);
+                                  } catch (err: any) {
+                                    flash(err?.response?.data?.detail ?? "Алдаа", false);
+                                  }
+                                }
                               }}
                               className="ml-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 outline-none shadow-sm focus:border-[#0071E3] focus:ring-1 focus:ring-[#0071E3]/20"
                             >
-                              <option value="">🚛 Машин сонгох</option>
-                              {vehicles.filter((v) => v.is_active !== false).map((v) => (
-                                <option key={v.id} value={v.id}>{v.name} · {v.plate}</option>
-                              ))}
+                              <option value="">🚛 Машин сонгох (бүх бараа)</option>
+                              {allShipments
+                                .filter((s) => s.status === "loading" && s.vehicle_id)
+                                .map((s) => (
+                                  <option key={s.id} value={s.vehicle_id!}>
+                                    {s.vehicle_name}
+                                  </option>
+                                ))}
                             </select>
                           )}
                           {effectiveStatus !== "loading" && (() => {
@@ -1309,7 +1481,7 @@ export default function PurchaseOrderDetail() {
                             hasQty ? "bg-blue-50/40 hover:bg-blue-50/70" : "hover:bg-gray-50"
                           }`}
                         >
-                          <td className="px-4 py-2.5">
+                          <td className="hidden px-4 py-2.5 md:table-cell">
                             {l.warehouse_name && l.warehouse_name !== "nan" ? (
                               <span className="whitespace-nowrap text-[11px] text-gray-400">
                                 {l.warehouse_name}
@@ -1318,23 +1490,59 @@ export default function PurchaseOrderDetail() {
                               <span className="text-gray-300">—</span>
                             )}
                           </td>
-                          <td className="px-4 py-2.5">
+                          <td className="hidden px-4 py-2.5 md:table-cell">
                             <span className="font-mono text-[11px] text-gray-400">{l.item_code}</span>
                           </td>
-                          <td className="max-w-[220px] px-4 py-2.5">
-                            <span className="line-clamp-2 text-xs font-medium text-gray-800">{l.name}</span>
+                          <td className="min-w-[140px] px-2 py-2 md:min-w-[180px] md:px-4 md:py-2.5">
+                            <div className="flex items-start gap-1.5">
+                              <span className="block whitespace-normal break-words text-xs font-medium text-gray-800">{l.name}</span>
+                              {(l as any).override_brand && (l as any).original_brand && (
+                                <span
+                                  title={`Оригинал бренд: ${(l as any).original_brand} (онцгой тохиолдол)`}
+                                  className="shrink-0 rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 whitespace-nowrap"
+                                >
+                                  ← {(l as any).original_brand}
+                                </span>
+                              )}
+                              {(l as any).needs_reorder && (() => {
+                                const box = (l as any).stock_box ?? 0;
+                                const extra = (l as any).stock_extra_pcs ?? 0;
+                                const min = (l as any).min_stock_box ?? 0;
+                                const breakdown = `${box} хайрцаг${extra > 0 ? `, ${extra}ш` : ""}`;
+                                return (
+                                  <span
+                                    title={`Үлдэгдэл ${(l.stock_qty ?? 0).toFixed(0)}ш (${breakdown}) < Min ${min} хайрцаг → захиалах ёстой`}
+                                    className="shrink-0 rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-[9px] font-semibold text-red-600 whitespace-nowrap"
+                                  >
+                                    Захиалах · {box}/{min}
+                                  </span>
+                                );
+                              })()}
+                            </div>
                           </td>
-                          {showStockCols && (
+                          {showStockCols && (() => {
+                            const box = (l as any).stock_box ?? 0;
+                            const extra = (l as any).stock_extra_pcs ?? 0;
+                            const pcs = l.stock_qty ?? 0;
+                            return (
                             <>
-                              <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-500">{l.stock_qty.toFixed(0)}</td>
-                              <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-500">{l.sales_qty.toFixed(0)}</td>
+                              <td className="px-2 py-2 text-right text-xs tabular-nums text-gray-500 md:px-4 md:py-2.5">
+                                <div className="font-medium text-gray-700">{pcs.toFixed(0)}ш</div>
+                                {box > 0 && (
+                                  <div className="text-[10px] text-gray-400">
+                                    {box}х{extra > 0 ? `, ${extra}ш` : ""}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.sales_qty.toFixed(0)}</td>
                             </>
-                          )}
-                          <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-500">{l.unit_weight.toFixed(3)}</td>
-                          <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-500">{l.pack_ratio}</td>
+                            );
+                          })()}
+                          <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.unit_weight.toFixed(3)}</td>
+                          <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.pack_ratio}</td>
                           {!showTransitCols && (
-                            <td className="px-4 py-2 text-right">
-                              {canEdit ? (
+                            <td className="px-2 py-2 text-right md:px-4">
+                              {canEdit && !showReceivedCols ? (
                                 <input
                                   type="number"
                                   min={0}
@@ -1346,7 +1554,7 @@ export default function PurchaseOrderDetail() {
                                     const v = parseFloat(e.target.value);
                                     store.setQuantity(l.product_id, isNaN(v) ? 0 : v);
                                   }}
-                                  className="w-20 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-right text-xs font-medium tabular-nums outline-none shadow-sm transition focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15"
+                                  className="w-16 rounded-lg border border-gray-200 bg-white px-2 py-2 text-right text-base font-medium tabular-nums outline-none shadow-sm transition focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15 md:w-20 md:py-1.5 md:text-xs"
                                 />
                               ) : (
                                 <span className={`text-xs font-semibold tabular-nums ${hasQty ? "text-[#0071E3]" : "text-gray-300"}`}>
@@ -1362,10 +1570,10 @@ export default function PurchaseOrderDetail() {
                             const estCost = lpp * qBox;
                             return (
                               <>
-                                <td className="px-4 py-2.5 text-right text-xs tabular-nums text-indigo-500">
+                                <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-indigo-500 md:table-cell">
                                   {lpp > 0 ? lpp.toLocaleString() : <span className="text-gray-300">—</span>}
                                 </td>
-                                <td className="px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-indigo-600">
+                                <td className="hidden px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-indigo-600 md:table-cell">
                                   {lpp > 0 && qBox > 0 ? estCost.toLocaleString() : <span className="text-gray-300">—</span>}
                                 </td>
                               </>
@@ -1374,7 +1582,7 @@ export default function PurchaseOrderDetail() {
 
                           {/* Transit: ачигдсан тоо read-only */}
                           {showTransitCols && (
-                            <td className="px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-orange-600">
+                            <td className="px-2 py-2 text-right text-xs font-semibold tabular-nums text-orange-600 md:px-4 md:py-2.5">
                               {(l.loaded_qty_box ?? 0) > 0
                                 ? (l.loaded_qty_box ?? 0).toFixed(0)
                                 : <span className="text-gray-300">—</span>}
@@ -1384,7 +1592,7 @@ export default function PurchaseOrderDetail() {
                           {/* Loading: loaded only */}
                           {showLoadingCols && (
                             <>
-                              <td className="px-4 py-2 text-right">
+                              <td className="px-2 py-2 text-right md:px-4">
                                 {(role === "manager" || role === "admin" || role === "supervisor") ? (
                                   <input
                                     type="number" min={0} step={1}
@@ -1395,7 +1603,7 @@ export default function PurchaseOrderDetail() {
                                       const v = parseFloat(e.target.value);
                                       setLoadedQtys((prev) => ({ ...prev, [l.product_id]: isNaN(v) ? 0 : v }));
                                     }}
-                                    className="w-20 rounded-lg border border-orange-200 bg-orange-50/50 px-2 py-1.5 text-right text-xs font-medium tabular-nums outline-none shadow-sm transition focus:border-orange-400 focus:ring-2 focus:ring-orange-200"
+                                    className="w-16 rounded-lg border border-orange-200 bg-orange-50/50 px-2 py-2 text-right text-base font-medium tabular-nums outline-none shadow-sm transition focus:border-orange-400 focus:ring-2 focus:ring-orange-200 md:w-20 md:py-1.5 md:text-xs"
                                   />
                                 ) : (
                                   <span className="text-xs tabular-nums text-gray-600">{(loadedQtys[l.product_id] ?? 0).toFixed(0)}</span>
@@ -1417,53 +1625,89 @@ export default function PurchaseOrderDetail() {
                           {showReceivedCols && (() => {
                             const loaded = l.loaded_qty_box ?? 0;
                             const received = receivedQtys[l.product_id] ?? l.received_qty_box ?? 0;
-                            const diff = loaded - received;
+                            const extraPcs = receivedExtraPcs[l.product_id] ?? l.received_qty_extra_pcs ?? 0;
+                            const packRatio = l.pack_ratio || 1;
+                            // Diff-ийг ширхэгийн нарийвчлалтайгаар бодно
+                            const loadedPcs = loaded * packRatio;
+                            const receivedPcs = received * packRatio + extraPcs;
+                            const diffPcs = loadedPcs - receivedPcs;
                             const canEditReceived = (role === "warehouse_clerk" || role === "admin") && effectiveStatus === "arrived";
                             return (
                               <>
-                                <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-500">{loaded.toFixed(0)}</td>
-                                <td className="px-4 py-2 text-right">
+                                <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{loaded.toFixed(0)}</td>
+                                <td className="px-2 py-2 text-right md:px-4">
                                   {canEditReceived ? (
-                                    <input
-                                      type="number" min={0} step={1}
-                                      value={receivedQtys[l.product_id] === 0 ? "" : (receivedQtys[l.product_id] ?? "")}
-                                      placeholder="0"
-                                      onWheel={(e) => e.currentTarget.blur()}
-                                      onChange={(e) => {
-                                        const v = parseFloat(e.target.value);
-                                        setReceivedQtys((prev) => ({ ...prev, [l.product_id]: isNaN(v) ? 0 : v }));
-                                      }}
-                                      className="w-20 rounded-lg border border-teal-200 bg-teal-50/50 px-2 py-1.5 text-right text-xs font-medium tabular-nums outline-none shadow-sm transition focus:border-teal-400 focus:ring-2 focus:ring-teal-200"
-                                    />
+                                    <div className="flex items-center justify-end gap-1">
+                                      <input
+                                        type="number" min={0} step={1}
+                                        value={receivedQtys[l.product_id] === 0 ? "" : (receivedQtys[l.product_id] ?? "")}
+                                        placeholder="0"
+                                        onWheel={(e) => e.currentTarget.blur()}
+                                        onChange={(e) => {
+                                          const v = parseFloat(e.target.value);
+                                          setReceivedQtys((prev) => ({ ...prev, [l.product_id]: isNaN(v) ? 0 : v }));
+                                        }}
+                                        title="Хайрцаг"
+                                        className="w-14 rounded-lg border border-teal-200 bg-teal-50/50 px-1.5 py-2 text-right text-base font-medium tabular-nums outline-none shadow-sm transition focus:border-teal-400 focus:ring-2 focus:ring-teal-200 md:w-16 md:py-1.5 md:text-xs"
+                                      />
+                                      <span className="text-[10px] text-gray-400">х</span>
+                                      <input
+                                        type="number" min={0} step={1}
+                                        value={receivedExtraPcs[l.product_id] ? receivedExtraPcs[l.product_id] : ""}
+                                        placeholder="0"
+                                        onWheel={(e) => e.currentTarget.blur()}
+                                        onChange={(e) => {
+                                          const v = parseFloat(e.target.value);
+                                          setReceivedExtraPcs((prev) => ({ ...prev, [l.product_id]: isNaN(v) ? 0 : v }));
+                                        }}
+                                        title="Задгай ширхэг"
+                                        className="w-12 rounded-lg border border-amber-200 bg-amber-50/50 px-1.5 py-2 text-right text-base font-medium tabular-nums outline-none shadow-sm transition focus:border-amber-400 focus:ring-2 focus:ring-amber-200 md:w-14 md:py-1.5 md:text-xs"
+                                      />
+                                      <span className="text-[10px] text-gray-400">ш</span>
+                                    </div>
                                   ) : (
-                                    <span className="text-xs font-medium tabular-nums text-teal-700">{received.toFixed(0)}</span>
+                                    <span className="text-xs font-medium tabular-nums text-teal-700">
+                                      {received.toFixed(0)}
+                                      {extraPcs > 0 && <span className="ml-1 text-amber-600">+ {extraPcs.toFixed(0)}ш</span>}
+                                    </span>
                                   )}
                                 </td>
-                                <td className="px-4 py-2.5 text-right">
-                                  {diff !== 0 ? (
-                                    <span className="inline-flex items-center justify-end gap-0.5 text-xs font-bold tabular-nums text-red-500">
-                                      {diff > 0 ? "+" : ""}{diff.toFixed(0)}
+                                <td className="hidden px-4 py-2.5 text-right md:table-cell">
+                                  {Math.abs(diffPcs) > 0.01 ? (
+                                    <span className="inline-flex flex-col items-end text-xs font-bold tabular-nums text-red-500">
+                                      <span>{diffPcs > 0 ? "+" : ""}{diffPcs.toFixed(0)}ш</span>
                                     </span>
                                   ) : (
                                     <span className="text-xs text-gray-300">—</span>
                                   )}
                                 </td>
-                                <td className="px-4 py-2">
-                                  {diff !== 0 ? (
-                                    canEditReceived ? (
-                                      <input
-                                        type="text"
-                                        placeholder="Тайлбар бичих..."
-                                        value={remarkInputs[l.product_id] ?? ""}
-                                        onChange={(e) => setRemarkInputs((prev) => ({ ...prev, [l.product_id]: e.target.value }))}
-                                        className="w-full min-w-[140px] rounded-lg border border-orange-200 bg-orange-50/50 px-2 py-1.5 text-xs outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-200"
-                                      />
+                                <td className="hidden px-4 py-2 md:table-cell">
+                                  <div className="flex items-center gap-1.5">
+                                    {Math.abs(diffPcs) > 0.01 ? (
+                                      canEditReceived ? (
+                                        <input
+                                          type="text"
+                                          placeholder="Тайлбар бичих..."
+                                          value={remarkInputs[l.product_id] ?? ""}
+                                          onChange={(e) => setRemarkInputs((prev) => ({ ...prev, [l.product_id]: e.target.value }))}
+                                          className="w-full min-w-[140px] rounded-lg border border-orange-200 bg-orange-50/50 px-2 py-1.5 text-xs outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-200"
+                                        />
+                                      ) : (
+                                        <span className="text-xs italic text-gray-400">{l.remark || "—"}</span>
+                                      )
                                     ) : (
-                                      <span className="text-xs italic text-gray-400">{l.remark || "—"}</span>
-                                    )
-                                  ) : (
-                                    <span className="text-xs text-gray-200">—</span>
-                                  )}
+                                      <span className="flex-1 text-xs text-gray-200">—</span>
+                                    )}
+                                    {canEditReceived && (
+                                      <button
+                                        onClick={() => deleteLine(l.line_id, `"${l.name}" барааг устгахдаа итгэлтэй байна уу?`)}
+                                        className="rounded-lg p-1.5 text-gray-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+                                        title="Ирээгүй барааг устгах"
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    )}
+                                  </div>
                                 </td>
                               </>
                             );
@@ -1472,31 +1716,65 @@ export default function PurchaseOrderDetail() {
                           {/* Price cols — accounting/confirmed/received */}
                           {showPriceCols && (() => {
                             const received = receivedQtys[l.product_id] ?? l.received_qty_box ?? 0;
+                            const extraPcs = receivedExtraPcs[l.product_id] ?? l.received_qty_extra_pcs ?? 0;
+                            const packRatio = l.pack_ratio || 1;
                             const price = priceInputs[l.product_id] ?? l.unit_price ?? 0;
-                            const lineTotal = received * price;
-                            const canEditPrice = (role === "accountant" || role === "admin") && effectiveStatus === "accounting";
+                            // Нийт ширхэг = хайрцаг × pack_ratio + задгай ширхэг
+                            const totalPcs = received * packRatio + extraPcs;
+                            // Нийт дүн = нэгж үнэ (ширхэг) × нийт ширхэг
+                            const lineTotal = price * totalPcs;
+                            const canEditPrice = (role === "accountant" || role === "admin" || role === "manager" || role === "supervisor") && effectiveStatus === "accounting";
+                            // Хуучин үнэ = сүүлийн Орлого тайлангийн нэгж үнэ (last_purchase_price)
+                            const savedPrice = l.last_purchase_price ?? 0;
+                            const currentPrice = priceInputs[l.product_id] ?? l.unit_price ?? 0;
+                            const priceChanged = savedPrice > 0 && Math.abs(currentPrice - savedPrice) > 0.01 && currentPrice > 0;
+                            const priceIncreased = currentPrice > savedPrice;
+                            const wasEmpty = savedPrice === 0 && currentPrice > 0;
                             return (
                               <>
-                                <td className="px-4 py-2 text-right">
+                                {/* Нийт ирсэн ширхэг */}
+                                <td className="hidden px-4 py-2.5 text-right md:table-cell">
+                                  {totalPcs > 0 ? (
+                                    <span className="text-xs font-semibold tabular-nums text-teal-700">
+                                      {totalPcs.toLocaleString("mn-MN")} ш
+                                    </span>
+                                  ) : (
+                                    <span className="text-xs text-gray-300">—</span>
+                                  )}
+                                </td>
+                                <td className="px-2 py-2 text-right md:px-4">
                                   {canEditPrice ? (
-                                    <input
-                                      type="number" min={0} step={1}
-                                      value={priceInputs[l.product_id] === 0 ? "" : (priceInputs[l.product_id] ?? "")}
-                                      placeholder="0"
-                                      onWheel={(e) => e.currentTarget.blur()}
-                                      onChange={(e) => {
-                                        const v = parseFloat(e.target.value);
-                                        setPriceInputs((prev) => ({ ...prev, [l.product_id]: isNaN(v) ? 0 : v }));
-                                      }}
-                                      className="w-28 rounded-lg border border-purple-200 bg-purple-50/50 px-2 py-1.5 text-right text-xs font-medium tabular-nums outline-none shadow-sm transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200"
-                                    />
+                                    <div className="flex flex-col items-end gap-0.5">
+                                      <input
+                                        type="number" min={0} step={1}
+                                        value={priceInputs[l.product_id] === 0 ? "" : (priceInputs[l.product_id] ?? "")}
+                                        placeholder="0"
+                                        onWheel={(e) => e.currentTarget.blur()}
+                                        onChange={(e) => {
+                                          const v = parseFloat(e.target.value);
+                                          setPriceInputs((prev) => ({ ...prev, [l.product_id]: isNaN(v) ? 0 : v }));
+                                        }}
+                                        className={`w-24 rounded-lg border px-2 py-2 text-right text-base font-medium tabular-nums outline-none shadow-sm transition focus:ring-2 md:w-28 md:py-1.5 md:text-xs ${
+                                          priceChanged
+                                            ? wasEmpty
+                                              ? "border-emerald-300 bg-emerald-50 text-emerald-700 focus:border-emerald-400 focus:ring-emerald-200"
+                                              : priceIncreased
+                                                ? "border-red-300 bg-red-50 text-red-700 focus:border-red-400 focus:ring-red-200"
+                                                : "border-blue-300 bg-blue-50 text-blue-700 focus:border-blue-400 focus:ring-blue-200"
+                                            : "border-purple-200 bg-purple-50/50 focus:border-purple-400 focus:ring-purple-200"
+                                        }`}
+                                      />
+                                      <div className="text-[10px] tabular-nums text-gray-400">
+                                        Хуучин: {savedPrice > 0 ? savedPrice.toLocaleString("mn-MN") : "—"}
+                                      </div>
+                                    </div>
                                   ) : (
                                     <span className="text-xs tabular-nums text-gray-700">
                                       {price > 0 ? price.toLocaleString("mn-MN") : <span className="text-gray-300">—</span>}
                                     </span>
                                   )}
                                 </td>
-                                <td className="px-4 py-2.5 text-right">
+                                <td className="hidden px-4 py-2.5 text-right md:table-cell">
                                   {lineTotal > 0 ? (
                                     <span className="text-xs font-semibold tabular-nums text-purple-700">
                                       {lineTotal.toLocaleString("mn-MN")}
@@ -1510,7 +1788,7 @@ export default function PurchaseOrderDetail() {
                                   const diff = (price > 0 && lpp > 0) ? price - lpp : null;
                                   const hasPriceDiff = diff !== null && Math.abs(diff) > 0.01;
                                   return (
-                                    <td className={`px-4 py-2.5 text-right text-xs font-semibold tabular-nums ${
+                                    <td className={`hidden px-4 py-2.5 text-right text-xs font-semibold tabular-nums md:table-cell ${
                                       !hasPriceDiff ? "text-gray-300" : diff! > 0 ? "text-red-600" : "text-blue-600"
                                     }`}>
                                       {hasPriceDiff
@@ -1522,8 +1800,63 @@ export default function PurchaseOrderDetail() {
                               </>
                             );
                           })()}
+                          {/* Машин — тухайн бараа ямар машинд ачигдсан (clickable dropdown) */}
+                          <td className="hidden px-4 py-2.5 md:table-cell">
+                            {(() => {
+                              const ships = productShipmentMap[l.product_id] ?? [];
+                              const otherLoadingShipments = allShipments.filter(
+                                (s) => s.status === "loading" && s.vehicle_id
+                              );
+                              const canChange = effectiveStatus === "loading" && otherLoadingShipments.length > 0;
+
+                              if (ships.length === 0) {
+                                return <span className="text-[10px] text-gray-300">—</span>;
+                              }
+
+                              // Олон машинд хуваагдсан бол chip л харуулна
+                              if (ships.length > 1) {
+                                return (
+                                  <div className="flex flex-wrap gap-1">
+                                    {ships.map((s, i) => (
+                                      <span key={i} className="inline-flex items-center gap-1 rounded-lg bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700">
+                                        <Truck size={10} />
+                                        {s.vehicle_name ?? "Машин"} ({s.loaded_qty_box.toFixed(0)})
+                                      </span>
+                                    ))}
+                                  </div>
+                                );
+                              }
+
+                              // Ганц машинд байгаа — шилжүүлэх dropdown (loading stage дээр)
+                              const current = ships[0];
+                              if (!canChange) {
+                                return (
+                                  <span className="inline-flex items-center gap-1 rounded-lg bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700">
+                                    <Truck size={10} /> {current.vehicle_name ?? "Машин"}
+                                  </span>
+                                );
+                              }
+                              return (
+                                <select
+                                  value={current.shipment_id}
+                                  onChange={async (e) => {
+                                    const targetId = parseInt(e.target.value);
+                                    if (!targetId || targetId === current.shipment_id) return;
+                                    await moveLineToShipment(current.shipment_line_id, targetId);
+                                  }}
+                                  className="rounded-lg border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 outline-none cursor-pointer hover:bg-sky-100"
+                                >
+                                  {otherLoadingShipments.map((s) => (
+                                    <option key={s.id} value={s.id}>
+                                      🚛 {s.vehicle_name ?? `Ачилт #${s.id}`}
+                                    </option>
+                                  ))}
+                                </select>
+                              );
+                            })()}
+                          </td>
                           {/* Жин (кг) — хамгийн сүүлийн багана */}
-                          <td className="px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-gray-700">
+                          <td className="hidden px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-gray-700 md:table-cell">
                             {rowWeight > 0 ? rowWeight.toFixed(2) : <span className="text-gray-300">—</span>}
                           </td>
                         </tr>
@@ -1532,26 +1865,26 @@ export default function PurchaseOrderDetail() {
                     {/* Extra lines for this brand */}
                     {brandExtraLines.map((el) => (
                       <tr key={`extra-${el.id}`} className="bg-amber-50/40 group">
-                        <td className="px-4 py-2 text-xs text-gray-400 italic">{el.warehouse_name || "—"}</td>
-                        <td className="px-4 py-2 text-xs text-gray-400 tabular-nums">{el.item_code || "—"}</td>
-                        <td className="px-4 py-2" colSpan={showStockCols ? 3 : 1}>
-                          <div className="flex items-center gap-1.5">
+                        <td className="hidden px-4 py-2 text-xs text-gray-400 italic md:table-cell">{el.warehouse_name || "—"}</td>
+                        <td className="hidden px-4 py-2 text-xs text-gray-400 tabular-nums md:table-cell">{el.item_code || "—"}</td>
+                        <td className="px-2 py-2 md:px-4" colSpan={showStockCols ? 2 : 1}>
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-600">НЭМЭЛТ</span>
-                            <span className="text-xs font-medium text-gray-700">{el.name}</span>
+                            <span className="text-xs font-medium text-gray-700 break-words">{el.name}</span>
                           </div>
                         </td>
-                        <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-400">{el.unit_weight.toFixed(3)}</td>
-                        <td className="px-4 py-2.5 text-right text-xs tabular-nums text-gray-400">{el.pack_ratio}</td>
-                        <td className="px-4 py-2 text-right">
+                        {showStockCols && <td className="hidden md:table-cell"/>}
+                        <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-400 md:table-cell">{el.unit_weight.toFixed(3)}</td>
+                        <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-400 md:table-cell">{el.pack_ratio}</td>
+                        <td className="px-2 py-2 text-right md:px-4">
                           <span className="text-xs font-semibold tabular-nums text-amber-700">{el.qty_box.toFixed(0)}</span>
                         </td>
-                        <td className="px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-amber-600">{el.computed_weight.toFixed(2)}</td>
                         {showLoadingCols && (
                           <>
-                            <td /><td />
+                            <td className="hidden md:table-cell"/>
                             <td className="px-2 py-2 text-right">
                               {(role === "manager" || role === "admin" || role === "supervisor") && (
-                                <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="flex items-center justify-end gap-1 opacity-60 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                                   <button onClick={() => openEditExtra(el)} className="rounded p-1 text-amber-400 hover:bg-amber-100 hover:text-amber-600" title="Засах">
                                     <RefreshCw size={12} />
                                   </button>
@@ -1563,9 +1896,11 @@ export default function PurchaseOrderDetail() {
                             </td>
                           </>
                         )}
-                        {showEstCostCols && <><td /><td /></>}
-                        {showReceivedCols && <><td /><td /><td /><td /></>}
-                        {showPriceCols && <><td /><td />{showPriceDiff && <td />}</>}
+                        {showEstCostCols && <><td className="hidden md:table-cell"/><td className="hidden md:table-cell"/></>}
+                        {showReceivedCols && <><td className="hidden md:table-cell"/><td/><td className="hidden md:table-cell"/><td className="hidden md:table-cell"/></>}
+                        {showPriceCols && <><td className="hidden md:table-cell"/><td/><td className="hidden md:table-cell"/>{showPriceDiff && <td className="hidden md:table-cell"/>}</>}
+                        <td className="hidden md:table-cell"/>
+                        <td className="hidden px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-amber-600 md:table-cell">{el.computed_weight.toFixed(2)}</td>
                       </tr>
                     ))}
                   </Fragment>
@@ -1933,6 +2268,105 @@ export default function PurchaseOrderDetail() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Cross-brand (admin) modal */}
+      {crossBrandTarget && role === "admin" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+             onClick={() => setCrossBrandTarget(null)}>
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
+               onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between border-b border-gray-100 px-6 py-4">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">
+                  Бусад брендээс бараа нэмэх
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  Зорилтот бренд: <span className="font-semibold text-violet-700">{crossBrandTarget}</span>
+                </p>
+                <p className="mt-0.5 text-[11px] text-gray-400">
+                  Онцгой тохиолдолд (жишээ нь нөгөө брендээс хямд авсан) өөр брендийн бараагаар энэ захиалгад нэмэх.
+                </p>
+              </div>
+              <button onClick={() => setCrossBrandTarget(null)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100">
+                <X size={16}/>
+              </button>
+            </div>
+
+            {/* Search */}
+            <div className="border-b border-gray-100 bg-gray-50/60 px-6 py-3">
+              <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-sm focus-within:border-[#0071E3] focus-within:ring-1 focus-within:ring-[#0071E3]/20">
+                <Search size={14} className="text-gray-400"/>
+                <input
+                  autoFocus
+                  value={crossBrandSearch}
+                  onChange={e => setCrossBrandSearch(e.target.value)}
+                  placeholder="Нэр эсвэл код хайх..."
+                  className="flex-1 bg-transparent text-sm outline-none"
+                />
+                {crossBrandSearching && <RefreshCw size={14} className="animate-spin text-gray-400"/>}
+              </div>
+            </div>
+
+            {/* Results */}
+            <div className="flex-1 overflow-y-auto px-4 py-2">
+              {crossBrandSearch.trim().length < 2 ? (
+                <div className="flex flex-col items-center gap-2 py-12 text-gray-400">
+                  <Search size={22} className="text-gray-200"/>
+                  <span className="text-sm">Нэр/код бичиж хайна уу</span>
+                </div>
+              ) : crossBrandResults.length === 0 && !crossBrandSearching ? (
+                <div className="py-8 text-center text-sm text-gray-400">Бараа олдсонгүй</div>
+              ) : (
+                <div className="divide-y divide-gray-50">
+                  {crossBrandResults.map(p => (
+                    <div key={p.id} className="flex items-center gap-3 px-2 py-2.5 hover:bg-gray-50">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium text-gray-800">{p.name}</div>
+                        <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-gray-400">
+                          <span className="font-mono">{p.item_code}</span>
+                          <span>· Оригинал: <span className="font-medium text-gray-600">{p.brand}</span></span>
+                          <span>· {p.pack_ratio}ш/хайрцаг</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number" min={0} step={1}
+                          value={crossBrandQtys[p.id] ? crossBrandQtys[p.id] : ""}
+                          placeholder="0"
+                          onWheel={e => e.currentTarget.blur()}
+                          onChange={e => {
+                            const v = parseFloat(e.target.value);
+                            setCrossBrandQtys(prev => ({ ...prev, [p.id]: isNaN(v) ? 0 : v }));
+                          }}
+                          className="w-20 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-right text-sm tabular-nums outline-none focus:border-[#0071E3] focus:ring-1 focus:ring-[#0071E3]/20"
+                        />
+                        <span className="text-[10px] text-gray-400">хайрцаг</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-6 py-3">
+              <button
+                onClick={() => setCrossBrandTarget(null)}
+                className="rounded-lg border border-gray-200 bg-white px-4 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Болих
+              </button>
+              <button
+                onClick={saveCrossBrand}
+                disabled={crossBrandSaving}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+              >
+                {crossBrandSaving ? <RefreshCw size={14} className="animate-spin"/> : <Save size={14}/>}
+                {crossBrandTarget}-д нэмэх
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </motion.div>
   );

@@ -6,13 +6,16 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
 from app.models.role import Role  # noqa: F401 – registers table
 from app.models.purchase_order import PurchaseOrderBrandStatus  # noqa: F401 – registers table
 from app.models.kpi import KpiScheduledDay, KpiShiftTransfer, KpiAuditLog  # noqa: F401 – registers tables
+from app.models.calendar_label import CalendarLabel  # noqa: F401 – registers table
+from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrandStatus  # noqa: F401 – registers tables
+from app.models.min_stock_rule import MinStockRule  # noqa: F401 – registers table
 
 app = FastAPI(title=settings.app_name)
 
@@ -86,12 +89,28 @@ def ensure_products_schema():
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
         if cols and "warehouse_name" not in cols:
             conn.execute(text("ALTER TABLE products ADD COLUMN warehouse_name VARCHAR(200) DEFAULT ''"))
+        if cols and "price_tag" not in cols:
+            conn.execute(text("ALTER TABLE products ADD COLUMN price_tag VARCHAR(200) DEFAULT ''"))
+        if cols and "barcode" not in cols:
+            conn.execute(text("ALTER TABLE products ADD COLUMN barcode VARCHAR(64) DEFAULT ''"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_barcode ON products(barcode)"))
+
+
+def ensure_min_stock_rules_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(min_stock_rules)")).fetchall()]
+        if cols and "product_id" not in cols:
+            conn.execute(text("ALTER TABLE min_stock_rules ADD COLUMN product_id INTEGER"))
 
 def ensure_po_lines_schema():
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(purchase_order_lines)")).fetchall()]
         if cols and "line_remark" not in cols:
             conn.execute(text("ALTER TABLE purchase_order_lines ADD COLUMN line_remark VARCHAR(500) DEFAULT ''"))
+        if cols and "received_qty_extra_pcs" not in cols:
+            conn.execute(text("ALTER TABLE purchase_order_lines ADD COLUMN received_qty_extra_pcs FLOAT DEFAULT 0"))
+        if cols and "override_brand" not in cols:
+            conn.execute(text("ALTER TABLE purchase_order_lines ADD COLUMN override_brand VARCHAR(100) DEFAULT ''"))
 
 def ensure_price_schema():
     with engine.begin() as conn:
@@ -144,6 +163,13 @@ def ensure_kpi_admin_task_schema():
             conn.execute(text(
                 "ALTER TABLE kpi_checklist_entries ADD COLUMN admin_task_id INTEGER REFERENCES kpi_admin_daily_tasks(id)"
             ))
+
+def ensure_po_archive_schema():
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(purchase_orders)")).fetchall()]
+        if cols and "is_archived" not in cols:
+            conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN is_archived BOOLEAN DEFAULT 0 NOT NULL"))
+
 
 def ensure_po_vehicle_schema():
     with engine.begin() as conn:
@@ -295,11 +321,13 @@ def _auto_refresh_stock(db):
     """
     Server эхлэх үед хамгийн сүүлийн "Үлдэгдэл тайлан" файлаас
     Product.stock_qty автоматаар шинэчлэнэ.
+    Хэрэв 100+ бараа аль хэдийн stock-тай бол шинэчилсэн гэж үзнэ.
     """
     from app.models.product import Product
-    # stock_qty > 0 бараа байвал аль хэдийн шинэчлэгдсэн → алгасна
-    has_stock = db.query(Product).filter(Product.stock_qty > 0).first()
-    if has_stock:
+    # 150101 гэх мэт нэг account code байсан ч бодит бараанууд 0 байж болно.
+    # Тиймээс threshold-оор шалгана.
+    stock_count = db.query(Product).filter(Product.stock_qty > 0).count()
+    if stock_count >= 100:
         return
 
     balance_dir = Path("app/data/uploads/Үлдэгдэл тайлан")
@@ -331,16 +359,64 @@ def startup():
     ensure_kpi_admin_task_schema()
     ensure_kpi_groups_schema()
     ensure_po_vehicle_schema()
+    ensure_po_archive_schema()
     ensure_inventory_count_schema()
     ensure_po_brand_status_table()
     ensure_shipment_lines_schema()
+    ensure_min_stock_rules_schema()
     ensure_admin_task_target_schema()
     ensure_roles_schema()
     ensure_roles_seeded()
+    ensure_calendar_labels_seeded()
     db = SessionLocal()
     try:
         ensure_admin(db)
         _auto_refresh_stock(db)
+    finally:
+        db.close()
+
+
+def ensure_calendar_labels_seeded():
+    """Calendar label default-уудыг суулгана (зөвхөн хоосон үед).
+
+    Хэрэв 'unloading' label нь хуучин 'Ачилт буух' нэртэй бол 'Бараа буух' болгож сольно.
+    """
+    from app.models.calendar_label import CalendarLabel
+    db = SessionLocal()
+    try:
+        # Хуучин label нэрийг шинэчлэх
+        old = db.query(CalendarLabel).filter(
+            CalendarLabel.key == "unloading",
+            CalendarLabel.label == "Ачилт буух",
+        ).first()
+        if old:
+            old.label = "Бараа буух"
+            old.short = "Бараа"
+            db.commit()
+
+        existing = db.query(CalendarLabel).count()
+        if existing > 0:
+            return
+        defaults = [
+            ("unloading", "Бараа буух",    "Бараа",    "orange",  "Truck",         1),
+            ("order",     "Захиалга хийх", "Захиалга", "blue",    "ClipboardList", 2),
+            ("inventory", "Тооллого хийх", "Тооллого", "violet",  "Package",       3),
+            ("payment",   "Төлбөр хийх",   "Төлбөр",   "emerald", "Banknote",      4),
+            ("report",    "Тайлан гаргах", "Тайлан",   "indigo",  "BarChart2",     5),
+            ("meeting",   "Уулзалт",       "Уулзалт",  "pink",    "Users",         6),
+            ("shipment",  "Ачаа явуулах",  "Ачаа",     "amber",   "Send",          7),
+            ("other",     "Бусад",         "Бусад",    "gray",    "MoreHorizontal",8),
+        ]
+        for key, label, short, color, icon, order in defaults:
+            db.add(CalendarLabel(
+                key=key, label=label, short=short, color=color,
+                icon=icon, sort_order=order, is_active=True,
+            ))
+        db.commit()
+        print(f"[startup] Seeded {len(defaults)} calendar labels")
+    except Exception as e:
+        db.rollback()
+        print(f"[startup] Calendar labels seed failed: {e}")
     finally:
         db.close()
 
@@ -359,6 +435,7 @@ app.include_router(kpi_router)
 app.include_router(new_product_router)
 app.include_router(sales_report_router)
 app.include_router(inventory_count_router)
+app.include_router(receivings_router)
 app.include_router(erkhet_auto_router)
 
 @app.get("/health")

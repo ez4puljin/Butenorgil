@@ -309,52 +309,53 @@ export default function Imports() {
   };
 
   return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-      <div className="text-2xl font-semibold text-gray-900">Файл оруулалт</div>
-      <div className="mt-1 text-sm text-gray-500">Эксел файл оруулах, скрипт ажиллуулах, мастер шинэчлэх</div>
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="overflow-x-hidden">
+      <div className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Файл оруулалт</div>
+      <div className="mt-1 text-xs text-gray-500 sm:text-sm">Эксел файл оруулах, скрипт ажиллуулах, мастер шинэчлэх</div>
 
-      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:mt-6 sm:gap-4 md:grid-cols-2 xl:grid-cols-3">
         {importCards.map((c) => (
-          <Card key={c.id} className="relative p-6">
+          <Card key={c.id} className="relative p-4 sm:p-6">
             <ErpLogoBadge logo={c.logo} />
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="text-lg font-semibold text-gray-900">{c.title}</div>
-                <div className="mt-1 text-sm text-gray-500">{c.key ? "Идэвхтэй импорт" : "Тун удахгүй идэвхжинэ"}</div>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 pr-14">
+                <div className="text-base font-semibold text-gray-900 sm:text-lg">{c.title}</div>
+                <div className="mt-1 text-xs text-gray-500 sm:text-sm">{c.key ? "Идэвхтэй импорт" : "Тун удахгүй идэвхжинэ"}</div>
                 {c.key && latestByKey[c.key] && (
                   <>
-                    <div className="mt-1 text-xs text-gray-500">Хэрэглэгч: {(latestByKey[c.key].username || "").replace(/\?/g, "").trim() || "Тодорхойгүй"}</div>
-                    <div className="text-xs text-gray-500">Сүүлийн оруулсан огноо: {formatDate(latestByKey[c.key].created_at)}</div>
+                    <div className="mt-1 text-[11px] text-gray-500 sm:text-xs">Хэрэглэгч: {(latestByKey[c.key].username || "").replace(/\?/g, "").trim() || "Тодорхойгүй"}</div>
+                    <div className="text-[11px] text-gray-500 sm:text-xs">Сүүлийн: {formatDate(latestByKey[c.key].created_at)}</div>
                   </>
                 )}
               </div>
               <button
-                className="rounded-apple bg-[#F5F5F7] p-3 hover:bg-gray-100"
+                aria-label="Заавар"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-apple bg-[#F5F5F7] hover:bg-gray-100 active:bg-gray-200"
                 onClick={() => openModal(c)}
               >
                 <Info size={18} className="text-gray-700" />
               </button>
             </div>
 
-            <div className="mt-4 flex items-center gap-3">
+            <div className="mt-3 flex flex-wrap items-center gap-2 sm:mt-4 sm:gap-3">
               {c.action === "run" ? (
                 <button
-                  className={`inline-flex items-center gap-2 rounded-apple px-4 py-2 text-white shadow-sm ${
-                    busyKey !== null ? "cursor-not-allowed bg-gray-400" : "cursor-pointer bg-[#34C759] hover:opacity-95"
+                  className={`inline-flex h-11 items-center gap-2 rounded-apple px-4 text-sm font-semibold text-white shadow-sm ${
+                    busyKey !== null ? "cursor-not-allowed bg-gray-400" : "cursor-pointer bg-[#34C759] hover:opacity-95 active:opacity-90"
                   }`}
                   disabled={busyKey !== null}
                   onClick={onRunMaster}
                 >
-                  <Play size={18} />
+                  <Play size={16} />
                   {busyKey === "master_merge" ? "Нэгтгэж байна..." : "Нэгтгэх"}
                 </button>
               ) : (
                 <label
-                  className={`inline-flex items-center gap-2 rounded-apple px-4 py-2 text-white shadow-sm ${
-                    c.key ? "cursor-pointer bg-[#0071E3] hover:opacity-95" : "cursor-not-allowed bg-gray-400"
+                  className={`inline-flex h-11 items-center gap-2 rounded-apple px-4 text-sm font-semibold text-white shadow-sm ${
+                    c.key ? "cursor-pointer bg-[#0071E3] hover:bg-[#005BB5] active:bg-[#004aad]" : "cursor-not-allowed bg-gray-400"
                   }`}
                 >
-                  <UploadCloud size={18} />
+                  <UploadCloud size={16} />
                   {!c.key ? "Удахгүй" : busyKey === c.key ? "Оруулж байна..." : "Файл оруулах"}
                   <input
                     type="file"
@@ -378,10 +379,10 @@ export default function Imports() {
       </div>
 
       {/* Лог хүснэгт */}
-      <div className="mt-8 rounded-apple bg-white p-6 shadow-sm">
-        <div className="text-lg font-semibold text-gray-900">Сүүлийн 50 шинэчлэл</div>
+      <div className="mt-6 rounded-apple bg-white p-4 shadow-sm sm:mt-8 sm:p-6">
+        <div className="text-base font-semibold text-gray-900 sm:text-lg">Сүүлийн 50 шинэчлэл</div>
         <div className="mt-3 max-h-[420px] overflow-auto rounded-apple border border-gray-100">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[720px]">
             <thead className="sticky top-0 bg-white shadow-sm">
               <tr className="text-left text-gray-500">
                 <th className="px-4 py-3">Огноо</th>

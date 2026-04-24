@@ -58,9 +58,34 @@ def refresh_products_from_master(db: Session, master_xlsx_path: str):
         sales_qty    = _safe_float(r.get("sales_qty"), 0.0)
         wh_tag_id    = _safe_int(r.get("warehouse_tag_id"), 0)
         wh_name      = _safe_str(r.get("байршил tag"), "")
+        price_tag_v  = _safe_str(r.get("үнэ бодох tag"), "")
         pack_ratio   = _safe_float(r.get("pack_ratio"), 1.0)
         brand_code_v = _safe_int(r.get("брэнд код"), 0)
         brand_code   = str(brand_code_v) if brand_code_v != 0 else ""
+        # Баркод — master-ын "Баркод" багана (K багана; lowercase-ласан).
+        # Нэг бараа олон баркодтой бол шинэ мөр/зай/таслалаар тусгаарлагдсан байдаг.
+        import re as _re
+        barcode_raw  = _safe_str(r.get("баркод"), "")
+        barcode_list: list[str] = []
+        if barcode_raw:
+            # Төрөл бүрийн delimiter-ээр хуваах
+            parts = _re.split(r"[\s,;|/]+", barcode_raw)
+            for p in parts:
+                p = p.strip()
+                if not p:
+                    continue
+                # Scientific notation / decimal цэвэрлэнэ
+                try:
+                    if "e" in p.lower() or "." in p:
+                        p = str(int(float(p)))
+                except (TypeError, ValueError):
+                    pass
+                # Зөвхөн цифр-үсгэн кодуудыг хадгална (мөр нь хурд шоолон тэмдэгт биш байх)
+                if p.lower() == "nan":
+                    continue
+                if p not in barcode_list:
+                    barcode_list.append(p)
+        barcode = ",".join(barcode_list)
 
         if code in existing_map:
             # UPDATE — ID хэвээр, зөвхөн field шинэчлэнэ
@@ -72,8 +97,10 @@ def refresh_products_from_master(db: Session, master_xlsx_path: str):
             p.sales_qty = sales_qty
             p.warehouse_tag_id = wh_tag_id
             p.warehouse_name = wh_name
+            p.price_tag = price_tag_v
             p.pack_ratio = pack_ratio
             p.brand_code = brand_code
+            p.barcode = barcode
             updated += 1
         else:
             # INSERT — шинэ бараа
@@ -86,8 +113,10 @@ def refresh_products_from_master(db: Session, master_xlsx_path: str):
                 sales_qty=sales_qty,
                 warehouse_tag_id=wh_tag_id,
                 warehouse_name=wh_name,
+                price_tag=price_tag_v,
                 pack_ratio=pack_ratio,
                 brand_code=brand_code,
+                barcode=barcode,
             ))
             inserted += 1
 

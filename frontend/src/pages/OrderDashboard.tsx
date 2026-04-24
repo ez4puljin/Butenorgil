@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronLeft, ChevronRight, RefreshCw, Package, Truck,
   ChevronDown, Layers, Box, Scale, DollarSign,
-  PlusCircle, Pencil, ArrowRight, Weight,
+  PlusCircle, Pencil, ArrowRight, Weight, Trash2,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { STATUS_COLOR, STATUS_LABEL } from "../store/purchaseOrderStore";
@@ -139,6 +139,17 @@ export default function OrderDashboard() {
     finally { setAssignBusy(null); }
   };
 
+  const deleteShipment = async (shipmentId: number) => {
+    if (!confirm("Хоосон машиныг устгах уу?")) return;
+    try {
+      await api.delete(`/purchase-orders/${id}/shipments/${shipmentId}`);
+      showFlash("Машин устгагдлаа");
+      await load();
+    } catch (e: any) {
+      showFlash(e?.response?.data?.detail ?? "Устгахад алдаа", false);
+    }
+  };
+
   useEffect(() => { load(); }, [id]);
 
   if (loading || !data) {
@@ -161,24 +172,27 @@ export default function OrderDashboard() {
   const loadingShipments = shipments.filter(s => s.status === "loading");
 
   return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-[1600px] mx-auto">
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-[1600px] mx-auto overflow-x-hidden">
       {/* ── Header ── */}
-      <div className="rounded-2xl bg-white px-5 py-4 shadow-sm ring-1 ring-gray-100">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+      <div className="rounded-2xl bg-white px-3 py-3 shadow-sm ring-1 ring-gray-100 sm:px-5 sm:py-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
             <button onClick={() => navigate("/order")} className="flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-gray-700 transition-colors">
               <ChevronLeft size={16} /> Буцах
             </button>
             <div className="h-5 w-px bg-gray-200" />
-            <h1 className="text-xl font-bold tracking-tight text-gray-900">{order.order_date.replaceAll("-", "/")}</h1>
-            <span className="text-sm text-gray-400">#{order.id}</span>
-            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${stColor}`}>{order.status_label}</span>
+            <h1 className="text-lg font-bold tracking-tight text-gray-900 sm:text-xl">{order.order_date.replaceAll("-", "/")}</h1>
+            <span className="text-xs text-gray-400 sm:text-sm">#{order.id}</span>
+            <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset ring-black/5 ${stColor}`}>
+              <span className="h-1.5 w-1.5 rounded-full bg-current opacity-60"/>
+              {order.status_label}
+            </span>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors">
-              <RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Шинэчлэх
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <button onClick={load} disabled={loading} aria-label="Шинэчлэх" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-2.5 text-xs text-gray-600 hover:bg-gray-50 active:bg-gray-100 transition-colors">
+              <RefreshCw size={13} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Шинэчлэх</span>
             </button>
-            <button onClick={() => navigate(`/order/${id}`)} className="inline-flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-2 text-xs text-white hover:opacity-90 transition-opacity">
+            <button onClick={() => navigate(`/order/${id}`)} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 text-xs font-semibold text-white shadow-sm hover:bg-[#005BB5] active:bg-[#004aad] transition-colors">
               <Pencil size={13} /> Дэлгэрэнгүй
             </button>
           </div>
@@ -186,18 +200,18 @@ export default function OrderDashboard() {
         {order.notes && <p className="mt-2 text-xs text-gray-400 italic">{order.notes}</p>}
 
         {/* Summary ribbon */}
-        <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:mt-4 sm:grid-cols-4 sm:gap-3">
           {[
             { icon: Layers, label: "Бренд", value: String(summary.total_brands), bg: "bg-blue-50 text-blue-600" },
             { icon: Box, label: "Хайрцаг", value: fmtNum(summary.total_boxes), bg: "bg-emerald-50 text-emerald-600" },
             { icon: Scale, label: "Жин", value: `${fmtNum(summary.total_weight)} кг`, bg: "bg-violet-50 text-violet-600" },
             { icon: DollarSign, label: "Тооцоолсон", value: fmtCost(summary.total_estimated_cost), bg: "bg-indigo-50 text-indigo-600" },
           ].map(({ icon: Icon, label, value, bg }) => (
-            <div key={label} className="flex items-center gap-3 rounded-xl bg-gray-50/80 px-4 py-3">
-              <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${bg}`}><Icon size={16} /></div>
-              <div>
+            <div key={label} className="flex items-center gap-2 rounded-xl bg-gray-50/80 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+              <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${bg}`}><Icon size={16} /></div>
+              <div className="min-w-0">
                 <div className="text-[10px] uppercase tracking-wider text-gray-400">{label}</div>
-                <div className="text-base font-bold text-gray-900">{value}</div>
+                <div className="truncate text-sm font-bold text-gray-900 sm:text-base">{value}</div>
               </div>
             </div>
           ))}
@@ -211,10 +225,10 @@ export default function OrderDashboard() {
       )}
 
       {/* ── Two-panel grid ── */}
-      <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-12">
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:mt-5 sm:gap-5 lg:grid-cols-12">
 
         {/* ═══ LEFT: Order Pool (7 cols) ═══ */}
-        <div className="lg:col-span-7 space-y-4">
+        <div className="lg:col-span-7 space-y-3 sm:space-y-4">
           {/* Status pills */}
           <div className="overflow-x-auto pb-1">
             <div className="flex gap-1.5 w-max">
@@ -276,7 +290,7 @@ export default function OrderDashboard() {
                 return (
                   <div key={b.brand} className="rounded-2xl bg-white shadow-sm border border-gray-100 overflow-hidden transition-shadow hover:shadow-md">
                     {/* Brand header */}
-                    <div className="flex items-center gap-3 px-4 py-3">
+                    <div className="flex items-center gap-2 px-3 py-3 sm:gap-3 sm:px-4">
                       {/* Color indicator */}
                       <div className={`h-10 w-1 rounded-full shrink-0 ${statusBg.includes("blue") ? "bg-blue-400" : statusBg.includes("orange") ? "bg-orange-400" : statusBg.includes("violet") ? "bg-violet-400" : statusBg.includes("emerald") ? "bg-emerald-400" : statusBg.includes("indigo") ? "bg-indigo-400" : statusBg.includes("green") ? "bg-green-400" : statusBg.includes("red") ? "bg-red-400" : "bg-gray-300"}`} />
 
@@ -285,13 +299,13 @@ export default function OrderDashboard() {
                         className="flex-1 min-w-0 cursor-pointer"
                         onClick={() => navigate(`/order/${id}?brand=${encodeURIComponent(b.brand)}`)}
                       >
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-semibold text-gray-900 truncate">{b.brand}</span>
                           <span className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-semibold ${statusBg}`}>
                             {b.brand_status_label || b.brand_status}
                           </span>
                         </div>
-                        <div className="mt-0.5 flex items-center gap-3 text-[11px] text-gray-400">
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 text-[11px] text-gray-400">
                           <span>{b.line_count} бараа</span>
                           <span>{b.total_order_boxes.toFixed(0)} хайрцаг</span>
                           <span>{b.total_weight.toFixed(0)} кг</span>
@@ -299,18 +313,19 @@ export default function OrderDashboard() {
                       </div>
 
                       {/* Right side: progress + navigate */}
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center gap-1.5 shrink-0 sm:gap-2">
                         {b.brand_status !== "cancelled" && (
-                          <div className="w-24">
+                          <div className="hidden w-24 sm:block">
                             <div className="text-right text-[10px] text-gray-400 mb-0.5">{loadedPct.toFixed(0)}%</div>
                             <CapacityBar pct={loadedPct} size="sm" />
                           </div>
                         )}
                         <button
                           onClick={() => navigate(`/order/${id}?brand=${encodeURIComponent(b.brand)}`)}
-                          className="rounded-lg p-1.5 text-gray-300 hover:text-[#0071E3] hover:bg-blue-50 transition-colors"
+                          aria-label="Дэлгэрэнгүй"
+                          className="grid h-9 w-9 place-items-center rounded-lg text-gray-400 hover:text-[#0071E3] hover:bg-blue-50 active:bg-blue-100 transition-colors"
                         >
-                          <ChevronRight size={16} />
+                          <ChevronRight size={18} />
                         </button>
                       </div>
                     </div>
@@ -406,7 +421,7 @@ export default function OrderDashboard() {
         </div>
 
         {/* ═══ RIGHT: Vehicle Loading (5 cols) ═══ */}
-        <div className="lg:col-span-5 space-y-4">
+        <div className="lg:col-span-5 space-y-3 sm:space-y-4">
           {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -461,6 +476,16 @@ export default function OrderDashboard() {
                         </div>
                         <div className="flex items-center gap-2">
                           <span className={`rounded-lg px-2 py-0.5 text-[10px] font-semibold ${shipStColor}`}>{sh.status_label}</span>
+                          {/* Хоосон + loading statustai shipment устгах */}
+                          {sh.status === "loading" && sh.total_loaded_boxes === 0 && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteShipment(sh.id); }}
+                              className="rounded-lg p-1 text-gray-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+                              title="Хоосон машиныг устгах"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
                           <ChevronDown size={14} className={`text-gray-300 transition-transform ${isExp ? "rotate-180" : ""}`} />
                         </div>
                       </div>

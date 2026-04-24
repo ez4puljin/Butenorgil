@@ -16,6 +16,10 @@ class Product(Base):
 
     warehouse_tag_id: Mapped[int] = mapped_column(Integer, index=True, default=0)
     warehouse_name: Mapped[str] = mapped_column(String(200), default="")
+    # Үнэ бодох tag — master-ын "Үнэ бодох tag" баганаас (CSV form)
+    price_tag: Mapped[str] = mapped_column(String(200), default="")
     pack_ratio: Mapped[float] = mapped_column(Float, default=1.0)  # pcs per box
     last_purchase_price: Mapped[float] = mapped_column(Float, default=0.0)
     brand_code: Mapped[str] = mapped_column(String(50), default="")
+    # Баркод — мастер нэгтгэлийн "Баркод" баганаас (EAN-13/EAN-8). Хайлтанд хэрэглэнэ.
+    barcode: Mapped[str] = mapped_column(String(64), index=True, default="")

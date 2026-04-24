@@ -113,6 +113,7 @@ def _serialize_order_detail(
         "vehicle_id": o.vehicle_id,
         "vehicle_name": f"{vehicle.name} ({vehicle.plate})" if vehicle else None,
         "notes": o.notes or "",
+        "is_archived": bool(o.is_archived),
     }
 
     # Load lines via explicit query (NOT lazy o.lines which loads ALL 10K+ rows)
@@ -130,6 +131,31 @@ def _serialize_order_detail(
     products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
     product_map = {p.id: p for p in products}
 
+    # Min-stock rules (нэг удаа ачаалаад бараа бүрт match хийнэ)
+    from app.models.min_stock_rule import MinStockRule
+    from app.services.min_stock_check import find_rule_for_product, compute_needs_reorder, stock_breakdown
+    _ms_rules = db.query(MinStockRule).filter(MinStockRule.is_active == True).all()
+
+    # Bulk load shipment line totals: po_line_id → total loaded (sum across shipments)
+    line_ids = [l.id for l in all_lines]
+    shipped_loaded: dict[int, float] = {}
+    shipped_received: dict[int, float] = {}
+    if line_ids:
+        from sqlalchemy import func as _func
+        rows = (
+            db.query(
+                POShipmentLine.po_line_id,
+                _func.sum(POShipmentLine.loaded_qty_box),
+                _func.sum(POShipmentLine.received_qty_box),
+            )
+            .filter(POShipmentLine.po_line_id.in_(line_ids))
+            .group_by(POShipmentLine.po_line_id)
+            .all()
+        )
+        for row in rows:
+            shipped_loaded[row[0]] = float(row[1] or 0)
+            shipped_received[row[0]] = float(row[2] or 0)
+
     lines_out = []
     for l in all_lines:
         p = product_map.get(l.product_id)
@@ -145,25 +171,48 @@ def _serialize_order_detail(
         estimated_cost = round(lpp * qty, 2)
         price_diff = round(up - lpp, 2) if up > 0 and lpp > 0 else None
 
+        # Prefer shipment-aggregated loaded/received values if shipments exist
+        loaded_effective = shipped_loaded.get(l.id, float(l.loaded_qty_box or 0))
+        if loaded_effective == 0 and (l.loaded_qty_box or 0) > 0:
+            loaded_effective = float(l.loaded_qty_box)
+        received_effective = shipped_received.get(l.id, float(l.received_qty_box or 0))
+        if received_effective == 0 and (l.received_qty_box or 0) > 0:
+            received_effective = float(l.received_qty_box)
+
+        # Min-stock rule match → needs_reorder + min_stock_box
+        matched_rule = find_rule_for_product(p, _ms_rules)
+        needs_reorder, min_stock_box = compute_needs_reorder(p, matched_rule)
+        bd = stock_breakdown(p)
+
+        # Үр дүнгийн бренд: override_brand тохиргоотой бол түүнийг, эс бол product.brand
+        eff_brand = (l.override_brand or "").strip() or p.brand
         lines_out.append({
             "line_id": l.id,
             "product_id": l.product_id,
             "item_code": p.item_code,
             "name": p.name,
-            "brand": p.brand,
+            "brand": eff_brand,
+            "original_brand": p.brand,
+            "override_brand": l.override_brand or "",
             "warehouse_tag_id": p.warehouse_tag_id,
             "warehouse_name": p.warehouse_name or "",
+            "price_tag": p.price_tag or "",
             "unit_weight": p.unit_weight,
             "pack_ratio": p.pack_ratio,
             "stock_qty": p.stock_qty,
+            "stock_box": bd["stock_box"],
+            "stock_extra_pcs": bd["stock_extra_pcs"],
             "sales_qty": p.sales_qty,
+            "needs_reorder": needs_reorder,
+            "min_stock_box": min_stock_box,
             "order_qty_box": l.order_qty_box,
             "order_qty_pcs": l.order_qty_pcs,
             "computed_weight": l.computed_weight,
             "supplier_qty_box": l.supplier_qty_box,
-            "loaded_qty_box": l.loaded_qty_box,
-            "received_qty_box": l.received_qty_box,
-            "difference": round((l.loaded_qty_box or 0) - (l.received_qty_box or 0), 2),
+            "loaded_qty_box": loaded_effective,
+            "received_qty_box": received_effective,
+            "received_qty_extra_pcs": float(l.received_qty_extra_pcs or 0),
+            "difference": round(loaded_effective - received_effective, 2),
             "unit_price": up,
             "last_purchase_price": lpp,
             "estimated_cost": estimated_cost,
@@ -223,6 +272,8 @@ def _serialize_order_detail(
 class POCreateIn(BaseModel):
     order_date: date_type
     notes: str = ""
+    # None эсвэл хоосон бол бүх бренд, эс бол зөвхөн сонгосон бренд-ийн барааг л оруулна.
+    brands: Optional[List[str]] = None
 
 
 class POLineIn(BaseModel):
@@ -231,6 +282,7 @@ class POLineIn(BaseModel):
     supplier_qty_box: Optional[float] = None
     loaded_qty_box: Optional[float] = None
     received_qty_box: Optional[float] = None
+    received_qty_extra_pcs: Optional[float] = None
     unit_price: Optional[float] = None
     remark: Optional[str] = None
 
@@ -238,6 +290,9 @@ class POLineIn(BaseModel):
 class AddLineIn(BaseModel):
     product_id: int
     order_qty_box: float = 1.0
+    # Онцгой тохиолдолд: тухайн бараа Q бренд-ээс байвал override_brand="W" бичвэл
+    # W брендийн хэсэгт харагдана. Зөвхөн admin эрхтэй үед зөвшөөрнө.
+    override_brand: Optional[str] = None
 
 
 class POVehicleIn(BaseModel):
@@ -299,7 +354,7 @@ def get_order_dashboard(
 
         is_cancelled = l.order_qty_box == 0 and (l.supplier_qty_box or 0) > 0
 
-        brand = p.brand or "Брэнд байхгүй"
+        brand = (l.override_brand or "").strip() or p.brand or "Брэнд байхгүй"
         if brand not in brand_data:
             brand_data[brand] = {
                 "brand": brand,
@@ -462,7 +517,7 @@ def get_order_dashboard(
             p = products.get(pl.product_id)
             if not p:
                 continue
-            b = p.brand or "Брэнд байхгүй"
+            b = (pl.override_brand or "").strip() or p.brand or "Брэнд байхгүй"
             w = sl.loaded_qty_box * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
             total_weight += w
             if b not in sh_brand_map:
@@ -499,7 +554,7 @@ def get_order_dashboard(
         p = products.get(l.product_id)
         if not p:
             continue
-        b = p.brand or "Брэнд байхгүй"
+        b = (l.override_brand or "").strip() or p.brand or "Брэнд байхгүй"
         if b not in unloaded_brands:
             unloaded_brands[b] = {"brand": b, "total_remaining_boxes": 0, "total_weight": 0, "items": []}
         w = remaining * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
@@ -586,7 +641,10 @@ def advance_brand_status(
         products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()}
         for line in po.lines:
             p = products.get(line.product_id)
-            if p and p.brand == brand:
+            if not p:
+                continue
+            eff_brand = (line.override_brand or "").strip() or p.brand
+            if eff_brand == brand:
                 if (line.unit_price or 0) == 0 and (p.last_purchase_price or 0) > 0:
                     line.unit_price = p.last_purchase_price
 
@@ -726,6 +784,7 @@ def list_purchase_orders(
     status: Optional[str] = Query(None),
     date_from: Optional[date_type] = Query(None),
     date_to: Optional[date_type] = Query(None),
+    archived: Optional[str] = Query("false"),  # "false" | "true" | "only"
     db: Session = Depends(get_db),
     u: User = Depends(get_current_user),
 ):
@@ -735,6 +794,22 @@ def list_purchase_orders(
     if u.role == "warehouse_clerk":
         q = q.filter(PurchaseOrder.status.in_(["preparing", "arrived"]))
     # manager/supervisor/admin see all
+
+    # Архив filter:
+    # - "false" (default): архив бус
+    # - "true": бүгд (архив + бус)
+    # - "only": зөвхөн архивлагдсан (admin/manager л хандана)
+    arch = (archived or "false").lower()
+    if arch == "only":
+        if u.role not in ("admin", "manager", "supervisor"):
+            raise HTTPException(403, "Архив харах эрхгүй")
+        q = q.filter(PurchaseOrder.is_archived == True)
+    elif arch == "true":
+        if u.role not in ("admin", "manager", "supervisor"):
+            # Admin/manager биш бол архивгүй л буцаана
+            q = q.filter(PurchaseOrder.is_archived == False)
+    else:
+        q = q.filter(PurchaseOrder.is_archived == False)
 
     if status:
         q = q.filter(PurchaseOrder.status == status)
@@ -785,6 +860,7 @@ def list_purchase_orders(
             "vehicle_id": o.vehicle_id,
             "vehicle_name": f"{vehicle.name} ({vehicle.plate})" if vehicle else None,
             "notes": o.notes or "",
+            "is_archived": bool(o.is_archived),
         })
     return result
 
@@ -802,16 +878,7 @@ def create_purchase_order(
             "Master Excel файл байхгүй байна. Эхлээд Мастер нэгтгэл хийнэ үү."
         )
 
-    # Check duplicate for this user on this date
-    existing = db.query(PurchaseOrder).filter(
-        PurchaseOrder.created_by_user_id == u.id,
-        PurchaseOrder.order_date == body.order_date,
-    ).first()
-    if existing:
-        raise HTTPException(
-            400,
-            f"{body.order_date} өдрийн захиалга аль хэдийн үүссэн байна (#{existing.id})."
-        )
+    # Note: Нэг өдөр олон захиалга зөвшөөрөгдсөн (duplicate date check устгасан)
 
     # Create order
     po = PurchaseOrder(
@@ -823,19 +890,15 @@ def create_purchase_order(
     db.add(po)
     db.flush()
 
-    # Load all products for the user's warehouses.
-    # Products with warehouse_tag_id=0 are treated as shared (visible to all).
+    # Load products. Brand filter байвал зөвхөн тэдгээр брендийн бараа л.
     tag_ids = parse_tag_ids(u.tag_ids)
-    if not tag_ids:
-        # Admin/supervisor with no tag_ids — load all products
-        products = db.query(Product).order_by(Product.brand, Product.item_code).all()
-    else:
-        products = (
-            db.query(Product)
-            .filter(Product.warehouse_tag_id.in_(tag_ids + [0]))
-            .order_by(Product.brand, Product.item_code)
-            .all()
-        )
+    q = db.query(Product)
+    if tag_ids:
+        q = q.filter(Product.warehouse_tag_id.in_(tag_ids + [0]))
+    selected_brands = [b.strip() for b in (body.brands or []) if b and b.strip()]
+    if selected_brands:
+        q = q.filter(Product.brand.in_(selected_brands))
+    products = q.order_by(Product.brand, Product.item_code).all()
 
     for p in products:
         db.add(PurchaseOrderLine(
@@ -948,6 +1011,10 @@ def get_purchase_order(
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
 
+    # Архивлагдсан захиалгыг зөвхөн admin/manager/supervisor л харна
+    if po.is_archived and u.role not in ("admin", "manager", "supervisor"):
+        raise HTTPException(403, "Архивлагдсан захиалгыг харах эрхгүй")
+
     # warehouse_clerk can only see preparing and arrived orders
     if u.role == "warehouse_clerk" and po.status not in ("preparing", "arrived"):
         raise HTTPException(403, "Энэ захиалгыг харах эрх байхгүй")
@@ -1010,20 +1077,65 @@ def advance_status(
 class ForceStatusIn(BaseModel):
     status: str
 
+
+class ArchiveIn(BaseModel):
+    archived: bool = True
+
+
+@router.patch("/{order_id}/archive")
+def archive_order(
+    order_id: int,
+    body: ArchiveIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "manager", "supervisor")),
+):
+    """Захиалгыг архивлах / архиваас буцаах. Admin, manager, supervisor."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+    po.is_archived = bool(body.archived)
+    db.commit()
+    return {"ok": True, "is_archived": po.is_archived}
+
 @router.patch("/{order_id}/force-status")
 def force_status(
     order_id: int,
     body: ForceStatusIn,
+    brand: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin")),
 ):
+    """
+    Статус албадан өөрчлөх.
+    - brand параметргүй: бүх бренд + PO status шинэчилнэ.
+    - brand='X': зөвхөн тухайн брендийн статус өөрчилнэ, PO status нь brand-уудын минимумаас тооцоологдоно.
+    """
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
     if body.status not in STATUS_SEQUENCE:
         raise HTTPException(400, "Буруу статус")
+
+    if brand:
+        bs = db.query(PurchaseOrderBrandStatus).filter(
+            PurchaseOrderBrandStatus.purchase_order_id == order_id,
+            PurchaseOrderBrandStatus.brand == brand,
+        ).first()
+        if not bs:
+            raise HTTPException(404, f"'{brand}' брендийн статус олдсонгүй")
+        bs.status = body.status
+        db.commit()
+        _sync_po_status_from_brands(order_id, db)
+        return {
+            "ok": True,
+            "brand": brand,
+            "new_status": body.status,
+            "new_status_label": STATUS_LABEL.get(body.status, body.status),
+            "po_status": po.status,
+        }
+
+    # Бүх бренд + PO status нэг утгад шилжүүлэх
     po.status = body.status
-    # Force all brand statuses to the same value
     for bs in db.query(PurchaseOrderBrandStatus).filter(
         PurchaseOrderBrandStatus.purchase_order_id == order_id
     ).all():
@@ -1042,7 +1154,8 @@ def set_lines(
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
-    # warehouse_clerk — preparing + arrived; accountant — accounting; admin — all editable; manager/supervisor — preparing, reviewing, loading
+    # warehouse_clerk — preparing + arrived; accountant — accounting; admin — all editable;
+    # manager/supervisor — preparing, reviewing, loading + accounting (for unit_price editing)
     if u.role == "warehouse_clerk":
         allowed_statuses = ["preparing", "arrived"]
     elif u.role == "accountant":
@@ -1050,7 +1163,7 @@ def set_lines(
     elif u.role == "admin":
         allowed_statuses = ["preparing", "reviewing", "loading", "arrived", "accounting"]
     else:
-        allowed_statuses = ["preparing", "reviewing", "loading"]
+        allowed_statuses = ["preparing", "reviewing", "loading", "accounting"]
     # Per-brand status lookup
     brand_status_map: dict[str, str] = {}
     for bs in db.query(PurchaseOrderBrandStatus).filter(
@@ -1092,6 +1205,8 @@ def set_lines(
         if effective_st == "arrived":
             if li.received_qty_box is not None:
                 line.received_qty_box = float(li.received_qty_box)
+            if li.received_qty_extra_pcs is not None:
+                line.received_qty_extra_pcs = float(li.received_qty_extra_pcs)
             if li.remark is not None:
                 line.line_remark = li.remark
         elif effective_st == "accounting":
@@ -1099,6 +1214,8 @@ def set_lines(
                 line.unit_price = float(li.unit_price)
             if li.received_qty_box is not None:
                 line.received_qty_box = float(li.received_qty_box)
+            if li.received_qty_extra_pcs is not None:
+                line.received_qty_extra_pcs = float(li.received_qty_extra_pcs)
             if li.remark is not None:
                 line.line_remark = li.remark
         else:
@@ -1113,7 +1230,15 @@ def set_lines(
                 if li.supplier_qty_box is not None:
                     line.supplier_qty_box = float(li.supplier_qty_box)
                 if li.loaded_qty_box is not None:
-                    line.loaded_qty_box = float(li.loaded_qty_box)
+                    new_loaded = float(li.loaded_qty_box)
+                    line.loaded_qty_box = new_loaded
+                    # Хэрэв энэ PO line нь ЯГ НЭГ shipment line дээр байвал тэр дээр ч хадгална
+                    # (харин олон хуваагдсан бол shipment detail UI ашиглана)
+                    sh_lines = db.query(POShipmentLine).filter(
+                        POShipmentLine.po_line_id == line.id
+                    ).all()
+                    if len(sh_lines) == 1:
+                        sh_lines[0].loaded_qty_box = new_loaded
 
     db.commit()
 
@@ -1147,19 +1272,41 @@ def delete_line(
     order_id: int,
     line_id: int,
     db: Session = Depends(get_db),
-    u: User = Depends(require_role("manager", "admin", "supervisor")),
+    u: User = Depends(require_role("manager", "admin", "supervisor", "warehouse_clerk")),
 ):
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
-    if po.status != "loading":
-        raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' статуст мөр устгах боломжтой")
+
     line = db.query(PurchaseOrderLine).filter(
         PurchaseOrderLine.id == line_id,
         PurchaseOrderLine.purchase_order_id == order_id,
     ).first()
     if not line:
         raise HTTPException(404, "Мөр олдсонгүй")
+
+    # Эрх шалгах: тухайн line-ий brand status-г харгалзана
+    product = db.query(Product).filter(Product.id == line.product_id).first()
+    brand = product.brand if product else None
+    bs = None
+    if brand:
+        bs = db.query(PurchaseOrderBrandStatus).filter(
+            PurchaseOrderBrandStatus.purchase_order_id == order_id,
+            PurchaseOrderBrandStatus.brand == brand,
+        ).first()
+    effective_st = bs.status if bs else po.status
+
+    # warehouse_clerk-д зөвхөн arrived (Ачаа ирсэн) status-д устгах эрх
+    # бусад role-д зөвхөн loading status-д устгах эрх
+    if u.role == "warehouse_clerk":
+        if effective_st != "arrived":
+            raise HTTPException(400, "Нярав зөвхөн 'Ачаа ирсэн' статуст мөр устгана")
+    else:
+        if effective_st not in ("loading", "arrived"):
+            raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' болон 'Ачаа ирсэн' статуст мөр устгана")
+
+    # Холбоотой shipment line-уудыг эхлээд устгах (FK clean)
+    db.query(POShipmentLine).filter(POShipmentLine.po_line_id == line_id).delete()
     db.delete(line)
     db.commit()
     return {"ok": True}
@@ -1181,8 +1328,19 @@ def add_line(
     if not p:
         raise HTTPException(404, "Бараа олдсонгүй")
     existing = next((l for l in po.lines if l.product_id == body.product_id), None)
+    # override_brand шалгалт: зөвхөн admin
+    override_brand = (body.override_brand or "").strip()
+    if override_brand and u.role != "admin":
+        raise HTTPException(403, "Бусад брендийн бараа нэмэх эрх зөвхөн админ эрхтэй")
+    # override тохиолдолд барааны оригинал бренд override_brand-тэй адил байвал утгагүй
+    if override_brand and (p.brand or "") == override_brand:
+        override_brand = ""
     if existing:
-        raise HTTPException(400, "Бараа аль хэдийн нэмэгдсэн байна")
+        # Override-той бол давхар мөр зөвшөөрөх боломжтой (нэг бараа давхар брендэд)
+        if not override_brand and not (existing.override_brand or ""):
+            raise HTTPException(400, "Бараа аль хэдийн нэмэгдсэн байна")
+        if override_brand and (existing.override_brand or "") == override_brand:
+            raise HTTPException(400, f"Бараа {override_brand} брендэд аль хэдийн нэмэгдсэн байна")
     qty_box = float(body.order_qty_box or 0)
     qty_pcs = qty_box * float(p.pack_ratio or 1)
     weight = qty_pcs * float(p.unit_weight or 0)
@@ -1192,9 +1350,14 @@ def add_line(
         order_qty_box=qty_box,
         order_qty_pcs=qty_pcs,
         computed_weight=weight,
+        override_brand=override_brand,
     )
     db.add(line)
     db.commit()
+    # Override бренд нэмсэн бол тухайн брендэд brand_status үүсгэнэ
+    if override_brand:
+        _ensure_brand_statuses(order_id, db)
+        db.commit()
     return {"ok": True}
 
 
@@ -1345,6 +1508,18 @@ def export_erp_excel(
     u: User = Depends(require_role("admin", "manager", "accountant", "supervisor")),
 ):
     """ERP-д импортлох Excel файл үүсгэх (confirmed статус)."""
+    try:
+        return _export_erp_excel_impl(order_id, body, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[export_erp_excel] ERROR: {e}\n{tb}", flush=True)
+        raise HTTPException(500, f"Excel үүсгэхэд алдаа: {type(e).__name__}: {e}")
+
+
+def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
@@ -1354,11 +1529,39 @@ def export_erp_excel(
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
 
-    # Load only received lines (NOT lazy po.lines)
+    # Shipment-аас aggregated loaded/received тоог бэлдэнэ (зарим PO дээр values нь зөвхөн
+    # POShipmentLine дээр байдаг, PurchaseOrderLine-д 0 байдаг).
+    from sqlalchemy import func as _func
+    from sqlalchemy import or_ as _or_q
+    sh_agg = dict(
+        (row[0], {"loaded": float(row[1] or 0), "received": float(row[2] or 0)})
+        for row in db.query(
+            POShipmentLine.po_line_id,
+            _func.sum(POShipmentLine.loaded_qty_box),
+            _func.sum(POShipmentLine.received_qty_box),
+        )
+        .join(PurchaseOrderLine, PurchaseOrderLine.id == POShipmentLine.po_line_id)
+        .filter(PurchaseOrderLine.purchase_order_id == po.id)
+        .group_by(POShipmentLine.po_line_id)
+        .all()
+    )
+
+    # Идэвхтэй line-ууд (order>0 эсвэл supplier>0). Received/loaded-оор дараа шүүнэ.
     recv_lines = db.query(PurchaseOrderLine).filter(
         PurchaseOrderLine.purchase_order_id == po.id,
-        PurchaseOrderLine.received_qty_box > 0,
+        _or_q(PurchaseOrderLine.order_qty_box > 0, PurchaseOrderLine.supplier_qty_box > 0),
     ).all()
+    # Filter: дор хаяж нэг хэмжээ (received эсвэл loaded) > 0 байх
+    def _line_has_qty(l):
+        agg = sh_agg.get(l.id, {})
+        return (
+            (l.received_qty_box or 0) > 0
+            or (l.received_qty_extra_pcs or 0) > 0
+            or (l.loaded_qty_box or 0) > 0
+            or agg.get("received", 0) > 0
+            or agg.get("loaded", 0) > 0
+        )
+    recv_lines = [l for l in recv_lines if _line_has_qty(l)]
     product_ids = [l.product_id for l in recv_lines]
     products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
     product_map = {p.id: p for p in products}
@@ -1392,43 +1595,67 @@ def export_erp_excel(
         c.alignment = Alignment(horizontal="center")
 
     # ── Build data rows ──
-    # Only lines with received_qty_box > 0 (SQL filter instead of lazy load)
+    # Дээр recv_lines-ыг аль хэдийн filter хийсэн. Mөн бренд шүүлтүүр хэрэглэнэ.
     brand_filter = (body.brand_filter or "").strip()
-    erp_lines = db.query(PurchaseOrderLine).filter(
-        PurchaseOrderLine.purchase_order_id == po.id,
-        PurchaseOrderLine.received_qty_box > 0,
-    ).all()
+    erp_lines = recv_lines
     valid = []
     for line in erp_lines:
-        if not (line.received_qty_box and line.received_qty_box > 0):
+        agg = sh_agg.get(line.id, {})
+        extra_pcs = float(line.received_qty_extra_pcs or 0)
+        # Effective received: PO line-ийн received > 0 бол түүнийг, эс бол shipment aggregated received.
+        # Хэрэглэгч "0 хайрцаг + N ширхэг" гэж санаатайгаар оруулсан бол (extra_pcs > 0 бол)
+        # loaded-оор fallback ХИЙХГҮЙ — хэрэглэгчийн оруулсан тоог нэн тэргүүнд тоолно.
+        eff_received_box = float(line.received_qty_box or 0)
+        if eff_received_box == 0:
+            eff_received_box = float(agg.get("received", 0))
+        if eff_received_box == 0 and extra_pcs == 0:
+            # received + extra хоёр хоосон үед л loaded-аас fallback авна (автомат pre-fill)
+            eff_received_box = float(line.loaded_qty_box or 0)
+            if eff_received_box == 0:
+                eff_received_box = float(agg.get("loaded", 0))
+        if eff_received_box <= 0 and extra_pcs <= 0:
+            continue
+        if not ((line.order_qty_box or 0) > 0 or (line.supplier_qty_box or 0) > 0):
             continue
         p = product_map.get(line.product_id)
         if not p:
             continue
-        # Brand filter
-        if brand_filter and (p.brand or "") != brand_filter:
+        # Brand filter — effective brand (override_brand-ийг түрүүнд)
+        eff_brand = (line.override_brand or "").strip() or (p.brand or "")
+        if brand_filter and eff_brand != brand_filter:
             continue
         if body.company == "orgil_khorum":
             location = body.single_location
         else:
             location = body.warehouse_map.get(p.warehouse_name, "")
-        qty   = line.received_qty_box
-        price = line.unit_price or 0.0
-        total = round(qty * price, 2)
-        valid.append((p.brand or "", p.item_code, p, line, location, qty, price, total))
+        # ERP импортод тоо хэмжээ нь ширхгээр орох ёстой (бид хайрцгаар явдаг)
+        # Ачаа ирсэн үед задгай ширхэг нэмж болно (жишээ: 4 хайрцаг + 2 ширхэг)
+        # unit_price нь Орлого тайлангаас авсан ширхэгийн үнэ
+        # Хэрэв received_qty_box=0 бол loaded_qty_box-г ашиглана (fallback).
+        pack_ratio = float(p.pack_ratio or 1) or 1.0
+        qty = eff_received_box * pack_ratio + extra_pcs  # нийт ширхэг
+        price = float(line.unit_price or 0)              # нэгж үнэ/ширхэг
+        total = round(qty * price, 2)                     # нийт дүн
+        # Override брендтэй бол тухайн брендийн brand_code-ыг ашиглана (supplier солигдсон)
+        if (line.override_brand or "").strip():
+            ref = db.query(Product).filter(Product.brand == eff_brand, Product.brand_code != None).first()
+            eff_brand_code = ref.brand_code if ref else (p.brand_code or "")
+        else:
+            eff_brand_code = p.brand_code or ""
+        valid.append((eff_brand, p.item_code, p, line, location, qty, price, total, eff_brand_code))
 
     # Sort by brand_code then item_code so same-supplier items are grouped
-    valid.sort(key=lambda x: (x[2].brand_code or "", x[0], x[1]))
+    valid.sort(key=lambda x: (x[8] or "", x[0], x[1]))
 
     # ── Group by brand_code — one ERP document block per supplier ──
     from collections import defaultdict
     groups: dict = defaultdict(list)
     for item in valid:
-        groups[item[2].brand_code or ""].append(item)
+        groups[item[8] or ""].append(item)
 
     current_row = 2
     for supplier_code, items in groups.items():
-        for i, (brand, item_code, p, line, location, qty, price, total) in enumerate(items):
+        for i, (brand, item_code, p, line, location, qty, price, total, _eff_bc) in enumerate(items):
             is_first = (i == 0)
             row = [
                 date_val if is_first else None,            # Огноо
@@ -1467,13 +1694,22 @@ def export_erp_excel(
     wb.save(buf)
     buf.seek(0)
     import re
+    from urllib.parse import quote
     date_str = po.order_date.strftime("%Y%m%d")
     brand_part = re.sub(r'[\\/:*?"<>|]', '_', brand_filter) if brand_filter else "all"
     filename = f"{date_str}_PO{po.id}_{brand_part}.xlsx"
+    # RFC 5987: ASCII fallback + UTF-8 encoded filename* (Cyrillic-д зориулж)
+    # ASCII fallback нь зай/тусгай тэмдэггүй учир хашилт хэрэггүй
+    ascii_fallback = re.sub(r"[^\w\-.]", "_", filename.encode("ascii", "ignore").decode("ascii")) or f"PO{po.id}.xlsx"
+    utf8_quoted = quote(filename, safe="")
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename={ascii_fallback}; filename*=UTF-8''{utf8_quoted}"
+            )
+        },
     )
 
 
@@ -1536,7 +1772,8 @@ def _build_pdf(po: PurchaseOrder, body: PDFHeaderIn, db: Session) -> bytes:
         p = product_map.get(l.product_id)
         if not p:
             continue
-        brand_raw = (p.brand or "").strip()
+        brand_override = (l.override_brand or "").strip()
+        brand_raw = brand_override or (p.brand or "").strip()
         brand = brand_raw if brand_raw and brand_raw.lower() != "nan" else "Брэнд байхгүй"
         # брэнд шүүлт хэрэглэгдсэн бол зөвхөн тухайн брэнд
         if brand_filter and brand != brand_filter:
@@ -2224,7 +2461,7 @@ def delete_shipment(
     order_id: int,
     shipment_id: int,
     db: Session = Depends(get_db),
-    u: User = Depends(require_role("admin", "supervisor")),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
     sh = db.query(POShipment).filter(
         POShipment.id == shipment_id,
@@ -2337,13 +2574,16 @@ def _ensure_brand_statuses(order_id: int, db: Session):
     prod_ids = [l.product_id for l in lines]
     products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()}
 
-    # Brands with order_qty > 0
+    # Brands with order_qty > 0 (override_brand-ийг түрүүнд харгалзана)
     active_brands: set[str] = set()
     for l in lines:
         if l.order_qty_box > 0:
             p = products.get(l.product_id)
-            if p and p.brand and p.brand.lower() != "nan":
-                active_brands.add(p.brand)
+            eff_brand = (l.override_brand or "").strip()
+            if not eff_brand and p and p.brand and p.brand.lower() != "nan":
+                eff_brand = p.brand
+            if eff_brand and eff_brand.lower() != "nan":
+                active_brands.add(eff_brand)
 
     existing = {
         bs.brand

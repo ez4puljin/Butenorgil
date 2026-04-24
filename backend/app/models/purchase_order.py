@@ -1,4 +1,4 @@
-from sqlalchemy import Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Column
+from sqlalchemy import Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Column, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, date as date_type
 from app.core.db import Base
@@ -14,6 +14,8 @@ class PurchaseOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     notes: Mapped[str] = mapped_column(String(1000), default="")
     vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=True)
+    # Архив: жагсаалт дээр харагдахгүй, ачаалагдахгүй. Зөвхөн admin/manager-ын хүсэлтээр харагдана.
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
     lines = relationship(
         "PurchaseOrderLine", back_populates="order", cascade="all, delete-orphan"
@@ -37,8 +39,12 @@ class PurchaseOrderLine(Base):
     supplier_qty_box: Mapped[float] = mapped_column(Float, default=0.0)
     loaded_qty_box: Mapped[float] = mapped_column(Float, default=0.0)
     received_qty_box: Mapped[float] = mapped_column(Float, default=0.0)
+    # Бүхэл хайрцгаас гадна үлдсэн задгай ширхэгийн тоо (жишээ: 4 хайрцаг + 2 ширхэг)
+    received_qty_extra_pcs: Mapped[float] = mapped_column(Float, default=0.0)
     unit_price: Mapped[float] = mapped_column(Float, default=0.0)
     line_remark: Mapped[str] = mapped_column(String(500), default="")
+    # Онцгой тохиолдолд барааны бренд override хийх (жишээ нь W брендийн захиалгад Q брендийн А барааг нэмэх)
+    override_brand: Mapped[str] = mapped_column(String(100), default="")
 
     order = relationship("PurchaseOrder", back_populates="lines")
 

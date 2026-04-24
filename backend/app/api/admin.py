@@ -12,6 +12,9 @@ from app.models.user import User
 from app.models.role import Role
 from app.schemas.user import UserCreate
 from app.services.master_refresh import refresh_products_from_master
+from app.models.min_stock_rule import MinStockRule
+from app.models.product import Product
+from app.services.min_stock_check import find_rule_for_product, _tags_set, stock_breakdown
 
 MASTER_FILE = Path("app/data/outputs/master_latest.xlsx")
 
@@ -488,3 +491,259 @@ def change_password(
     current_user.password_hash = hash_password(payload.new_password)
     db.commit()
     return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Min Stock Rules (доод үлдэгдлийн дүрэм)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class MinStockRuleIn(BaseModel):
+    name: str = ""
+    product_id: int | None = None
+    location_tags: list[str] = []
+    price_tags: list[str] = []
+    min_qty_box: float = 0.0
+    is_active: bool = True
+    priority: int = 0
+
+
+class BulkProductRulesIn(BaseModel):
+    items: list[dict]  # [{"product_id": int, "min_qty_box": float}]
+
+
+def _serialize_rule(r: MinStockRule, matched_count: int | None = None, product_info: dict | None = None) -> dict:
+    return {
+        "id": r.id,
+        "name": r.name,
+        "product_id": r.product_id,
+        "product": product_info,
+        "location_tags": [t.strip() for t in (r.location_tags or "").split(",") if t.strip()],
+        "price_tags": [t.strip() for t in (r.price_tags or "").split(",") if t.strip()],
+        "min_qty_box": r.min_qty_box,
+        "is_active": r.is_active,
+        "priority": r.priority,
+        "matched_count": matched_count,
+    }
+
+
+def _count_matching_products(db: Session, rule: MinStockRule) -> int:
+    """Энэ rule-д тохирох барааны тоог тоолно (subset match)."""
+    r_loc = _tags_set(rule.location_tags)
+    r_pri = _tags_set(rule.price_tags)
+    # CSV comparison-ийг SQL-ээр хийх боломжгүй (issubset), бүх бараан дээр loop хийнэ.
+    # Бараа нь ~10k, rule нь цөөн тул acceptable.
+    if not r_loc and not r_pri:
+        return 0
+    count = 0
+    for p in db.query(Product).all():
+        p_loc = _tags_set(p.warehouse_name)
+        p_pri = _tags_set(p.price_tag)
+        if r_loc and not r_loc.issubset(p_loc):
+            continue
+        if r_pri and not r_pri.issubset(p_pri):
+            continue
+        count += 1
+    return count
+
+
+def _product_info(db: Session, product_id: int | None) -> dict | None:
+    if not product_id:
+        return None
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        return {"id": product_id, "item_code": "", "name": "(устгагдсан)"}
+    return {"id": p.id, "item_code": p.item_code, "name": p.name, "brand": p.brand, "pack_ratio": p.pack_ratio}
+
+
+@router.get("/min-stock-rules")
+def list_min_stock_rules(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "supervisor")),
+):
+    rules = db.query(MinStockRule).order_by(MinStockRule.product_id.is_(None), MinStockRule.priority.desc(), MinStockRule.id).all()
+    out = []
+    for r in rules:
+        pinfo = _product_info(db, r.product_id)
+        count = 1 if r.product_id else _count_matching_products(db, r)
+        out.append(_serialize_rule(r, count, pinfo))
+    return out
+
+
+@router.post("/min-stock-rules")
+def create_min_stock_rule(
+    body: MinStockRuleIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    if body.min_qty_box < 0:
+        raise HTTPException(400, "min_qty_box 0-ээс бага байж болохгүй")
+    if body.product_id is None and not body.location_tags and not body.price_tags:
+        raise HTTPException(400, "Бараа эсвэл tag сонгоно уу")
+
+    if body.product_id is not None:
+        # Давхардал шалгах — product_id-тэй rule аль хэдийн байвал update
+        existing = db.query(MinStockRule).filter(MinStockRule.product_id == body.product_id).first()
+        if existing:
+            existing.min_qty_box = float(body.min_qty_box)
+            existing.is_active = body.is_active
+            existing.name = body.name.strip()
+            db.commit(); db.refresh(existing)
+            return _serialize_rule(existing, 1, _product_info(db, existing.product_id))
+
+    r = MinStockRule(
+        name=body.name.strip(),
+        product_id=body.product_id,
+        location_tags="" if body.product_id else ",".join(t.strip() for t in body.location_tags if t.strip()),
+        price_tags="" if body.product_id else ",".join(t.strip() for t in body.price_tags if t.strip()),
+        min_qty_box=float(body.min_qty_box),
+        is_active=body.is_active,
+        priority=int(body.priority or 0),
+    )
+    db.add(r); db.commit(); db.refresh(r)
+    pinfo = _product_info(db, r.product_id)
+    count = 1 if r.product_id else _count_matching_products(db, r)
+    return _serialize_rule(r, count, pinfo)
+
+
+@router.post("/min-stock-rules/bulk-products")
+def create_bulk_product_rules(
+    body: BulkProductRulesIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """Олон бараанд нэгэн зэрэг min-stock rule үүсгэнэ/шинэчилнэ."""
+    created = 0
+    updated = 0
+    for it in body.items:
+        pid = it.get("product_id")
+        min_q = float(it.get("min_qty_box") or 0)
+        if not pid or min_q <= 0:
+            continue
+        existing = db.query(MinStockRule).filter(MinStockRule.product_id == pid).first()
+        if existing:
+            existing.min_qty_box = min_q
+            existing.is_active = True
+            updated += 1
+        else:
+            r = MinStockRule(
+                name="",
+                product_id=pid,
+                location_tags="",
+                price_tags="",
+                min_qty_box=min_q,
+                is_active=True,
+                priority=0,
+            )
+            db.add(r)
+            created += 1
+    db.commit()
+    return {"ok": True, "created": created, "updated": updated}
+
+
+@router.patch("/min-stock-rules/{rule_id}")
+def update_min_stock_rule(
+    rule_id: int,
+    body: MinStockRuleIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    r = db.query(MinStockRule).filter(MinStockRule.id == rule_id).first()
+    if not r:
+        raise HTTPException(404, "Rule олдсонгүй")
+    if body.min_qty_box < 0:
+        raise HTTPException(400, "min_qty_box 0-ээс бага байж болохгүй")
+    r.name = body.name.strip()
+    if r.product_id is None:
+        # Tag-based rule — tag-уудыг зөвшөөрнө
+        r.location_tags = ",".join(t.strip() for t in body.location_tags if t.strip())
+        r.price_tags = ",".join(t.strip() for t in body.price_tags if t.strip())
+    r.min_qty_box = float(body.min_qty_box)
+    r.is_active = body.is_active
+    r.priority = int(body.priority or 0)
+    db.commit(); db.refresh(r)
+    pinfo = _product_info(db, r.product_id)
+    count = 1 if r.product_id else _count_matching_products(db, r)
+    return _serialize_rule(r, count, pinfo)
+
+
+@router.delete("/min-stock-rules/{rule_id}")
+def delete_min_stock_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    r = db.query(MinStockRule).filter(MinStockRule.id == rule_id).first()
+    if not r:
+        raise HTTPException(404, "Rule олдсонгүй")
+    db.delete(r); db.commit()
+    return {"ok": True}
+
+
+@router.get("/min-stock-rules/{rule_id}/products")
+def list_rule_matching_products(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "supervisor")),
+):
+    """Тухайн rule-д тохирох барааны жагсаалт + одоогийн үлдэгдэл."""
+    r = db.query(MinStockRule).filter(MinStockRule.id == rule_id).first()
+    if not r:
+        raise HTTPException(404, "Rule олдсонгүй")
+
+    r_loc = _tags_set(r.location_tags)
+    r_pri = _tags_set(r.price_tags)
+    min_q = float(r.min_qty_box or 0)
+
+    results = []
+    for p in db.query(Product).all():
+        p_loc = _tags_set(p.warehouse_name)
+        p_pri = _tags_set(p.price_tag)
+        if r_loc and not r_loc.issubset(p_loc):
+            continue
+        if r_pri and not r_pri.issubset(p_pri):
+            continue
+        if not r_loc and not r_pri:
+            continue
+        bd = stock_breakdown(p)
+        results.append({
+            "id": p.id,
+            "item_code": p.item_code,
+            "name": p.name,
+            "brand": p.brand,
+            "warehouse_name": p.warehouse_name or "",
+            "price_tag": p.price_tag or "",
+            "stock_pcs": bd["stock_pcs"],
+            "stock_box": bd["stock_box"],
+            "stock_extra_pcs": bd["stock_extra_pcs"],
+            "pack_ratio": bd["pack_ratio"],
+            "needs_reorder": bd["stock_box"] < min_q,
+        })
+    results.sort(key=lambda x: (not x["needs_reorder"], x["brand"], x["item_code"]))
+    return {
+        "rule_id": r.id,
+        "min_qty_box": min_q,
+        "total": len(results),
+        "needs_reorder_count": sum(1 for x in results if x["needs_reorder"]),
+        "products": results,
+    }
+
+
+
+
+@router.get("/tags")
+def list_distinct_tags(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "supervisor")),
+):
+    """Байршил + үнэ tag-уудын distinct жагсаалт (rule form-ын autocomplete-д)."""
+    loc: set[str] = set()
+    pri: set[str] = set()
+    for (wh_name, price_t) in db.query(Product.warehouse_name, Product.price_tag).all():
+        for t in _tags_set(wh_name):
+            loc.add(t)
+        for t in _tags_set(price_t):
+            pri.add(t)
+    return {
+        "location_tags": sorted(loc),
+        "price_tags": sorted(pri),
+    }
