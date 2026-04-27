@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Plus, X, RefreshCw, Archive, ArchiveRestore, PackageCheck,
-  ChevronRight, Calendar, User, Hash, Package,
+  ChevronRight, Calendar, Package,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -39,6 +39,21 @@ const STATUS_DOT: Record<string, string> = {
   matching: "bg-amber-500",
   price_review: "bg-indigo-500",
   received: "bg-emerald-500",
+};
+
+// Card-ын зүүн талын зүсмэл (4px) — нэг харцаар статусыг таниулах
+const STATUS_BAR_BG: Record<string, string> = {
+  matching: "bg-amber-500",
+  price_review: "bg-indigo-500",
+  received: "bg-emerald-500",
+};
+
+// Богино мөнгөний формат: 1,200,000 → 1.2сая₮
+const fmtMnt = (v: number): string => {
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}тэрбум₮`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}сая₮`;
+  if (v >= 1e3) return `${Math.round(v / 1000)}мян₮`;
+  return `${Math.round(v)}₮`;
 };
 
 function StatusChip({ status, label }: { status: string; label: string }) {
@@ -234,65 +249,111 @@ export default function ReceivingList() {
         </div>
       ) : (
         <>
-          {/* Mobile card grid (< md) */}
-          <div className="grid grid-cols-1 gap-2.5 md:hidden">
-            {rows.map(r => (
-              <button
-                key={r.id}
-                onClick={() => navigate(`/receivings/${r.id}`)}
-                className="group rounded-apple bg-white p-3.5 text-left shadow-sm ring-1 ring-gray-100 transition-all active:scale-[0.995] active:bg-gray-50"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 text-[15px] font-semibold text-gray-900 tabular-nums">
-                      <Calendar size={13} className="text-gray-400"/>
-                      {r.date.replaceAll("-", "/")}
-                      <span className="text-xs font-normal text-gray-400">#{r.id}</span>
+          {/* Mobile card grid (< md) — Receiving Redesign-ын дагуу зүүн зүсмэл + brand progress */}
+          <div className="grid grid-cols-1 gap-2 md:hidden">
+            {rows.map(r => {
+              const matchedCount = r.brands.filter(b => b.is_matched).length;
+              const allMatched = r.brands.length > 0 && matchedCount === r.brands.length;
+              const barColor = STATUS_BAR_BG[r.status] ?? "bg-gray-400";
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => navigate(`/receivings/${r.id}`)}
+                  className="relative w-full overflow-hidden rounded-2xl bg-white text-left shadow-sm ring-1 ring-gray-100 transition-all active:scale-[0.995] active:bg-gray-50"
+                >
+                  {/* Зүүн талын статусын зүсмэл (4px) */}
+                  <span className={`absolute left-0 top-0 bottom-0 w-1 ${barColor}`} />
+
+                  <div className="py-3.5 pl-4 pr-3.5">
+                    {/* Дээд эгнээ — огноо + #ID + статус chip */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-[15px] font-bold text-gray-900 tabular-nums">
+                          {r.date.replaceAll("-", "/")}
+                          <span className="text-xs font-medium text-gray-400">#{r.id}</span>
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-gray-500">
+                          {r.created_by_username}
+                        </div>
+                      </div>
+                      <StatusChip status={r.status} label={r.status_label}/>
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
-                      <span className="inline-flex items-center gap-1"><User size={11}/>{r.created_by_username}</span>
+
+                    {/* Compact 3-col stats grid (Мөр / Ширхэг / Дүн) */}
+                    <div className="mt-2.5 grid grid-cols-3 gap-0 rounded-lg bg-gray-50/70 px-1 py-2">
+                      <div className="text-center">
+                        <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Мөр</div>
+                        <div className="mt-0.5 text-[13px] font-bold tabular-nums text-gray-900">{r.line_count}</div>
+                      </div>
+                      <div className="text-center border-x border-gray-200/70">
+                        <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Ширхэг</div>
+                        <div className="mt-0.5 text-[13px] font-bold tabular-nums text-gray-900">{r.total_pcs.toLocaleString("mn-MN")}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Дүн</div>
+                        <div className="mt-0.5 text-[13px] font-bold tabular-nums text-gray-900">{fmtMnt(r.total_amount)}</div>
+                      </div>
                     </div>
-                  </div>
-                  <StatusChip status={r.status} label={r.status_label}/>
-                </div>
 
-                <div className="mt-2">
-                  <BrandChips brands={r.brands} max={4}/>
-                </div>
+                    {/* Brand chips with check mark */}
+                    {r.brands.length > 0 && (
+                      <div className="mt-2.5 flex flex-wrap items-center gap-1">
+                        {r.brands.map(b => (
+                          <span
+                            key={b.brand}
+                            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${
+                              b.is_matched
+                                ? "bg-emerald-50 text-emerald-700 ring-emerald-200/60"
+                                : "bg-gray-100 text-gray-600 ring-gray-200/60"
+                            }`}
+                          >
+                            {b.is_matched && (
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M20 6L9 17l-5-5"/>
+                              </svg>
+                            )}
+                            {b.brand}
+                          </span>
+                        ))}
+                      </div>
+                    )}
 
-                <div className="mt-2.5 grid grid-cols-3 gap-2 rounded-lg bg-gray-50/60 p-2">
-                  <div className="text-center">
-                    <div className="text-[9px] font-medium uppercase tracking-wide text-gray-400">Мөр</div>
-                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-gray-800">{r.line_count}</div>
-                  </div>
-                  <div className="text-center border-x border-gray-200/70">
-                    <div className="text-[9px] font-medium uppercase tracking-wide text-gray-400">Ширхэг</div>
-                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-gray-800">{r.total_pcs.toFixed(0)}</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-[9px] font-medium uppercase tracking-wide text-gray-400">Дүн</div>
-                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-gray-900">
-                      {r.total_amount.toLocaleString("mn-MN")}
-                    </div>
-                  </div>
-                </div>
+                    {/* Brand progress bar */}
+                    {r.brands.length > 0 && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="h-1 flex-1 overflow-hidden rounded-full bg-gray-100">
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${allMatched ? "bg-emerald-500" : "bg-[#0071E3]"}`}
+                            style={{ width: `${(matchedCount / r.brands.length) * 100}%` }}
+                          />
+                        </div>
+                        <span className={`text-[10px] font-bold tabular-nums ${allMatched ? "text-emerald-700" : "text-gray-500"}`}>
+                          {matchedCount}/{r.brands.length}
+                        </span>
+                      </div>
+                    )}
 
-                {r.notes && (
-                  <p className="mt-2 line-clamp-2 text-[11px] italic text-gray-400">{r.notes}</p>
-                )}
+                    {r.notes && (
+                      <p className="mt-2 line-clamp-2 text-[11px] italic text-gray-400">"{r.notes}"</p>
+                    )}
 
-                {canArchive && (
-                  <div className="mt-2 flex justify-end">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleArchive(r.id, !r.is_archived); }}
-                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-amber-50 hover:text-amber-600"
-                    >
-                      {r.is_archived ? <><ArchiveRestore size={12}/> Буцаах</> : <><Archive size={12}/> Архив</>}
-                    </button>
+                    {canArchive && (
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleArchive(r.id, !r.is_archived); }}
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-amber-50 hover:text-amber-600"
+                        >
+                          {r.is_archived ? <><ArchiveRestore size={12}/> Буцаах</> : <><Archive size={12}/> Архив</>}
+                        </button>
+                      </div>
+                    )}
                   </div>
-                )}
-              </button>
-            ))}
+
+                  {/* Chevron — баруун дунд */}
+                  <ChevronRight size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300"/>
+                </button>
+              );
+            })}
           </div>
 
           {/* Desktop table (md+) */}

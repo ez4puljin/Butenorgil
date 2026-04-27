@@ -27,7 +27,16 @@ type Line = {
   stock_extra_pcs: number;
   unit_price: number;
   total_amount: number;
+  price_reviewed: boolean;   // price_review статусын үед хэрэглэгчийн toggle
   note: string;
+};
+
+// Богино мөнгөний формат
+const fmtMnt = (v: number): string => {
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}тэрбум₮`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}сая₮`;
+  if (v >= 1e3) return `${Math.round(v / 1000)}мян₮`;
+  return `${Math.round(v)}₮`;
 };
 
 type BrandInfo = {
@@ -290,10 +299,21 @@ export default function ReceivingDetail() {
     }
   };
 
-  const updateLine = async (lineId: number, patch: { qty_pcs?: number; unit_price?: number }) => {
+  const updateLine = async (lineId: number, patch: { qty_pcs?: number; unit_price?: number; override_brand?: string | null }) => {
     if (!session) return;
     try {
       await api.patch(`/receivings/${session.id}/lines/${lineId}`, patch);
+      await load();
+    } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
+  };
+
+  // price_review статусын үед line-ын "хянагдсан" төлвийг toggle
+  const togglePriceReview = async (lineId: number, reviewed: boolean) => {
+    if (!session) return;
+    try {
+      await api.patch(`/receivings/${session.id}/lines/${lineId}/price-review`, null, {
+        params: { reviewed },
+      });
       await load();
     } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
   };
@@ -394,84 +414,103 @@ export default function ReceivingDetail() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="mb-4 rounded-apple bg-white p-3.5 shadow-sm ring-1 ring-gray-100 sm:p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-1 items-start gap-2">
-            <button
-              onClick={() => navigate("/receivings")}
-              className="shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
-              aria-label="Буцах"
-            >
-              <ChevronLeft size={18}/>
-            </button>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
-                  <span className="tabular-nums">{session.date.replaceAll("-", "/")}</span>
-                  <span className="ml-2 text-xs font-normal text-gray-400">#{session.id}</span>
-                </h1>
-                <StatusChip status={session.status} label={session.status_label}/>
-              </div>
-              {/* Stats — compact on mobile, expanded on desktop */}
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-500 sm:text-xs">
-                <span className="inline-flex items-center gap-1"><User size={11}/>{session.created_by_username}</span>
-                <span className="inline-flex items-center gap-1 tabular-nums"><Hash size={11}/>{session.line_count} мөр</span>
-                <span className="tabular-nums">{session.total_pcs.toFixed(0)} ш</span>
-                <span className="font-semibold tabular-nums text-gray-800">
-                  {session.total_amount.toLocaleString("mn-MN")}₮
-                </span>
-                {session.brands.length > 0 && (
-                  <span className="tabular-nums">
-                    {matchedBrandCount}/{session.brands.length} бренд тулгагдсан
-                  </span>
-                )}
-              </div>
-              {session.notes && (
-                <p className="mt-1.5 text-[11px] italic text-gray-400 sm:text-xs">“{session.notes}”</p>
-              )}
+      {/* Header — Receiving Redesign-ын дагуу summary card + brand progress + status action */}
+      <div className="mb-4 rounded-2xl bg-white p-3.5 shadow-sm ring-1 ring-gray-100 sm:p-4">
+        {/* Top row — back + title + status chip */}
+        <div className="flex items-start gap-2">
+          <button
+            onClick={() => navigate("/receivings")}
+            className="shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
+            aria-label="Буцах"
+          >
+            <ChevronLeft size={18}/>
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+              Бараа тулгаж авах
             </div>
+            <h1 className="text-[15px] font-bold tracking-tight text-gray-900 sm:text-base">
+              <span className="tabular-nums">{session.date.replaceAll("-", "/")}</span>
+              <span className="ml-2 text-xs font-medium text-gray-400">#{session.id}</span>
+            </h1>
+          </div>
+          <StatusChip status={session.status} label={session.status_label}/>
+        </div>
+
+        {/* Sub-info row — created_by + brand count */}
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-500">
+          <span className="inline-flex items-center gap-1"><User size={11}/>{session.created_by_username}</span>
+          {session.brands.length > 0 && (
+            <span className="tabular-nums">
+              {matchedBrandCount}/{session.brands.length} брэнд тулгагдсан
+            </span>
+          )}
+        </div>
+
+        {/* 3-col stats grid */}
+        <div className="mt-2.5 grid grid-cols-3 gap-0 rounded-xl bg-gray-50/70 px-1 py-2.5">
+          <div className="text-center">
+            <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Мөр</div>
+            <div className="mt-0.5 text-[14px] font-bold tabular-nums text-gray-900">{session.line_count}</div>
+          </div>
+          <div className="text-center border-x border-gray-200/70">
+            <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Ширхэг</div>
+            <div className="mt-0.5 text-[14px] font-bold tabular-nums text-gray-900">{session.total_pcs.toLocaleString("mn-MN")}</div>
+          </div>
+          <div className="text-center">
+            <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Дүн</div>
+            <div className="mt-0.5 text-[14px] font-bold tabular-nums text-gray-900">{fmtMnt(session.total_amount)}</div>
           </div>
         </div>
 
-        {/* Status actions */}
-        {(session.status === "matching" || session.status === "price_review") && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3">
-            {session.status === "matching" && (
-              <button
-                onClick={() => advanceTo("price_review")}
-                disabled={!session.all_brands_matched}
-                className={`inline-flex items-center gap-1.5 rounded-apple px-3.5 py-2 text-xs font-semibold transition-colors sm:text-sm ${
-                  session.all_brands_matched
-                    ? "bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm"
-                    : "bg-gray-100 text-gray-400 cursor-not-allowed"
-                }`}
-                title={session.all_brands_matched ? "" : "Эхлээд бүх брэндийн баримт тулгана уу"}
-              >
-                <TrendingUp size={14}/>
-                Үнэ хянах руу
-                <ChevronRight size={14}/>
-              </button>
-            )}
-            {session.status === "price_review" && (
-              <>
-                <button
-                  onClick={() => setShowERPModal(true)}
-                  className="inline-flex items-center gap-1.5 rounded-apple bg-blue-50 px-3.5 py-2 text-xs font-semibold text-blue-700 ring-1 ring-inset ring-blue-200/60 hover:bg-blue-100 sm:text-sm"
-                >
-                  <FileDown size={14}/>
-                  Нэгтгэсэн ERP Excel
-                </button>
-                <button
-                  onClick={() => advanceTo("received")}
-                  className="inline-flex items-center gap-1.5 rounded-apple bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 sm:text-sm"
-                >
-                  <CheckCircle2 size={14}/>
-                  Орлого авсан
-                  <ChevronRight size={14}/>
-                </button>
-              </>
-            )}
+        {/* Brand progress bar */}
+        {session.brands.length > 0 && (
+          <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-gray-100">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${
+                session.all_brands_matched ? "bg-emerald-500" : "bg-[#0071E3]"
+              }`}
+              style={{ width: `${session.brands.length ? (matchedBrandCount / session.brands.length) * 100 : 0}%` }}
+            />
+          </div>
+        )}
+
+        {session.notes && (
+          <p className="mt-2 text-[11px] italic text-gray-400">"{session.notes}"</p>
+        )}
+
+        {/* Status action button(s) — дизайны дагуу status-аас хамаарч өөр өөр товч */}
+        {session.status === "matching" && (
+          <button
+            onClick={() => advanceTo("price_review")}
+            disabled={!session.all_brands_matched}
+            className={`mt-3 flex h-10 w-full items-center justify-center gap-1.5 rounded-xl text-[13px] font-bold transition-all ${
+              session.all_brands_matched
+                ? "bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 active:scale-[0.99]"
+                : "bg-gray-100 text-gray-400 cursor-not-allowed"
+            }`}
+            title={session.all_brands_matched ? "" : "Эхлээд бүх брэндийн баримт тулгана уу"}
+          >
+            <TrendingUp size={15}/>
+            Үнэ хянах руу шилжих
+          </button>
+        )}
+        {session.status === "price_review" && (
+          <div className="mt-3 grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => setShowERPModal(true)}
+              className="flex h-10 items-center justify-center gap-1.5 rounded-xl bg-indigo-50 text-[12px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-200/60 hover:bg-indigo-100"
+            >
+              <FileDown size={14}/>
+              Нэгтгэсэн ERP
+            </button>
+            <button
+              onClick={() => advanceTo("received")}
+              className="flex h-10 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-[12px] font-bold text-white shadow-sm hover:bg-emerald-700"
+            >
+              <CheckCircle2 size={14}/>
+              Орлого авсан
+            </button>
           </div>
         )}
       </div>
@@ -606,45 +645,76 @@ export default function ReceivingDetail() {
                   </div>
                 )}
 
-                {/* Brand override dropdown */}
+                {/* Brand override — chip товчнууд (Receiving Redesign дагуу) */}
                 <div className="mt-3">
-                  <label className="mb-1 block text-[11px] font-medium text-gray-500">
-                    Бренд (тулгах)
+                  <label className="mb-1.5 block text-[11px] font-semibold text-gray-500">
+                    Тулгах брэнд
                   </label>
-                  <select
-                    value={addBrand}
-                    onChange={e => setAddBrand(e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15"
-                  >
-                    <option value="">
-                      {selected.brand || "(брэнд байхгүй)"} — анхдагч
-                    </option>
-                    {/* Уг session дотор аль хэдий нь байгаа brand-уудыг эхэнд харуулах */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {/* Selected product-ын анхдагч brand */}
+                    {selected.brand && (
+                      <button
+                        type="button"
+                        onClick={() => setAddBrand("")}
+                        className={`rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all ${
+                          !addBrand || addBrand === selected.brand
+                            ? "bg-[#0071E3] text-white shadow-sm"
+                            : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
+                        }`}
+                      >
+                        {selected.brand}
+                      </button>
+                    )}
+                    {/* Session-доторх бусад brand-ууд */}
                     {(session?.brands ?? [])
                       .map(b => b.brand)
                       .filter(b => b && b !== selected.brand && b !== "Брэнд байхгүй")
                       .map(b => (
-                        <option key={`s-${b}`} value={b}>
-                          {b} — энэ session дээр
-                        </option>
-                      ))}
-                    {/* Системийн бусад brand-ууд */}
-                    {allBrands
-                      .filter(b =>
-                        b &&
-                        b !== selected.brand &&
-                        !(session?.brands ?? []).some(sb => sb.brand === b)
-                      )
-                      .map(b => (
-                        <option key={`a-${b}`} value={b}>
+                        <button
+                          key={`s-${b}`}
+                          type="button"
+                          onClick={() => setAddBrand(b)}
+                          className={`rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all ${
+                            addBrand === b
+                              ? "bg-[#0071E3] text-white shadow-sm"
+                              : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
+                          }`}
+                        >
                           {b}
-                        </option>
+                        </button>
                       ))}
-                  </select>
+                    {/* Системийн бусад brand-ууд (collapsed dropdown — overflow гарахгүй) */}
+                    {allBrands.filter(b =>
+                      b &&
+                      b !== selected.brand &&
+                      !(session?.brands ?? []).some(sb => sb.brand === b)
+                    ).length > 0 && (
+                      <select
+                        value={
+                          addBrand &&
+                          addBrand !== selected.brand &&
+                          !(session?.brands ?? []).some(sb => sb.brand === addBrand)
+                            ? addBrand : ""
+                        }
+                        onChange={e => setAddBrand(e.target.value)}
+                        className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-600 outline-none focus:border-[#0071E3]"
+                      >
+                        <option value="">+ Бусад брэнд</option>
+                        {allBrands
+                          .filter(b =>
+                            b &&
+                            b !== selected.brand &&
+                            !(session?.brands ?? []).some(sb => sb.brand === b)
+                          )
+                          .map(b => <option key={b} value={b}>{b}</option>)}
+                      </select>
+                    )}
+                  </div>
                   {addBrand && addBrand !== (selected.brand || "") && (
-                    <p className="mt-1 text-[11px] text-amber-600">
-                      ⚠ <span className="font-medium">{selected.brand || "брэндгүй"}</span> бараа{" "}
-                      <span className="font-medium">{addBrand}</span> дор тулгагдана
+                    <p className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200/60">
+                      <AlertTriangle size={11}/>
+                      <span className="font-semibold">{selected.brand || "брэндгүй"}</span> бараа{" "}
+                      <span className="font-semibold">{addBrand}</span> брэнд дор тулгагдана
                     </p>
                   )}
                 </div>
@@ -842,6 +912,15 @@ export default function ReceivingDetail() {
 
       {/* Filters */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-apple bg-white px-3 py-2 shadow-sm ring-1 ring-gray-100">
+        {/* "Шүүж харах"-аар орж ирсэн бол Back товчоор brand-ийн filter-ыг арилгана */}
+        {filterBrand && (
+          <button
+            onClick={() => setFilterBrand("")}
+            className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-200"
+          >
+            <ChevronLeft size={11}/> Буцах
+          </button>
+        )}
         <span className="mr-1 text-xs font-medium text-gray-500 tabular-nums">
           {visibleLines.length} мөр
         </span>
@@ -865,7 +944,7 @@ export default function ReceivingDetail() {
                 : "bg-red-50 text-red-600 ring-1 ring-inset ring-red-200/60 hover:bg-red-100"
             }`}
           >
-            <AlertTriangle size={11}/> Үнэ зөрүүтэй
+            <AlertTriangle size={11}/> Үнэ зөрүүтэй{priceDiffOnly ? " ✕" : ""}
           </button>
         )}
         {(filterBrand || priceDiffOnly) && (
@@ -877,6 +956,42 @@ export default function ReceivingDetail() {
           </button>
         )}
       </div>
+
+      {/* Price-diff summary banner — price_review статусын үед */}
+      {session.status === "price_review" && (() => {
+        const diffLines = session.lines.filter(
+          l => l.last_purchase_price > 0 && Math.abs(l.unit_price - l.last_purchase_price) > 0.01
+        );
+        const fixedCount = diffLines.filter(l => l.price_reviewed).length;
+        if (diffLines.length === 0) return null;
+        const allFixed = fixedCount === diffLines.length;
+        return (
+          <div
+            className={`mb-2 flex items-center justify-between rounded-2xl px-3.5 py-2.5 ring-1 ring-inset ${
+              allFixed
+                ? "bg-emerald-50 ring-emerald-200/60"
+                : "bg-amber-50 ring-amber-200/60"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {allFixed
+                ? <CheckCircle2 size={16} className="text-emerald-600"/>
+                : <AlertTriangle size={16} className="text-amber-700"/>}
+              <div>
+                <div className={`text-[12px] font-bold ${allFixed ? "text-emerald-800" : "text-amber-900"}`}>
+                  {allFixed ? "Бүх үнэ хянагдсан" : "Үнийн зөрүү илэрсэн"}
+                </div>
+                <div className={`text-[10px] ${allFixed ? "text-emerald-700" : "text-amber-700"}`}>
+                  {fixedCount}/{diffLines.length} мөрийн үнэ хянагдсан
+                </div>
+              </div>
+            </div>
+            <div className={`text-[18px] font-extrabold tabular-nums ${allFixed ? "text-emerald-600" : "text-red-500"}`}>
+              {fixedCount}/{diffLines.length}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Lines list */}
       <div className="overflow-hidden rounded-apple bg-white shadow-sm ring-1 ring-gray-100">
@@ -916,15 +1031,24 @@ export default function ReceivingDetail() {
                           <th className="px-3 py-2 font-medium text-right w-[150px]">Нэгж үнэ</th>
                           <th className="px-3 py-2 font-medium text-right w-[130px]">Дүн</th>
                           {canEdit && <th className="px-3 py-2 w-[48px]"></th>}
+                          {session.status === "price_review" && <th className="px-3 py-2 text-right w-[110px]">Хянасан</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-50">
                         {lns.map(l => {
                           const priceDiff = l.last_purchase_price > 0 && Math.abs(l.unit_price - l.last_purchase_price) > 0.01;
+                          const isPriceReview = session.status === "price_review";
+                          const rowBg = priceDiff && !l.price_reviewed && isPriceReview
+                            ? "bg-red-50/40"
+                            : l.price_reviewed && isPriceReview
+                              ? "bg-emerald-50/40"
+                              : priceDiff
+                                ? "bg-red-50/30"
+                                : "hover:bg-gray-50/40";
                           return (
-                            <tr key={l.id} className={priceDiff ? "bg-red-50/30" : "hover:bg-gray-50/40"}>
+                            <tr key={l.id} className={rowBg}>
                               <td className="px-3 py-2.5 align-top">
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
                                   <div className="text-sm font-medium text-gray-800 leading-snug">{l.name}</div>
                                   {l.override_brand && l.original_brand && l.override_brand !== l.original_brand && (
                                     <span
@@ -932,6 +1056,16 @@ export default function ReceivingDetail() {
                                       className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200/60"
                                     >
                                       ↺ {l.original_brand}
+                                    </span>
+                                  )}
+                                  {isPriceReview && l.price_reviewed && (
+                                    <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-200/60">
+                                      <Check size={9} strokeWidth={3}/> Үнэ хянасан
+                                    </span>
+                                  )}
+                                  {isPriceReview && priceDiff && !l.price_reviewed && (
+                                    <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[9px] font-bold text-red-700 ring-1 ring-inset ring-red-200/60">
+                                      <AlertTriangle size={9}/> Үнэ зөрүүтэй
                                     </span>
                                   )}
                                 </div>
@@ -992,6 +1126,22 @@ export default function ReceivingDetail() {
                                   </button>
                                 </td>
                               )}
+                              {isPriceReview && (
+                                <td className="px-3 py-2.5 align-top text-right">
+                                  <button
+                                    onClick={() => togglePriceReview(l.id, !l.price_reviewed)}
+                                    className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                                      l.price_reviewed
+                                        ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/60 hover:bg-emerald-100"
+                                        : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
+                                    }`}
+                                    title={l.price_reviewed ? "Хянагдсан тэмдэглэгээг авах" : "Хянасан гэж тэмдэглэх"}
+                                  >
+                                    <Check size={11} strokeWidth={2.6}/>
+                                    {l.price_reviewed ? "Хянасан" : "Хянах"}
+                                  </button>
+                                </td>
+                              )}
                             </tr>
                           );
                         })}
@@ -1003,8 +1153,16 @@ export default function ReceivingDetail() {
                   <div className="lg:hidden">
                     {lns.map(l => {
                       const priceDiff = l.last_purchase_price > 0 && Math.abs(l.unit_price - l.last_purchase_price) > 0.01;
+                      const isPriceReview = session.status === "price_review";
+                      const rowBg = priceDiff && !l.price_reviewed && isPriceReview
+                        ? "bg-red-50/40"
+                        : l.price_reviewed && isPriceReview
+                          ? "bg-emerald-50/40"
+                          : priceDiff
+                            ? "bg-red-50/30"
+                            : "";
                       return (
-                        <div key={l.id} className={`px-3 py-3 ${priceDiff ? "bg-red-50/30" : ""}`}>
+                        <div key={l.id} className={`px-3 py-3 ${rowBg}`}>
                           <div className="flex items-start gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5 flex-wrap">
@@ -1015,6 +1173,16 @@ export default function ReceivingDetail() {
                                     className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200/60"
                                   >
                                     ↺ {l.original_brand}
+                                  </span>
+                                )}
+                                {isPriceReview && l.price_reviewed && (
+                                  <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-200/60">
+                                    <Check size={9} strokeWidth={3}/> Үнэ хянасан
+                                  </span>
+                                )}
+                                {isPriceReview && priceDiff && !l.price_reviewed && (
+                                  <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[9px] font-bold text-red-700 ring-1 ring-inset ring-red-200/60">
+                                    <AlertTriangle size={9}/> Үнэ зөрүүтэй
                                   </span>
                                 )}
                               </div>
@@ -1030,6 +1198,19 @@ export default function ReceivingDetail() {
                                 title="Устгах"
                               >
                                 <Trash2 size={14}/>
+                              </button>
+                            )}
+                            {isPriceReview && (
+                              <button
+                                onClick={() => togglePriceReview(l.id, !l.price_reviewed)}
+                                className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-2 text-[11px] font-bold transition active:scale-95 ${
+                                  l.price_reviewed
+                                    ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/60"
+                                    : "bg-[#0071E3]/10 text-[#0071E3]"
+                                }`}
+                              >
+                                <Check size={12} strokeWidth={2.6}/>
+                                {l.price_reviewed ? "Хянасан" : "Хянах"}
                               </button>
                             )}
                           </div>

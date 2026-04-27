@@ -100,6 +100,7 @@ def _serialize_line(ln: ReceivingLine, product: Optional[Product]) -> dict:
         "stock_extra_pcs": extra,
         "unit_price": ln.unit_price,
         "total_amount": total_amount,
+        "price_reviewed": bool(getattr(ln, "price_reviewed", False)),
         "note": ln.note or "",
     }
 
@@ -416,6 +417,27 @@ def update_line(
     if body.note is not None:
         ln.note = body.note
     db.commit(); db.refresh(ln)
+    return _serialize_line(ln, p)
+
+
+@router.patch("/{session_id}/lines/{line_id}/price-review")
+def toggle_price_review(
+    session_id: int,
+    line_id: int,
+    reviewed: bool = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "manager", "supervisor", "warehouse_clerk", "accountant")),
+):
+    """price_review статусын үед хэрэглэгч мөрийг 'Хянасан/Хянагдаагүй' гэж toggle хийнэ."""
+    ln = db.query(ReceivingLine).filter(
+        ReceivingLine.id == line_id,
+        ReceivingLine.session_id == session_id,
+    ).first()
+    if not ln:
+        raise HTTPException(404, "Мөр олдсонгүй")
+    ln.price_reviewed = bool(reviewed)
+    db.commit(); db.refresh(ln)
+    p = db.query(Product).filter(Product.id == ln.product_id).first()
     return _serialize_line(ln, p)
 
 

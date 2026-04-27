@@ -38,6 +38,8 @@ class ReceivingLine(Base):
     # Онцгой тохиолдолд: бараа Brand A-тай ч физикээр Brand B-ээс ирвэл энэ session-д override
     # Хоосон бол Product.brand-аар явна (backward compatible).
     override_brand: Mapped[str] = mapped_column(String(100), default="")
+    # Үнэ хянагдсан эсэх (price_review статус дээр хэрэглэгч toggle хийнэ)
+    price_reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
     note: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

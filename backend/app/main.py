@@ -114,11 +114,13 @@ def ensure_po_lines_schema():
 
 
 def ensure_receiving_lines_schema():
-    """receiving_lines-д override_brand багана нэмнэ (Brand override feature)."""
+    """receiving_lines-д override_brand болон price_reviewed багана нэмнэ."""
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(receiving_lines)")).fetchall()]
         if cols and "override_brand" not in cols:
             conn.execute(text("ALTER TABLE receiving_lines ADD COLUMN override_brand VARCHAR(100) DEFAULT ''"))
+        if cols and "price_reviewed" not in cols:
+            conn.execute(text("ALTER TABLE receiving_lines ADD COLUMN price_reviewed BOOLEAN DEFAULT 0 NOT NULL"))
 
 def ensure_price_schema():
     with engine.begin() as conn:
