@@ -17,6 +17,8 @@ import {
   FolderOpen,
   Pencil,
   Trash2,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -32,7 +34,21 @@ type CountRecord = {
   kpi_points: number | null;
   kpi_target_employee_ids: number[];
   kpi_task_active: boolean | null;
+  // Checklist
+  check_all_synced: boolean;
+  check_no_partial: boolean;
+  check_no_wh14_sales: boolean;
+  check_balance_unchanged: boolean;
 };
+
+type ChecklistKey = "check_all_synced" | "check_no_partial" | "check_no_wh14_sales" | "check_balance_unchanged";
+
+const CHECKLIST_ITEMS: { key: ChecklistKey; label: string }[] = [
+  { key: "check_all_synced",        label: "Бүх гүйлгээ татагдсан буюу Sync хийгдсэн" },
+  { key: "check_no_partial",        label: "Бүрэн бус баримт байхгүй" },
+  { key: "check_no_wh14_sales",     label: "№14 агуулахаас борлуулалт гараагүй" },
+  { key: "check_balance_unchanged", label: "Өмнөх тооллогоны үлдэгдэл дээр өөрчлөлт ороогүй" },
+];
 type UserOption = {
   id: number;
   username: string;
@@ -199,6 +215,32 @@ export default function InventoryCount() {
       a.href = url; a.download = filename; a.click();
       URL.revokeObjectURL(url);
     } catch { showFlash("Файл татахад алдаа", false); }
+  };
+
+  // Зөвхөн админ — TXT/Excel файлыг устгах
+  const handleDeleteFile = async (fileId: number, filename: string) => {
+    if (!confirm(`"${filename}" файлыг устгах уу?`)) return;
+    setBusy(true);
+    try {
+      await api.delete(`/inventory-count/files/${fileId}`);
+      showFlash("Файл устгагдлаа");
+      await loadData();
+    } catch (e: any) {
+      showFlash(e?.response?.data?.detail ?? "Файл устгахад алдаа", false);
+    } finally { setBusy(false); }
+  };
+
+  // Checklist (4 шалгалтын нэг toggle)
+  const handleChecklistToggle = async (countId: number, key: ChecklistKey, value: boolean) => {
+    // Optimistic local update
+    setCounts(prev => prev.map(c => c.id === countId ? { ...c, [key]: value } : c));
+    try {
+      await api.patch(`/inventory-count/counts/${countId}/checklist`, { [key]: value });
+    } catch (e: any) {
+      // Revert on failure
+      setCounts(prev => prev.map(c => c.id === countId ? { ...c, [key]: !value } : c));
+      showFlash(e?.response?.data?.detail ?? "Шалгалт хадгалахад алдаа", false);
+    }
   };
 
   const handleEdit = async () => {
@@ -386,20 +428,42 @@ export default function InventoryCount() {
                               <div className="truncate">
                                 {c.description || <span className="text-gray-300">—</span>}
                               </div>
-                              {c.kpi_admin_task_id && (
-                                <div className="mt-0.5 flex flex-wrap items-center gap-1">
-                                  <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                                    c.kpi_task_active === false
-                                      ? "bg-gray-100 text-gray-400"
-                                      : "bg-violet-50 text-violet-700"
-                                  }`}>
-                                    KPI · {c.kpi_points ?? 0} оноо
-                                  </span>
-                                  <span className="text-[10px] text-gray-400">
-                                    {c.kpi_target_employee_ids.length} ажилтан
-                                  </span>
-                                </div>
-                              )}
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                {c.kpi_admin_task_id && (
+                                  <>
+                                    <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                      c.kpi_task_active === false
+                                        ? "bg-gray-100 text-gray-400"
+                                        : "bg-violet-50 text-violet-700"
+                                    }`}>
+                                      KPI · {c.kpi_points ?? 0} оноо
+                                    </span>
+                                    <span className="text-[10px] text-gray-400">
+                                      {c.kpi_target_employee_ids.length} ажилтан
+                                    </span>
+                                  </>
+                                )}
+                                {(() => {
+                                  const ck = CHECKLIST_ITEMS.filter(it => c[it.key]).length;
+                                  const total = CHECKLIST_ITEMS.length;
+                                  const allOk = ck === total;
+                                  return (
+                                    <span
+                                      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                                        allOk
+                                          ? "bg-emerald-50 text-emerald-700"
+                                          : ck > 0
+                                            ? "bg-amber-50 text-amber-700"
+                                            : "bg-gray-100 text-gray-500"
+                                      }`}
+                                      title="Тооллогын урьдчилсан шалгалт"
+                                    >
+                                      <CheckSquare size={10}/>
+                                      {ck}/{total}
+                                    </span>
+                                  );
+                                })()}
+                              </div>
                             </div>
                             <div className="col-span-2 flex items-center justify-center gap-2">
                               {txtFiles.length > 0 && (
@@ -465,6 +529,57 @@ export default function InventoryCount() {
                                 className="overflow-hidden"
                               >
                                 <div className="bg-gray-50/50 px-5 pb-4 pt-1">
+                                  {/* ── Checklist (4 шалгалт) ── */}
+                                  {(() => {
+                                    const checkedCount = CHECKLIST_ITEMS.filter(it => c[it.key]).length;
+                                    const allChecked = checkedCount === CHECKLIST_ITEMS.length;
+                                    return (
+                                      <div
+                                        className={`mb-3 rounded-xl border p-3 ${
+                                          allChecked
+                                            ? "bg-emerald-50 border-emerald-200"
+                                            : "bg-white border-gray-200"
+                                        }`}
+                                      >
+                                        <div className="mb-2 flex items-center justify-between">
+                                          <span className={`flex items-center gap-1.5 text-xs font-semibold ${allChecked ? "text-emerald-800" : "text-gray-700"}`}>
+                                            <CheckSquare size={13}/>
+                                            Тооллогын урьдчилсан шалгалт
+                                          </span>
+                                          <span className={`tabular-nums rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                                            allChecked
+                                              ? "bg-emerald-100 text-emerald-700"
+                                              : "bg-gray-100 text-gray-600"
+                                          }`}>
+                                            {checkedCount}/{CHECKLIST_ITEMS.length}
+                                          </span>
+                                        </div>
+                                        <ul className="space-y-1.5">
+                                          {CHECKLIST_ITEMS.map(it => {
+                                            const checked = !!c[it.key];
+                                            return (
+                                              <li key={it.key}>
+                                                <button
+                                                  onClick={(e) => { e.stopPropagation(); handleChecklistToggle(c.id, it.key, !checked); }}
+                                                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
+                                                    checked
+                                                      ? "bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                                                      : "bg-white text-gray-700 hover:bg-gray-50 ring-1 ring-inset ring-gray-100"
+                                                  }`}
+                                                >
+                                                  {checked
+                                                    ? <CheckSquare size={15} className="shrink-0 text-emerald-600"/>
+                                                    : <Square size={15} className="shrink-0 text-gray-400"/>}
+                                                  <span className={checked ? "font-medium" : ""}>{it.label}</span>
+                                                </button>
+                                              </li>
+                                            );
+                                          })}
+                                        </ul>
+                                      </div>
+                                    );
+                                  })()}
+
                                   <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                                     {/* TXT files */}
                                     <div>
@@ -499,12 +614,24 @@ export default function InventoryCount() {
                                                 <FileText size={14} className="text-gray-400 shrink-0" />
                                                 <span className="text-xs text-gray-700 truncate">{f.original_filename}</span>
                                               </div>
-                                              <button
-                                                onClick={(e) => { e.stopPropagation(); handleDownload(f.id, f.original_filename); }}
-                                                className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:text-[#0071E3] hover:bg-blue-50"
-                                              >
-                                                <Download size={13} />
-                                              </button>
+                                              <div className="flex items-center gap-0.5 shrink-0">
+                                                <button
+                                                  onClick={(e) => { e.stopPropagation(); handleDownload(f.id, f.original_filename); }}
+                                                  className="rounded-lg p-1.5 text-gray-400 hover:text-[#0071E3] hover:bg-blue-50"
+                                                  title="Татах"
+                                                >
+                                                  <Download size={13} />
+                                                </button>
+                                                {isAdmin && (
+                                                  <button
+                                                    onClick={(e) => { e.stopPropagation(); handleDeleteFile(f.id, f.original_filename); }}
+                                                    className="rounded-lg p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50"
+                                                    title="Устгах (зөвхөн админ)"
+                                                  >
+                                                    <Trash2 size={13} />
+                                                  </button>
+                                                )}
+                                              </div>
                                             </div>
                                           ))}
                                         </div>
@@ -544,12 +671,24 @@ export default function InventoryCount() {
                                                 <FileSpreadsheet size={14} className="text-emerald-500 shrink-0" />
                                                 <span className="text-xs text-gray-700 truncate">{f.original_filename}</span>
                                               </div>
-                                              <button
-                                                onClick={(e) => { e.stopPropagation(); handleDownload(f.id, f.original_filename); }}
-                                                className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:text-[#0071E3] hover:bg-blue-50"
-                                              >
-                                                <Download size={13} />
-                                              </button>
+                                              <div className="flex items-center gap-0.5 shrink-0">
+                                                <button
+                                                  onClick={(e) => { e.stopPropagation(); handleDownload(f.id, f.original_filename); }}
+                                                  className="rounded-lg p-1.5 text-gray-400 hover:text-[#0071E3] hover:bg-blue-50"
+                                                  title="Татах"
+                                                >
+                                                  <Download size={13} />
+                                                </button>
+                                                {isAdmin && (
+                                                  <button
+                                                    onClick={(e) => { e.stopPropagation(); handleDeleteFile(f.id, f.original_filename); }}
+                                                    className="rounded-lg p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50"
+                                                    title="Устгах (зөвхөн админ)"
+                                                  >
+                                                    <Trash2 size={13} />
+                                                  </button>
+                                                )}
+                                              </div>
                                             </div>
                                           ))}
                                         </div>

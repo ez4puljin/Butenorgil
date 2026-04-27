@@ -48,6 +48,13 @@ class CountUpdate(BaseModel):
     points: Optional[float] = None
 
 
+class ChecklistUpdate(BaseModel):
+    check_all_synced: Optional[bool] = None
+    check_no_partial: Optional[bool] = None
+    check_no_wh14_sales: Optional[bool] = None
+    check_balance_unchanged: Optional[bool] = None
+
+
 def _build_kpi_task_name(warehouse_label: str, description: str) -> str:
     desc = (description or "").strip()
     if desc:
@@ -119,6 +126,11 @@ def list_counts(
             "kpi_points": kpi_points,
             "kpi_target_employee_ids": kpi_target_ids,
             "kpi_task_active": kpi_active,
+            # Checklist
+            "check_all_synced": bool(getattr(r, "check_all_synced", False)),
+            "check_no_partial": bool(getattr(r, "check_no_partial", False)),
+            "check_no_wh14_sales": bool(getattr(r, "check_no_wh14_sales", False)),
+            "check_balance_unchanged": bool(getattr(r, "check_balance_unchanged", False)),
         })
     return result
 
@@ -253,6 +265,56 @@ def delete_count(
         if p.exists():
             p.unlink()
     db.delete(c)
+    db.commit()
+    return {"ok": True}
+
+
+@router.patch("/counts/{count_id}/checklist")
+def update_checklist(
+    count_id: int,
+    body: ChecklistUpdate,
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Тооллогын урьдчилсан шалгалтын checkbox-уудыг toggle хийх."""
+    c = db.query(InventoryCount).filter(InventoryCount.id == count_id).first()
+    if not c:
+        raise HTTPException(404, "Тооллого олдсонгүй")
+    if body.check_all_synced is not None:
+        c.check_all_synced = bool(body.check_all_synced)
+    if body.check_no_partial is not None:
+        c.check_no_partial = bool(body.check_no_partial)
+    if body.check_no_wh14_sales is not None:
+        c.check_no_wh14_sales = bool(body.check_no_wh14_sales)
+    if body.check_balance_unchanged is not None:
+        c.check_balance_unchanged = bool(body.check_balance_unchanged)
+    db.commit()
+    return {
+        "ok": True,
+        "check_all_synced": bool(c.check_all_synced),
+        "check_no_partial": bool(c.check_no_partial),
+        "check_no_wh14_sales": bool(c.check_no_wh14_sales),
+        "check_balance_unchanged": bool(c.check_balance_unchanged),
+    }
+
+
+@router.delete("/files/{file_id}")
+def delete_file(
+    file_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin")),
+):
+    """Зөвхөн админ — тооллогын нэмэлт файл (TXT/Excel)-ыг устгах."""
+    f = db.query(InventoryCountFile).filter(InventoryCountFile.id == file_id).first()
+    if not f:
+        raise HTTPException(404, "Файл олдсонгүй")
+    p = Path(f.saved_path)
+    try:
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass  # Disk-н алдаа хэвийн зүйл биш ч DB record-ыг үргэлжлүүлэн устгана
+    db.delete(f)
     db.commit()
     return {"ok": True}
 

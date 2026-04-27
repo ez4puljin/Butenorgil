@@ -225,6 +225,17 @@ def ensure_inventory_count_schema():
             conn.execute(text(
                 "ALTER TABLE inventory_counts ADD COLUMN kpi_admin_task_id INTEGER REFERENCES kpi_admin_daily_tasks(id)"
             ))
+        # ── Checklist багануудыг нэмэв (Sync, бүрэн бус, №14 агуулах, өмнөх үлдэгдэл) ──
+        for col in (
+            "check_all_synced",
+            "check_no_partial",
+            "check_no_wh14_sales",
+            "check_balance_unchanged",
+        ):
+            if cols and col not in cols:
+                conn.execute(text(
+                    f"ALTER TABLE inventory_counts ADD COLUMN {col} BOOLEAN DEFAULT 0 NOT NULL"
+                ))
 
 def ensure_kpi_groups_schema():
     with engine.begin() as conn:
