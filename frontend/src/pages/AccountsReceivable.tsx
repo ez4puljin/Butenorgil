@@ -609,9 +609,9 @@ export default function AccountsReceivable() {
         </div>
       </div>
 
-      {/* ── Floating SMS action bar ── */}
+      {/* ── Floating SMS action bar — sits above bottom nav on mobile ── */}
       {selected.size > 0 && (
-        <div className="fixed bottom-4 left-1/2 z-40 flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 items-center justify-between gap-2 rounded-2xl bg-gray-900 px-5 py-3 text-white shadow-2xl sm:bottom-6 sm:w-auto sm:max-w-none sm:gap-3 sm:rounded-full sm:px-6">
+        <div className="fixed bottom-[calc(76px+env(safe-area-inset-bottom)+8px)] left-1/2 z-40 flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 items-center justify-between gap-2 rounded-2xl bg-gray-900 px-5 py-3 text-white shadow-2xl sm:bottom-6 sm:w-auto sm:max-w-none sm:gap-3 sm:rounded-full sm:px-6">
           <span className="text-sm font-medium">
             {selected.size} сонгогдлоо
             {selected.size !== selectedRecipients.length && (

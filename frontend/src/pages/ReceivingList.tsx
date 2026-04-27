@@ -173,16 +173,16 @@ export default function ReceivingList() {
 
       {/* Tabs + controls */}
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-        {/* Status segmented / pills — horizontal scroll on mobile */}
-        <div className="-mx-3 overflow-x-auto px-3 sm:mx-0 sm:px-0 sm:flex-1">
-          <div className="inline-flex min-w-full gap-1 rounded-apple bg-white p-1 shadow-sm ring-1 ring-gray-100 sm:min-w-0">
+        {/* Status segmented / pills — wrap on mobile so all labels fit */}
+        <div className="sm:flex-1 sm:min-w-0">
+          <div className="flex flex-wrap gap-1 rounded-apple bg-white p-1 shadow-sm ring-1 ring-gray-100 sm:inline-flex sm:flex-nowrap sm:overflow-x-auto">
             {STATUS_TABS.map(t => {
               const active = tab === t.key;
               return (
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
-                  className={`shrink-0 rounded-[12px] px-3 py-1.5 text-xs font-medium transition-all sm:text-[13px] ${
+                  className={`shrink-0 rounded-[12px] px-2.5 py-1.5 text-[11px] font-medium transition-all sm:px-3 sm:text-[13px] ${
                     active
                       ? "bg-[#0071E3] text-white shadow-sm"
                       : "text-gray-600 hover:bg-gray-50"
@@ -195,7 +195,7 @@ export default function ReceivingList() {
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {canArchive && (
             <button
               onClick={() => setArchiveMode(m => m === "only" ? "false" : "only")}
@@ -363,10 +363,10 @@ export default function ReceivingList() {
         </>
       )}
 
-      {/* Mobile FAB */}
+      {/* Mobile FAB — sits above bottom nav on mobile */}
       <button
         onClick={() => setShowCreate(true)}
-        className="fixed bottom-5 right-5 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full bg-[#0071E3] text-white shadow-lg shadow-blue-500/30 transition-transform active:scale-95 sm:hidden"
+        className="fixed bottom-[calc(76px+env(safe-area-inset-bottom)+8px)] right-4 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full bg-[#0071E3] text-white shadow-lg shadow-blue-500/30 transition-transform active:scale-95 sm:hidden"
         aria-label="Шинэ тулгалт"
       >
         <Plus size={24} strokeWidth={2.4}/>

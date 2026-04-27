@@ -35,6 +35,9 @@ class ReceivingLine(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False, index=True)
     qty_pcs: Mapped[float] = mapped_column(Float, default=0.0)         # Ирсэн тоо (ширхгээр)
     unit_price: Mapped[float] = mapped_column(Float, default=0.0)      # Ирсэн үнэ (ширхгийн)
+    # Онцгой тохиолдолд: бараа Brand A-тай ч физикээр Brand B-ээс ирвэл энэ session-д override
+    # Хоосон бол Product.brand-аар явна (backward compatible).
+    override_brand: Mapped[str] = mapped_column(String(100), default="")
     note: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

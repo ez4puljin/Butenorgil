@@ -16,7 +16,9 @@ type Line = {
   product_id: number;
   item_code: string;
   name: string;
-  brand: string;
+  brand: string;             // effective brand (override_brand буюу үгүй бол original_brand)
+  original_brand: string;    // Product.brand-аас ирсэн анхдагч brand
+  override_brand: string;    // Хэрвээ override хийгдсэн бол энэ нь утгатай
   warehouse_name: string;
   pack_ratio: number;
   last_purchase_price: number;
@@ -108,6 +110,9 @@ export default function ReceivingDetail() {
   const [selected, setSelected] = useState<SearchProduct | null>(null);
   const [addQty, setAddQty] = useState("");
   const [addPrice, setAddPrice] = useState("");
+  const [addBrand, setAddBrand] = useState<string>("");                    // override brand сонголт
+  const [allBrands, setAllBrands] = useState<string[]>([]);                 // системийн бүх brand
+  const [rescanInfo, setRescanInfo] = useState<{ lines: Line[]; productName: string } | null>(null);
   const [recentlyAdded, setRecentlyAdded] = useState<{ id: number; name: string; qty: number; amount: number }[]>([]);
 
   const [filterBrand, setFilterBrand] = useState("");
@@ -175,6 +180,8 @@ export default function ReceivingDetail() {
         setSelected(list[0]);
         setAddQty("");
         setAddPrice("");
+        setAddBrand("");
+        checkRescan(list[0].id, list[0].name);
         flash(`Олдлоо: ${list[0].name}`);
       } else if (list.length > 1) {
         flash(`${list.length} бараа олдлоо — сонгоно уу`);
@@ -200,6 +207,38 @@ export default function ReceivingDetail() {
 
   useEffect(() => { load(); }, [id]);
 
+  // Системийн бүх brand-ийг override dropdown-д ашиглахаар нэг удаа татна
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await api.get("/receivings/brands/all");
+        setAllBrands(Array.isArray(r.data) ? r.data : []);
+      } catch {
+        setAllBrands([]);
+      }
+    })();
+  }, []);
+
+  // Скан/сонголтоор сонгогдсон product session-д аль хэдий нь нэмэгдсэн line-уудыг олж сэрэмжлүүлгийн banner харуулах
+  const checkRescan = (productId: number, productName: string) => {
+    if (!session) return;
+    const matches = session.lines.filter(l => l.product_id === productId);
+    if (matches.length > 0) {
+      setRescanInfo({ lines: matches, productName });
+    } else {
+      setRescanInfo(null);
+    }
+  };
+
+  // selected-ыг unset хийхэд override + rescan banner дагалдаж reset
+  const clearSelection = () => {
+    setSelected(null);
+    setAddQty("");
+    setAddPrice("");
+    setAddBrand("");
+    setRescanInfo(null);
+  };
+
   // Debounced search
   useEffect(() => {
     const term = search.trim();
@@ -223,12 +262,17 @@ export default function ReceivingDetail() {
     if (isNaN(price) || price <= 0) { flash("Үнэ оруулна уу", false); return; }
     try {
       const sel = selected;
-      await api.post(`/receivings/${session.id}/lines`, {
+      const ob = (addBrand || "").trim();
+      const payload: any = {
         product_id: sel.id,
         qty_pcs: qty,
         unit_price: price,
-      });
-      flash(`${sel.name} нэмэгдлээ`);
+      };
+      // Override-ыг зөвхөн product.brand-аас өөр бол илгээнэ
+      if (ob && ob !== (sel.brand || "")) payload.override_brand = ob;
+      await api.post(`/receivings/${session.id}/lines`, payload);
+      const brandShown = ob && ob !== (sel.brand || "") ? ` (${ob} дор)` : "";
+      flash(`${sel.name}${brandShown} нэмэгдлээ`);
       setRecentlyAdded(prev => [
         { id: Date.now(), name: sel.name, qty, amount: qty * price },
         ...prev,
@@ -236,6 +280,8 @@ export default function ReceivingDetail() {
       setSelected(null);
       setAddQty("");
       setAddPrice("");
+      setAddBrand("");
+      setRescanInfo(null);
       setSearch("");
       setSearchResults([]);
       await load();
@@ -480,7 +526,13 @@ export default function ReceivingDetail() {
                 {searchResults.map(p => (
                   <button
                     key={p.id}
-                    onClick={() => { setSelected(p); setAddPrice(""); setAddQty(""); }}
+                    onClick={() => {
+                      setSelected(p);
+                      setAddPrice("");
+                      setAddQty("");
+                      setAddBrand("");
+                      checkRescan(p.id, p.name);
+                    }}
                     className="group block w-full border-b border-gray-50 px-3 py-2.5 text-left transition hover:bg-blue-50/40 last:border-b-0"
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -515,12 +567,86 @@ export default function ReceivingDetail() {
                     </div>
                   </div>
                   <button
-                    onClick={() => setSelected(null)}
+                    onClick={clearSelection}
                     className="rounded-lg p-1.5 text-gray-400 hover:bg-white hover:text-gray-700"
                     aria-label="Хаах"
                   >
                     <X size={16}/>
                   </button>
+                </div>
+
+                {/* Re-scan reminder banner — non-blocking сэрэмжлүүлэг */}
+                {rescanInfo && (
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[12px] text-amber-900">
+                    <div className="mb-1 flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-1.5 font-semibold">
+                        <AlertTriangle size={14} className="shrink-0"/>
+                        Энэ бараа аль хэдий нь нэмэгдсэн байна
+                      </div>
+                      <button
+                        onClick={() => setRescanInfo(null)}
+                        className="rounded p-0.5 text-amber-700 hover:bg-amber-100"
+                        aria-label="Хаах"
+                      >
+                        <X size={12}/>
+                      </button>
+                    </div>
+                    <ul className="space-y-0.5">
+                      {rescanInfo.lines.map(l => (
+                        <li key={l.id} className="tabular-nums">
+                          • <span className="font-medium">{l.brand || "(брэндгүй)"}</span> дор{" "}
+                          <span className="font-semibold">{l.qty_pcs.toFixed(0)}ш</span>,{" "}
+                          <span className="font-semibold">{l.unit_price.toLocaleString("mn-MN")}₮/ш</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-1 text-[11px] text-amber-700/80">
+                      Үргэлжлүүлэн нэмж болно — энэ зөвхөн сэрэмжлүүлэг.
+                    </div>
+                  </div>
+                )}
+
+                {/* Brand override dropdown */}
+                <div className="mt-3">
+                  <label className="mb-1 block text-[11px] font-medium text-gray-500">
+                    Бренд (тулгах)
+                  </label>
+                  <select
+                    value={addBrand}
+                    onChange={e => setAddBrand(e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15"
+                  >
+                    <option value="">
+                      {selected.brand || "(брэнд байхгүй)"} — анхдагч
+                    </option>
+                    {/* Уг session дотор аль хэдий нь байгаа brand-уудыг эхэнд харуулах */}
+                    {(session?.brands ?? [])
+                      .map(b => b.brand)
+                      .filter(b => b && b !== selected.brand && b !== "Брэнд байхгүй")
+                      .map(b => (
+                        <option key={`s-${b}`} value={b}>
+                          {b} — энэ session дээр
+                        </option>
+                      ))}
+                    {/* Системийн бусад brand-ууд */}
+                    {allBrands
+                      .filter(b =>
+                        b &&
+                        b !== selected.brand &&
+                        !(session?.brands ?? []).some(sb => sb.brand === b)
+                      )
+                      .map(b => (
+                        <option key={`a-${b}`} value={b}>
+                          {b}
+                        </option>
+                      ))}
+                  </select>
+                  {addBrand && addBrand !== (selected.brand || "") && (
+                    <p className="mt-1 text-[11px] text-amber-600">
+                      ⚠ <span className="font-medium">{selected.brand || "брэндгүй"}</span> бараа{" "}
+                      <span className="font-medium">{addBrand}</span> дор тулгагдана
+                    </p>
+                  )}
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2.5">
@@ -798,7 +924,17 @@ export default function ReceivingDetail() {
                           return (
                             <tr key={l.id} className={priceDiff ? "bg-red-50/30" : "hover:bg-gray-50/40"}>
                               <td className="px-3 py-2.5 align-top">
-                                <div className="text-sm font-medium text-gray-800 leading-snug">{l.name}</div>
+                                <div className="flex items-center gap-1.5">
+                                  <div className="text-sm font-medium text-gray-800 leading-snug">{l.name}</div>
+                                  {l.override_brand && l.original_brand && l.override_brand !== l.original_brand && (
+                                    <span
+                                      title={`Анхдагч брэнд: ${l.original_brand}`}
+                                      className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200/60"
+                                    >
+                                      ↺ {l.original_brand}
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-gray-400">
                                   <span className="font-mono">{l.item_code}</span>
                                   <span>· {l.pack_ratio}ш/хайрцаг</span>
@@ -871,7 +1007,17 @@ export default function ReceivingDetail() {
                         <div key={l.id} className={`px-3 py-3 ${priceDiff ? "bg-red-50/30" : ""}`}>
                           <div className="flex items-start gap-2">
                             <div className="min-w-0 flex-1">
-                              <div className="break-words text-[13px] font-medium leading-snug text-gray-800">{l.name}</div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <div className="break-words text-[13px] font-medium leading-snug text-gray-800">{l.name}</div>
+                                {l.override_brand && l.original_brand && l.override_brand !== l.original_brand && (
+                                  <span
+                                    title={`Анхдагч брэнд: ${l.original_brand}`}
+                                    className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200/60"
+                                  >
+                                    ↺ {l.original_brand}
+                                  </span>
+                                )}
+                              </div>
                               <div className="mt-0.5 text-[10px] text-gray-400">
                                 <span className="font-mono">{l.item_code}</span>
                                 <span className="ml-1.5 text-gray-300">· {l.pack_ratio}ш/хайрцаг</span>

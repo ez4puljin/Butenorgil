@@ -112,6 +112,14 @@ def ensure_po_lines_schema():
         if cols and "override_brand" not in cols:
             conn.execute(text("ALTER TABLE purchase_order_lines ADD COLUMN override_brand VARCHAR(100) DEFAULT ''"))
 
+
+def ensure_receiving_lines_schema():
+    """receiving_lines-д override_brand багана нэмнэ (Brand override feature)."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(receiving_lines)")).fetchall()]
+        if cols and "override_brand" not in cols:
+            conn.execute(text("ALTER TABLE receiving_lines ADD COLUMN override_brand VARCHAR(100) DEFAULT ''"))
+
 def ensure_price_schema():
     with engine.begin() as conn:
         cols_p = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
@@ -353,6 +361,7 @@ def startup():
     ensure_users_schema()
     ensure_products_schema()
     ensure_po_lines_schema()
+    ensure_receiving_lines_schema()
     ensure_price_schema()
     ensure_brand_code_schema()
     ensure_order_lines_schema()

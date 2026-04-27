@@ -47,12 +47,14 @@ class LineIn(BaseModel):
     qty_pcs: float = 0.0
     unit_price: float = 0.0
     note: str = ""
+    override_brand: Optional[str] = None  # хоосон/None бол Product.brand-аар явна
 
 
 class LineUpdateIn(BaseModel):
     qty_pcs: Optional[float] = None
     unit_price: Optional[float] = None
     note: Optional[str] = None
+    override_brand: Optional[str] = None  # "" → override арилгах; None → хөдөлгөхгүй
 
 
 class BrandMatchIn(BaseModel):
@@ -66,6 +68,14 @@ class StatusIn(BaseModel):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def _effective_brand(line: ReceivingLine, product: Optional[Product]) -> str:
+    """Override-той бол override-ыг, үгүй бол Product.brand-ыг буцаана."""
+    ob = (getattr(line, "override_brand", "") or "").strip()
+    if ob:
+        return ob
+    return (product.brand if product else "") or ""
+
+
 def _serialize_line(ln: ReceivingLine, product: Optional[Product]) -> dict:
     pack = float(product.pack_ratio or 1) if product else 1.0
     if pack <= 0:
@@ -78,7 +88,9 @@ def _serialize_line(ln: ReceivingLine, product: Optional[Product]) -> dict:
         "product_id": ln.product_id,
         "item_code": product.item_code if product else "",
         "name": product.name if product else "(устгагдсан)",
-        "brand": product.brand if product else "",
+        "brand": _effective_brand(ln, product),
+        "original_brand": product.brand if product else "",
+        "override_brand": (getattr(ln, "override_brand", "") or ""),
         "warehouse_name": product.warehouse_name if product else "",
         "pack_ratio": pack,
         "unit_weight": float(product.unit_weight or 0) if product else 0,
@@ -100,7 +112,7 @@ def _brand_aggregate(session_id: int, db: Session) -> dict:
     brands: dict[str, dict] = {}
     for l in lines:
         p = products.get(l.product_id)
-        brand = (p.brand if p else "") or "Брэнд байхгүй"
+        brand = _effective_brand(l, p) or "Брэнд байхгүй"
         if brand not in brands:
             brands[brand] = {"brand": brand, "line_count": 0, "total_pcs": 0.0, "total_amount": 0.0, "has_price_diff": False}
         brands[brand]["line_count"] += 1
@@ -158,14 +170,15 @@ def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = T
 
 
 def _auto_advance_if_all_matched(session: ReceivingSession, db: Session):
-    """Бүх брэнд matched болсон бөгөөд одоогоор 'matching' төлөвт байвал 'price_review' рүү шилжүүлнэ."""
+    """Бүх effective brand matched болсон бөгөөд одоогоор 'matching' төлөвт байвал 'price_review' рүү шилжүүлнэ."""
     if session.status != "matching":
         return
-    all_brands = set(
-        (p.brand or "") for p in db.query(Product).join(
-            ReceivingLine, ReceivingLine.product_id == Product.id
-        ).filter(ReceivingLine.session_id == session.id).distinct().all()
-    )
+    # Override-тай line-ыг тооцох тул Python-side-аар effective brand тооцно.
+    # Хоосон brand нь UI-д "Брэнд байхгүй" гэж confirm хийгддэг тул тэр хэлбэрт нь хөрвүүлэв.
+    lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == session.id).all()
+    prod_ids = [l.product_id for l in lines]
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
+    all_brands = {(_effective_brand(l, products.get(l.product_id)) or "Брэнд байхгүй") for l in lines}
     if not all_brands:
         return
     matched_brands = set(
@@ -177,6 +190,25 @@ def _auto_advance_if_all_matched(session: ReceivingSession, db: Session):
     if all_brands.issubset(matched_brands):
         session.status = "price_review"
         db.commit()
+
+
+# ── Brand list (override dropdown-д ашиглагдана) ──────────────────────────────
+
+@router.get("/brands/all")
+def list_all_brands(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Системд бүртгэлтэй бүх distinct brand-ийг буцаана. Override dropdown-д хэрэглэнэ."""
+    rows = (
+        db.query(Product.brand)
+        .filter(Product.brand != "")
+        .filter(Product.brand.isnot(None))
+        .distinct()
+        .order_by(Product.brand.asc())
+        .all()
+    )
+    return [r[0] for r in rows if r[0]]
 
 
 # ── Session endpoints ─────────────────────────────────────────────────────────
@@ -311,10 +343,15 @@ def add_line(
     p = db.query(Product).filter(Product.id == body.product_id).first()
     if not p:
         raise HTTPException(404, "Бараа олдсонгүй")
-    # Давхардсан бараа — тоог нэмэх (нэг сесс дотор нэг удаа)
+    # Override-ыг normalise: trim, мөн product.brand-тай тэнцэх бол хадгалахгүй (хоосон гэж үзнэ)
+    incoming_override = (body.override_brand or "").strip()
+    if incoming_override and incoming_override == (p.brand or ""):
+        incoming_override = ""
+    # Давхардсан бараа — нэг session-д нэг (product, override_brand) хослолыг merge
     existing = db.query(ReceivingLine).filter(
         ReceivingLine.session_id == session_id,
         ReceivingLine.product_id == body.product_id,
+        ReceivingLine.override_brand == incoming_override,
     ).first()
     if existing:
         existing.qty_pcs += float(body.qty_pcs or 0)
@@ -329,6 +366,7 @@ def add_line(
         product_id=body.product_id,
         qty_pcs=float(body.qty_pcs or 0),
         unit_price=float(body.unit_price or 0),
+        override_brand=incoming_override,
         note=body.note or "",
     )
     db.add(ln); db.commit(); db.refresh(ln)
@@ -349,6 +387,28 @@ def update_line(
     ).first()
     if not ln:
         raise HTTPException(404, "Мөр олдсонгүй")
+    p = db.query(Product).filter(Product.id == ln.product_id).first()
+    # Edit guard: override_brand өөрчилбөл, өмнөх эсвэл шинэ effective brand нь
+    # аль хэдий нь is_matched=True байвал бүү зөвшөөр.
+    if body.override_brand is not None:
+        new_override = (body.override_brand or "").strip()
+        if new_override and new_override == (p.brand if p else ""):
+            new_override = ""
+        old_eff = _effective_brand(ln, p)
+        new_eff = new_override if new_override else (p.brand if p else "") or ""
+        if old_eff != new_eff:
+            locked = db.query(ReceivingBrandStatus).filter(
+                ReceivingBrandStatus.session_id == ln.session_id,
+                ReceivingBrandStatus.brand.in_([old_eff, new_eff]),
+                ReceivingBrandStatus.is_matched == True,
+            ).first()
+            if locked:
+                raise HTTPException(
+                    400,
+                    f"'{locked.brand}' бренд аль хэдий нь тулгагдсан тул бренд override-ыг өөрчлөх боломжгүй. "
+                    f"Эхлээд тулгалтыг буцаана уу.",
+                )
+        ln.override_brand = new_override
     if body.qty_pcs is not None:
         ln.qty_pcs = float(body.qty_pcs)
     if body.unit_price is not None:
@@ -356,7 +416,6 @@ def update_line(
     if body.note is not None:
         ln.note = body.note
     db.commit(); db.refresh(ln)
-    p = db.query(Product).filter(Product.id == ln.product_id).first()
     return _serialize_line(ln, p)
 
 
@@ -393,34 +452,50 @@ async def confirm_brand(
     if not s:
         raise HTTPException(404, "Receiving session олдсонгүй")
 
+    # "Брэнд байхгүй" гэдэг нь UI-ийн placeholder бөгөөд aggregator-аас гардаг.
+    # DB дээр энэ нь үнэн хэрэгтээ хоосон string ("") юм.
+    target_brand = "" if brand == "Брэнд байхгүй" else brand
+
     # Нийт тоог тулгах
     lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == session_id).all()
     prod_ids = [l.product_id for l in lines]
     products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
     my_pcs = 0.0
     my_amount = 0.0
+    matched_lines = 0
     for l in lines:
         p = products.get(l.product_id)
         if not p:
             continue
-        if (p.brand or "") != brand:
+        if _effective_brand(l, p) != target_brand:
             continue
         my_pcs += l.qty_pcs
         my_amount += l.qty_pcs * l.unit_price
+        matched_lines += 1
 
+    if matched_lines == 0:
+        raise HTTPException(400, f"'{brand}' брэндэд тохирох мөр олдсонгүй.")
     if abs(my_pcs - float(supplier_total_pcs)) > 0.01:
         raise HTTPException(400, f"Ширхэгийн тоо таарсангүй. Таны оруулсан: {my_pcs:.0f}ш, баримт дээр: {supplier_total_pcs:.0f}ш")
     if abs(my_amount - float(supplier_total_amount)) > 1.0:
         raise HTTPException(400, f"Нийт дүн таарсангүй. Таны оруулсан: {my_amount:.2f}₮, баримт дээр: {supplier_total_amount:.2f}₮")
 
     # Баримтны зураг хадгалах
-    sess_dir = UPLOAD_DIR / str(session_id)
-    sess_dir.mkdir(parents=True, exist_ok=True)
-    safe_brand = re.sub(r"[\\/:*?\"<>|]", "_", brand)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = Path(receipt.filename or "").suffix or ".jpg"
-    saved = sess_dir / f"{safe_brand}_{ts}{suffix}"
-    saved.write_bytes(await receipt.read())
+    try:
+        sess_dir = UPLOAD_DIR / str(session_id)
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        safe_brand = re.sub(r"[\\/:*?\"<>|]", "_", brand) or "no_brand"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = Path(receipt.filename or "").suffix or ".jpg"
+        saved = sess_dir / f"{safe_brand}_{ts}{suffix}"
+        content = await receipt.read()
+        if not content:
+            raise HTTPException(400, "Баримтны файл хоосон байна. Зургийг дахин оруулна уу.")
+        saved.write_bytes(content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Баримт хадгалахад алдаа гарлаа: {type(e).__name__}: {e}")
 
     bs = db.query(ReceivingBrandStatus).filter(
         ReceivingBrandStatus.session_id == session_id,
@@ -519,6 +594,29 @@ def export_erp_excel(
     ).all()
     prod_ids = [l.product_id for l in lines]
     products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
+    # Effective brand -> brand_code lookup (prefer non-empty codes).
+    # Needed so override_brand lines are grouped under the selected brand's supplier code.
+    brand_code_rows = db.query(Product.brand, Product.brand_code).filter(
+        Product.brand.isnot(None),
+        Product.brand != "",
+    ).all()
+    brand_code_by_brand: dict[str, str] = {}
+    for b, bc in brand_code_rows:
+        key = (b or "").strip()
+        code = (bc or "").strip()
+        if not key:
+            continue
+        if code and not brand_code_by_brand.get(key):
+            brand_code_by_brand[key] = code
+        elif key not in brand_code_by_brand:
+            brand_code_by_brand[key] = ""
+    matched_brands = {
+        (bs.brand or "").strip()
+        for bs in db.query(ReceivingBrandStatus).filter(
+            ReceivingBrandStatus.session_id == session_id,
+            ReceivingBrandStatus.is_matched == True,
+        ).all()
+    }
 
     brand_filter = (body.brand_filter or "").strip()
     valid = []
@@ -526,7 +624,11 @@ def export_erp_excel(
         p = products.get(ln.product_id)
         if not p:
             continue
-        brand = p.brand or ""
+        brand = (_effective_brand(ln, p) or "").strip()
+        # Consolidated ERP export must follow only confirmed/matched brand sets.
+        # This avoids exporting stale lines from unmatched (old/error) reconciliation.
+        if brand not in matched_brands:
+            continue
         if brand_filter and brand != brand_filter:
             continue
         if body.company == "orgil_khorum":
@@ -534,7 +636,9 @@ def export_erp_excel(
         else:
             location = body.warehouse_map.get(p.warehouse_name, "")
         total = round(ln.qty_pcs * ln.unit_price, 2)
-        valid.append((brand, p.item_code, p, ln, location, ln.qty_pcs, ln.unit_price, total, p.brand_code or ""))
+        # Use effective brand code (override-aware), fallback to current product brand_code.
+        eff_brand_code = (brand_code_by_brand.get(brand, "") or (p.brand_code or "")).strip()
+        valid.append((brand, p.item_code, p, ln, location, ln.qty_pcs, ln.unit_price, total, eff_brand_code))
 
     valid.sort(key=lambda x: (x[8] or "", x[0], x[1]))
 
