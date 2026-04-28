@@ -14,6 +14,7 @@ dist/
 # Data & uploads
 backend/app/data/uploads/
 backend/app/data/outputs/
+backend/app/data/backups/
 *.db
 *.sqlite
 *.sqlite3

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card } from "../components/ui/Card";
 import {
@@ -217,6 +217,34 @@ export default function InventoryCount() {
     } catch { showFlash("Файл татахад алдаа", false); }
   };
 
+  const handleDownloadCountDiff = async (countId: number) => {
+    setBusy(true);
+    try {
+      const res = await api.get(`/inventory-count/counts/${countId}/export-discrepancy`, {
+        responseType: "blob",
+      });
+      const cd = res.headers?.["content-disposition"] ?? "";
+      let filename = `inventory_count_${countId}_diff.xlsx`;
+      const utf8 = cd.match(/filename\*=UTF-8''([^\s;]+)/i);
+      const plain = cd.match(/filename="?([^\";]+)"?/i);
+      if (utf8?.[1]) {
+        try { filename = decodeURIComponent(utf8[1]); } catch {}
+      } else if (plain?.[1]) {
+        filename = plain[1];
+      }
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showFlash("Тооллогоны зөрүү Excel татагдлаа");
+    } catch (e: any) {
+      showFlash(e?.response?.data?.detail ?? "Тооллогоны зөрүү Excel татахад алдаа", false);
+    } finally {
+      setBusy(false);
+    }
+  };
   // Зөвхөн админ — TXT/Excel файлыг устгах
   const handleDeleteFile = async (fileId: number, filename: string) => {
     if (!confirm(`"${filename}" файлыг устгах уу?`)) return;
@@ -642,26 +670,37 @@ export default function InventoryCount() {
                                     <div>
                                       <div className="mb-2 flex items-center justify-between">
                                         <span className="text-xs font-semibold text-gray-600">
-                                          Зөрүү тайлан (.xlsx)
+                                          Тооллогоны Эксэл файл (.xlsx)
                                         </span>
-                                        <label className="inline-flex items-center gap-1 rounded-lg bg-white border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 cursor-pointer hover:bg-gray-50">
-                                          <UploadCloud size={12} />
-                                          Нэмэх
-                                          <input
-                                            type="file"
-                                            accept=".xlsx,.xls"
-                                            className="hidden"
-                                            onChange={(e) => {
-                                              const file = e.target.files?.[0];
-                                              if (file) handleUploadExcel(c.id, file);
-                                              e.currentTarget.value = "";
-                                            }}
-                                          />
-                                        </label>
+                                        <div className="flex items-center gap-1.5">
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); handleDownloadCountDiff(c.id); }}
+                                            disabled={busy || excelFiles.length === 0}
+                                            className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                            title="Зөрүүтэй барааны шинэ Excel татах"
+                                          >
+                                            <Download size={12} />
+                                            Тооллогоны зөрүү
+                                          </button>
+                                          <label className="inline-flex items-center gap-1 rounded-lg bg-white border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 cursor-pointer hover:bg-gray-50">
+                                            <UploadCloud size={12} />
+                                            Нэмэх
+                                            <input
+                                              type="file"
+                                              accept=".xlsx,.xls"
+                                              className="hidden"
+                                              onChange={(e) => {
+                                                const file = e.target.files?.[0];
+                                                if (file) handleUploadExcel(c.id, file);
+                                                e.currentTarget.value = "";
+                                              }}
+                                            />
+                                          </label>
+                                        </div>
                                       </div>
                                       {excelFiles.length === 0 ? (
                                         <div className="rounded-lg border border-dashed border-gray-200 bg-white p-4 text-center text-xs text-gray-400">
-                                          Excel файл оруулаагүй байна
+                                          Тооллогоны Эксэл файл оруулаагүй байна
                                         </div>
                                       ) : (
                                         <div className="space-y-1">
@@ -1035,3 +1074,4 @@ export default function InventoryCount() {
     </motion.div>
   );
 }
+

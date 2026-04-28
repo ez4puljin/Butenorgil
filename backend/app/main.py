@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import text
 from pathlib import Path
+import asyncio
+import sqlite3 as _sqlite3
+from datetime import datetime
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
@@ -338,6 +341,44 @@ def ensure_kpi_groups_schema():
         """))
 
 
+# ── DB Backup ─────────────────────────────────────────────────────────────────
+_DB_PATH    = Path(__file__).resolve().parent / "app.db"
+_BACKUP_DIR = Path(__file__).resolve().parent / "data" / "backups"
+
+def perform_db_backup() -> Path:
+    """DB-г SQLite online backup API-аар хуулж хадгална.
+    Зөвхөн нэг Lastest_YYYYMMDD_HHMM.db файл байна — хуучин нь устгагдана.
+    """
+    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    # Өмнөх backup файлуудыг устга
+    for old in _BACKUP_DIR.glob("Lastest_*.db"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    target = _BACKUP_DIR / f"Lastest_{ts}.db"
+    src = _sqlite3.connect(str(_DB_PATH))
+    dst = _sqlite3.connect(str(target))
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
+    return target
+
+async def _hourly_backup_loop():
+    """Цаг тутам DB backup хийнэ."""
+    while True:
+        try:
+            t = perform_db_backup()
+            print(f"[backup] {t.name} амжилттай хадгалагдлаа")
+        except Exception as e:
+            print(f"[backup] Алдаа: {e}")
+        await asyncio.sleep(3600)
+
+
 def _auto_refresh_stock(db):
     """
     Server эхлэх үед хамгийн сүүлийн "Үлдэгдэл тайлан" файлаас
@@ -396,6 +437,12 @@ def startup():
         _auto_refresh_stock(db)
     finally:
         db.close()
+
+
+@app.on_event("startup")
+async def schedule_hourly_backup():
+    """Background backup loop — server эхлэхэд нэг удаа backup хийж, цаг тутам давтана."""
+    asyncio.create_task(_hourly_backup_loop())
 
 
 def ensure_calendar_labels_seeded():

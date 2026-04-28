@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
 from pathlib import Path
+import io
+import re
 
 from app.api.deps import get_db, require_role
 
@@ -60,6 +62,113 @@ def _build_kpi_task_name(warehouse_label: str, description: str) -> str:
     if desc:
         return f"{warehouse_label} — {desc}"
     return warehouse_label
+
+
+def _normalize_code(value) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    if re.fullmatch(r"-?\d+\.0+", s):
+        s = s.split(".")[0]
+    return s
+
+
+def _to_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except Exception:
+            return None
+    s = str(value).strip().replace(",", "")
+    if not s or s.lower() == "nan":
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _decode_text_file(path: Path) -> str:
+    raw = path.read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "cp1251", "cp1252"):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _build_txt_code_index(txt_files: list[InventoryCountFile]) -> dict[str, list[tuple[str, int]]]:
+    code_index: dict[str, list[tuple[str, int]]] = {}
+    for f in txt_files:
+        p = Path(f.saved_path or "")
+        if not p.exists():
+            continue
+        text = _decode_text_file(p)
+        person_name = (Path(f.original_filename or p.name).stem or p.stem).strip()
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            raw = (line or "").strip()
+            if not raw:
+                continue
+            m = re.search(r"\d{5,}", raw)
+            if not m:
+                continue
+            code = _normalize_code(m.group(0))
+            if not code:
+                continue
+            code_index.setdefault(code, []).append((person_name, line_no))
+    return code_index
+
+
+def _read_discrepancy_rows(excel_path: Path) -> list[dict]:
+    import pandas as pd
+
+    df = pd.read_excel(excel_path, header=None, dtype=object)
+    if df.empty:
+        return []
+
+    header_row = -1
+    scan_rows = min(len(df), 30)
+    for i in range(scan_rows):
+        c0 = str(df.iat[i, 0]).strip().lower() if df.shape[1] > 0 else ""
+        c3 = str(df.iat[i, 3]).strip().lower() if df.shape[1] > 3 else ""
+        c4 = str(df.iat[i, 4]).strip().lower() if df.shape[1] > 4 else ""
+        if "код" in c0 and ("зөрүү" in c4 or "тоо" in c3):
+            header_row = i
+            break
+
+    start_idx = header_row + 1 if header_row >= 0 else 0
+    out: list[dict] = []
+    for i in range(start_idx, len(df)):
+        code = _normalize_code(df.iat[i, 0] if df.shape[1] > 0 else None)
+        if not code:
+            continue
+
+        name_raw = df.iat[i, 1] if df.shape[1] > 1 else ""
+        name = "" if name_raw is None else str(name_raw).strip()
+        if name.lower() == "nan":
+            name = ""
+
+        balance = _to_float(df.iat[i, 2] if df.shape[1] > 2 else None)
+        counted = _to_float(df.iat[i, 3] if df.shape[1] > 3 else None)
+        diff = _to_float(df.iat[i, 4] if df.shape[1] > 4 else None)
+        if diff is None:
+            diff = (counted or 0.0) - (balance or 0.0)
+        unit_price = _to_float(df.iat[i, 5] if df.shape[1] > 5 else None)
+
+        out.append({
+            "code": code,
+            "name": name,
+            "balance": balance,
+            "counted": counted,
+            "diff": diff,
+            "unit_price": unit_price,
+        })
+    return out
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -426,6 +535,122 @@ def download_file(
         path=str(p),
         filename=f.original_filename,
         media_type="application/octet-stream",
+    )
+
+
+@router.get("/counts/{count_id}/export-discrepancy")
+def export_discrepancy_excel(
+    count_id: int,
+    excel_file_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    c = db.query(InventoryCount).filter(InventoryCount.id == count_id).first()
+    if not c:
+        raise HTTPException(404, "Тооллого олдсонгүй")
+
+    excel_q = db.query(InventoryCountFile).filter(
+        InventoryCountFile.inventory_count_id == count_id,
+        InventoryCountFile.file_type == "excel",
+    )
+    if excel_file_id is not None:
+        excel_file = excel_q.filter(InventoryCountFile.id == excel_file_id).first()
+    else:
+        excel_file = excel_q.order_by(InventoryCountFile.uploaded_at.desc(), InventoryCountFile.id.desc()).first()
+    if not excel_file:
+        raise HTTPException(400, "Тооллогоны Эксэл файл (.xlsx) оруулаагүй байна")
+
+    excel_path = Path(excel_file.saved_path or "")
+    if not excel_path.exists():
+        raise HTTPException(404, "Тооллогоны Эксэл файл дискнээс олдсонгүй")
+
+    txt_files = db.query(InventoryCountFile).filter(
+        InventoryCountFile.inventory_count_id == count_id,
+        InventoryCountFile.file_type == "txt",
+    ).all()
+    txt_index = _build_txt_code_index(txt_files)
+
+    source_rows = _read_discrepancy_rows(excel_path)
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    from urllib.parse import quote
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Тооллогоны зөрүү"
+    headers = [
+        "Код",
+        "Нэр",
+        "Үлдэгдэл",
+        "Тоолсон тоо",
+        "Зөрүү",
+        "Нэгж үнэ",
+        "TXT эх сурвалж (Нэр + мөр)",
+    ]
+    ws.append(headers)
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    for ci, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=ci, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    out_count = 0
+    for r in source_rows:
+        diff = float(r.get("diff") or 0.0)
+        if abs(diff) < 1e-9:
+            continue
+
+        code = r.get("code") or ""
+        refs = txt_index.get(code, [])
+        seen = set()
+        ref_parts: list[str] = []
+        for person, line_no in refs:
+            key = (person, line_no)
+            if key in seen:
+                continue
+            seen.add(key)
+            ref_parts.append(f"{person} (мөр {line_no})")
+        source_info = "; ".join(ref_parts) if ref_parts else "Олдсонгүй"
+
+        ws.append([
+            code,
+            r.get("name") or "",
+            r.get("balance"),
+            r.get("counted"),
+            diff,
+            r.get("unit_price"),
+            source_info,
+        ])
+        out_count += 1
+
+    widths = [16, 40, 14, 14, 12, 14, 48]
+    for ci, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    for row in ws.iter_rows(min_row=2, min_col=3, max_col=6, max_row=ws.max_row):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "#,##0.##"
+    for cell in ws["G"]:
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    date_str = c.count_date.isoformat()
+    filename = f"{date_str}_count_{count_id}_zoruutai_baraa_{out_count}.xlsx"
+    ascii_fallback = re.sub(r"[^\w\-.]", "_", filename.encode("ascii", "ignore").decode("ascii")) or f"count_{count_id}_diff.xlsx"
+    utf8_quoted = quote(filename, safe="")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={ascii_fallback}; filename*=UTF-8''{utf8_quoted}"},
     )
 
 
