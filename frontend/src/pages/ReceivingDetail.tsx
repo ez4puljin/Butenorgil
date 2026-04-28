@@ -126,6 +126,8 @@ export default function ReceivingDetail() {
 
   const [filterBrand, setFilterBrand] = useState("");
   const [priceDiffOnly, setPriceDiffOnly] = useState(false);
+  // Mobile-д "Брэнд тулгалт" ↔ "Бараа жагсаалт" хооронд toggle
+  const [mobileView, setMobileView] = useState<"brands" | "lines">("brands");
 
   const [confirmBrand, setConfirmBrand] = useState<BrandInfo | null>(null);
   const [supplierPcs, setSupplierPcs] = useState("");
@@ -803,9 +805,9 @@ export default function ReceivingDetail() {
           </div>
         )}
 
-        {/* Brand summary — stretches to fill on desktop when canEdit=true, full width otherwise */}
+        {/* Brand summary — Desktop: side panel; Mobile: hidden when mobileView === 'lines' */}
         {session.brands.length > 0 && (
-          <div className={`rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 ${canEdit ? "lg:col-span-2" : "lg:col-span-5"}`}>
+          <div className={`rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 ${canEdit ? "lg:col-span-2" : "lg:col-span-5"} ${mobileView === "lines" ? "hidden lg:block" : ""}`}>
             <div className="mb-2.5 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-gray-800">Брэнд бүрийн тулгалт</h3>
               <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
@@ -866,7 +868,7 @@ export default function ReceivingDetail() {
                   {/* Actions */}
                   <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                     <button
-                      onClick={() => { setFilterBrand(b.brand); setPriceDiffOnly(false); }}
+                      onClick={() => { setFilterBrand(b.brand); setPriceDiffOnly(false); setMobileView("lines"); }}
                       className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-200/70 hover:bg-gray-50"
                     >
                       <Eye size={11}/> Шүүж харах
@@ -909,6 +911,35 @@ export default function ReceivingDetail() {
           </div>
         )}
       </div>
+
+      {/* Mobile view toggle: Брэнд тулгалт ↔ Бараа жагсаалт (зөвхөн mobile дээр) */}
+      {session.brands.length > 0 && (
+        <div className="mb-3 flex rounded-2xl bg-white p-1 shadow-sm ring-1 ring-gray-100 lg:hidden">
+          <button
+            onClick={() => setMobileView("brands")}
+            className={`flex-1 rounded-xl py-2 text-[12px] font-bold transition-all ${
+              mobileView === "brands"
+                ? "bg-[#0071E3] text-white shadow-sm"
+                : "text-gray-500 hover:bg-gray-50"
+            }`}
+          >
+            Брэнд тулгалт
+          </button>
+          <button
+            onClick={() => setMobileView("lines")}
+            className={`flex-1 rounded-xl py-2 text-[12px] font-bold transition-all ${
+              mobileView === "lines"
+                ? "bg-[#0071E3] text-white shadow-sm"
+                : "text-gray-500 hover:bg-gray-50"
+            }`}
+          >
+            Бараа жагсаалт
+          </button>
+        </div>
+      )}
+
+      {/* Lines section wrapper — Mobile дээр зөвхөн mobileView === "lines" үед харагдана */}
+      <div className={mobileView === "brands" && session.brands.length > 0 ? "hidden lg:block" : ""}>
 
       {/* Filters */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-apple bg-white px-3 py-2 shadow-sm ring-1 ring-gray-100">
@@ -1274,6 +1305,7 @@ export default function ReceivingDetail() {
           </div>
         )}
       </div>
+      </div>{/* /Lines section wrapper */}
 
       {/* Brand confirm modal */}
       {confirmBrand && (
