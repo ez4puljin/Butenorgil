@@ -30,7 +30,7 @@ import BankStatement from "./pages/BankStatement";
 import ServerConfig from "./pages/ServerConfig";
 import { useEffect, useState } from "react";
 import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
-import { setApiBaseUrl } from "./lib/api";
+import { api, setApiBaseUrl } from "./lib/api";
 
 // Permissions → route mapping (Shell-ийн navItems-тай дараалал таарна)
 export const PAGE_ROUTES: { key: string; path: string }[] = [
@@ -72,12 +72,13 @@ function DefaultRedirect() {
 }
 
 export default function App() {
-  const { role, baseRole, permissions } = useAuthStore();
+  const { role, baseRole, permissions, token, setAuth } = useAuthStore();
   const br = baseRole ?? role ?? "";
 
   // Native app (APK) — localStorage-г sync уншина. Background-т Preferences-ээс survive-ийг шалгана.
   const native = (() => { try { return isNativeApp(); } catch { return false; } })();
   const [hasServer, setHasServer] = useState<boolean>(!!getServerUrlSync());
+
   useEffect(() => {
     // Axios baseURL synchronously suulgah (if have saved URL)
     const saved = getServerUrlSync();
@@ -98,6 +99,24 @@ export default function App() {
       }
     })();
   }, [native]);
+
+  // Permissions-ыг DB-аас шинэчлэх — login шаардлагагүйгээр шинэ эрхүүд нэн даруй харагдана
+  useEffect(() => {
+    if (!token) return;
+    api.get("/auth/me").then(r => {
+      const d = r.data;
+      setAuth({
+        token: d.access_token,
+        username: d.username,
+        nickname: d.nickname,
+        role: d.role,
+        base_role: d.base_role,
+        permissions: d.permissions ?? [],
+        tagIds: d.tag_ids ?? [],
+        userId: d.user_id,
+      });
+    }).catch(() => { /* token хүчингүй болсон → logout дуудаад Login хуудас харуулна */ });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Page access: permissions array (from role DB) эсвэл baseRole fallback (хуучин session)
   const can = (pageKey: string) => {
