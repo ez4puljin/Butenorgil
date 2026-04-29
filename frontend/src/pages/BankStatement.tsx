@@ -147,29 +147,29 @@ function PartnerSearch({ value, onSave }: {
   const [query,   setQuery]   = useState(value);
   const [results, setResults] = useState<Customer[]>([]);
   const [open,    setOpen]    = useState(false);
-  const [loading, setLoading] = useState(false);
-  const debounce  = useRef<ReturnType<typeof setTimeout>>();
-  const wrapRef   = useRef<HTMLDivElement>(null);
+  const focused = useRef(false);
 
   useEffect(() => { setQuery(value); }, [value]);
 
-  const search = useCallback((q: string) => {
-    clearTimeout(debounce.current);
-    if (q.trim().length < 1) { setResults([]); setOpen(false); return; }
-    debounce.current = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const r = await api.get("/bank-statements/customers/search", { params: { q } });
-        setResults(r.data);
-        setOpen(r.data.length > 0);
-      } catch { /* silent */ }
-      finally { setLoading(false); }
-    }, 220);
-  }, []);
+  // Шууд хайлт — debounce байхгүй, cache дээр тулгуурладаг
+  async function search(q: string) {
+    try {
+      const r = await api.get("/bank-statements/customers/search", { params: { q } });
+      setResults(r.data);
+      if (focused.current) setOpen(r.data.length > 0);
+    } catch { /* silent */ }
+  }
 
   function handleChange(v: string) {
     setQuery(v);
     search(v);
+  }
+
+  function handleFocus() {
+    focused.current = true;
+    // Хоосон бол анхны 40 харилцагчийг харуулна
+    if (results.length > 0) { setOpen(true); return; }
+    search(query);
   }
 
   function select(c: Customer) {
@@ -179,39 +179,36 @@ function PartnerSearch({ value, onSave }: {
   }
 
   function handleBlur() {
-    // dropdown дарах хүртэл хүлээнэ
+    focused.current = false;
+    // onMouseDown-ы дараа blur ирдэг тул 150ms хүлээнэ
     setTimeout(() => {
       setOpen(false);
       if (query.trim() !== value.trim()) onSave(query.trim(), "");
-    }, 180);
+    }, 150);
   }
 
   return (
-    <div ref={wrapRef} className="relative">
-      <div className="flex items-center gap-0.5">
-        <input
-          value={query}
-          onChange={e => handleChange(e.target.value)}
-          onFocus={() => { if (results.length > 0) setOpen(true); else if (query.length >= 1) search(query); }}
-          onBlur={handleBlur}
-          placeholder="Харилцагч хайх…"
-          className="w-full min-w-[110px] rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[11px] text-gray-800 outline-none hover:border-gray-200 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300 placeholder:italic"
-        />
-        {loading && <RefreshCw size={10} className="shrink-0 animate-spin text-gray-300"/>}
-      </div>
+    <div className="relative">
+      <input
+        value={query}
+        onChange={e => handleChange(e.target.value)}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        placeholder="Хайх…"
+        className="w-full min-w-[120px] rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[11px] text-gray-800 outline-none hover:border-gray-200 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300"
+      />
 
       {open && results.length > 0 && (
-        <div className="absolute left-0 top-full z-[60] mt-0.5 max-h-52 w-64 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
-          {results.map(c => (
+        <div className="absolute left-0 top-full z-[60] mt-0.5 max-h-60 w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
+          {results.map((c, i) => (
             <button
-              key={c.code}
+              key={c.code || i}
               onMouseDown={() => select(c)}
-              className="flex w-full flex-col items-start gap-0 px-3 py-2 text-left hover:bg-blue-50 first:rounded-t-xl last:rounded-b-xl"
+              className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-blue-50 first:rounded-t-xl last:rounded-b-xl"
             >
-              <span className="text-[12px] font-medium text-gray-900 leading-tight">{c.name}</span>
-              <span className="text-[10px] text-gray-400">
+              <span className="text-[12px] font-medium text-gray-900 leading-snug">{c.name}</span>
+              <span className="text-[10px] text-gray-400 leading-tight">
                 {[c.code, c.group, c.phone].filter(Boolean).join(" · ")}
-                {c.account ? <> · <span className="font-mono">{c.account}</span></> : null}
               </span>
             </button>
           ))}

@@ -233,9 +233,54 @@ def fix_legacy_data(
     return {"fixed": fixed}
 
 
-# ── Customer search from imported customer_info_last.xlsx ────────────────────
+# ── Customer search — in-memory cache (хурдан хайлт) ─────────────────────────
 
-_CUSTOMER_FILE = Path("app/data/outputs/customer_info_last.xlsx")
+_CUSTOMER_FILE  = Path("app/data/outputs/customer_info_last.xlsx")
+_customers_rows: list[dict] = []   # санах ойд байх жагсаалт
+_customers_mtime: float = 0.0     # сүүлийн ачааллын цаг
+
+
+def _ensure_customers_loaded() -> list[dict]:
+    """Файл өөрчлөгдсөн эсвэл санах ой хоосон бол дахин ачаална, үгүй бол cache буцаана."""
+    global _customers_rows, _customers_mtime
+    if not _CUSTOMER_FILE.exists():
+        return []
+    try:
+        mtime = _CUSTOMER_FILE.stat().st_mtime
+    except OSError:
+        return []
+    if _customers_rows and mtime <= _customers_mtime:
+        return _customers_rows      # cache хэвээр байна
+
+    # Excel-г нэг удаа уншаад санах ойд хадгална
+    try:
+        df = pd.read_excel(str(_CUSTOMER_FILE), header=0, dtype=str)
+    except Exception:
+        return []
+
+    rows = []
+    for _, row in df.iterrows():
+        def clean(col: str) -> str:
+            v = (row.get(col) or "").strip()
+            return "" if v in ("nan", "NaN", "None") else v
+
+        name = clean("Нэр")
+        if not name:
+            continue
+        rows.append({
+            "code":       clean("Код"),
+            "name":       name,
+            "group":      clean("Бүлэг нэр"),
+            "phone":      clean("Утас"),
+            "account":    clean("Банк дахь данс"),
+            # хайхад ашиглах lowercase нэгтгэл
+            "_search":    f"{name} {clean('Код')} {clean('Бүлэг нэр')} {clean('Утас')}".lower(),
+        })
+
+    _customers_rows  = rows
+    _customers_mtime = mtime
+    print(f"[customers] {len(rows)} харилцагч санах ойд ачааллаа")
+    return rows
 
 
 @router.get("/customers/search")
@@ -243,44 +288,16 @@ def search_customers(
     q: str = Query(""),
     _: User = Depends(get_current_user),
 ):
-    """Импортлосон харилцагчдын жагсаалтаас нэр/код/бүлгээр хайна."""
-    if not _CUSTOMER_FILE.exists():
-        return []
-    try:
-        df = pd.read_excel(str(_CUSTOMER_FILE), header=0, dtype=str)
-    except Exception:
-        return []
-
+    """Санах ойноос нэр/код/бүлгээр хурдан хайна (Excel-г дахин уншихгүй)."""
+    rows = _ensure_customers_loaded()
     q_low = q.strip().lower()
+
     results = []
-    for _, row in df.iterrows():
-        name    = (row.get("Нэр")            or "").strip()
-        code    = (row.get("Код")            or "").strip()
-        group   = (row.get("Бүлэг нэр")     or "").strip()
-        phone   = (row.get("Утас")           or "").strip()
-        account = (row.get("Банк дахь данс") or "").strip()
-
-        # nan → хоосон
-        if name    == "nan": name    = ""
-        if code    == "nan": code    = ""
-        if group   == "nan": group   = ""
-        if phone   == "nan": phone   = ""
-        if account == "nan": account = ""
-
-        if not name:
-            continue
-
-        if not q_low or q_low in name.lower() or q_low in code.lower() or q_low in group.lower() or q_low in phone:
-            results.append({
-                "code":    code,
-                "name":    name,
-                "group":   group,
-                "phone":   phone,
-                "account": account,
-            })
-            if len(results) >= 30:
+    for r in rows:
+        if not q_low or q_low in r["_search"]:
+            results.append({k: v for k, v in r.items() if k != "_search"})
+            if len(results) >= 40:
                 break
-
     return results
 
 
