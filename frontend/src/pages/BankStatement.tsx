@@ -309,7 +309,7 @@ export default function BankStatementPage() {
 
   // ── Derived ────────────────────────────────────────────────────────
 
-  const visibleTxns = showFees ? txns : txns.filter(t => !t.is_fee);
+  const visibleTxns = showFees ? txns.filter(t => t.is_fee) : txns.filter(t => !t.is_fee);
   const mainTxns    = txns.filter(t => !t.is_fee);
   const totalCredit = mainTxns.reduce((s, t) => s + t.credit, 0);
   const totalDebit  = mainTxns.reduce((s, t) => s + t.debit,  0);
@@ -545,7 +545,7 @@ export default function BankStatementPage() {
                   className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
                     showFees ? "border-amber-200 bg-amber-50 text-amber-700" : "border-gray-200 text-gray-500 hover:bg-gray-50"
                   }`}>
-                  {showFees ? <><Eye size={11}/>Шимтгэл харуулж байна</> : <><EyeOff size={11}/>Шимтгэл нуусан</>}
+                  {showFees ? <><Eye size={11}/>Зөвхөн шимтгэл харуулах</> : <><EyeOff size={11}/>Шимтгэл нуусан</>}
                 </button>
               </div>
 
