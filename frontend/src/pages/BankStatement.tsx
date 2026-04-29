@@ -592,8 +592,8 @@ export default function BankStatementPage() {
                             <td className="px-2 py-1.5 text-right font-medium tabular-nums">
                               {t.debit > 0 ? <span className="text-red-500">{t.debit.toLocaleString("mn-MN")}</span> : "—"}
                             </td>
-                            <td className="max-w-[160px] px-2 py-1.5">
-                              <div className="truncate text-gray-600" title={t.bank_description}>{t.bank_description || "—"}</div>
+                            <td className="px-2 py-1.5 min-w-[200px]">
+                              <div className="text-gray-600 break-words">{t.bank_description || "—"}</div>
                             </td>
                             <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px] text-gray-500">{t.bank_counterpart || "—"}</td>
                             <td className="border-l border-gray-200 px-1 py-1.5 min-w-[110px]">
