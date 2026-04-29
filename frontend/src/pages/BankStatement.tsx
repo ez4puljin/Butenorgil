@@ -56,7 +56,6 @@ const MN_WEEKDAYS = ["Да","Мя","Лх","Пү","Ба","Бя","Ня"];
 
 function fmtMnt(n: number) {
   if (!n) return "—";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}сая`;
   return n.toLocaleString("mn-MN");
 }
 function fmtDate(s: string | null) {
