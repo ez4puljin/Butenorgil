@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, Trash2, Settings,
   CalendarDays, X, Check, AlertCircle, RefreshCw,
   Landmark, Star, StarOff, Plus, Pencil, ArrowLeft,
-  Eye, EyeOff, CreditCard, Building2,
+  Eye, EyeOff, CreditCard, Building2, Search,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -129,6 +129,98 @@ function ActionSelect({ value, onChange }: { value: string; onChange: (v: string
     </select>
   );
 }
+
+// ── PartnerSearch — харилцагч хайх autocomplete ────────────────────────────
+
+interface Customer {
+  code: string;
+  name: string;
+  group: string;
+  phone: string;
+  account: string;
+}
+
+function PartnerSearch({ value, onSave }: {
+  value: string;
+  onSave: (name: string, account: string) => void;
+}) {
+  const [query,   setQuery]   = useState(value);
+  const [results, setResults] = useState<Customer[]>([]);
+  const [open,    setOpen]    = useState(false);
+  const [loading, setLoading] = useState(false);
+  const debounce  = useRef<ReturnType<typeof setTimeout>>();
+  const wrapRef   = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setQuery(value); }, [value]);
+
+  const search = useCallback((q: string) => {
+    clearTimeout(debounce.current);
+    if (q.trim().length < 1) { setResults([]); setOpen(false); return; }
+    debounce.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const r = await api.get("/bank-statements/customers/search", { params: { q } });
+        setResults(r.data);
+        setOpen(r.data.length > 0);
+      } catch { /* silent */ }
+      finally { setLoading(false); }
+    }, 220);
+  }, []);
+
+  function handleChange(v: string) {
+    setQuery(v);
+    search(v);
+  }
+
+  function select(c: Customer) {
+    setQuery(c.name);
+    setOpen(false);
+    onSave(c.name, c.account || "");
+  }
+
+  function handleBlur() {
+    // dropdown дарах хүртэл хүлээнэ
+    setTimeout(() => {
+      setOpen(false);
+      if (query.trim() !== value.trim()) onSave(query.trim(), "");
+    }, 180);
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <div className="flex items-center gap-0.5">
+        <input
+          value={query}
+          onChange={e => handleChange(e.target.value)}
+          onFocus={() => { if (results.length > 0) setOpen(true); else if (query.length >= 1) search(query); }}
+          onBlur={handleBlur}
+          placeholder="Харилцагч хайх…"
+          className="w-full min-w-[110px] rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[11px] text-gray-800 outline-none hover:border-gray-200 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300 placeholder:italic"
+        />
+        {loading && <RefreshCw size={10} className="shrink-0 animate-spin text-gray-300"/>}
+      </div>
+
+      {open && results.length > 0 && (
+        <div className="absolute left-0 top-full z-[60] mt-0.5 max-h-52 w-64 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
+          {results.map(c => (
+            <button
+              key={c.code}
+              onMouseDown={() => select(c)}
+              className="flex w-full flex-col items-start gap-0 px-3 py-2 text-left hover:bg-blue-50 first:rounded-t-xl last:rounded-b-xl"
+            >
+              <span className="text-[12px] font-medium text-gray-900 leading-tight">{c.name}</span>
+              <span className="text-[10px] text-gray-400">
+                {[c.code, c.group, c.phone].filter(Boolean).join(" · ")}
+                {c.account ? <> · <span className="font-mono">{c.account}</span></> : null}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // ── Main ───────────────────────────────────────────────────────────────────
 
@@ -596,9 +688,15 @@ export default function BankStatementPage() {
                               <div className="text-gray-600 break-words">{t.bank_description || "—"}</div>
                             </td>
                             <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px] text-gray-500">{t.bank_counterpart || "—"}</td>
-                            <td className="border-l border-gray-200 px-1 py-1.5 min-w-[110px]">
-                              <EditCell value={t.partner_name} placeholder="Харилцагч…"
-                                onSave={v => updateTxn(t.id, { partner_name: v })}/>
+                            <td className="border-l border-gray-200 px-1 py-1.5 min-w-[140px]">
+                              <PartnerSearch
+                                value={t.partner_name}
+                                onSave={(name, account) => {
+                                  const patch: Partial<Txn> = { partner_name: name };
+                                  if (account && !t.partner_account) patch.partner_account = account;
+                                  updateTxn(t.id, patch);
+                                }}
+                              />
                             </td>
                             <td className="px-1 py-1.5 min-w-[90px]">
                               <EditCell value={t.partner_account} placeholder="Данс…"

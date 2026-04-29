@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
+from pathlib import Path
 import pandas as pd
 import io
 import re
@@ -230,6 +231,57 @@ def fix_legacy_data(
             fixed += 1
     db.commit()
     return {"fixed": fixed}
+
+
+# ── Customer search from imported customer_info_last.xlsx ────────────────────
+
+_CUSTOMER_FILE = Path("app/data/outputs/customer_info_last.xlsx")
+
+
+@router.get("/customers/search")
+def search_customers(
+    q: str = Query(""),
+    _: User = Depends(get_current_user),
+):
+    """Импортлосон харилцагчдын жагсаалтаас нэр/код/бүлгээр хайна."""
+    if not _CUSTOMER_FILE.exists():
+        return []
+    try:
+        df = pd.read_excel(str(_CUSTOMER_FILE), header=0, dtype=str)
+    except Exception:
+        return []
+
+    q_low = q.strip().lower()
+    results = []
+    for _, row in df.iterrows():
+        name    = (row.get("Нэр")            or "").strip()
+        code    = (row.get("Код")            or "").strip()
+        group   = (row.get("Бүлэг нэр")     or "").strip()
+        phone   = (row.get("Утас")           or "").strip()
+        account = (row.get("Банк дахь данс") or "").strip()
+
+        # nan → хоосон
+        if name    == "nan": name    = ""
+        if code    == "nan": code    = ""
+        if group   == "nan": group   = ""
+        if phone   == "nan": phone   = ""
+        if account == "nan": account = ""
+
+        if not name:
+            continue
+
+        if not q_low or q_low in name.lower() or q_low in code.lower() or q_low in group.lower() or q_low in phone:
+            results.append({
+                "code":    code,
+                "name":    name,
+                "group":   group,
+                "phone":   phone,
+                "account": account,
+            })
+            if len(results) >= 30:
+                break
+
+    return results
 
 
 # ── Config: accounts ──────────────────────────────────────────────────────────
