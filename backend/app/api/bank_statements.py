@@ -261,7 +261,10 @@ def _ensure_customers_loaded() -> list[dict]:
     rows = []
     for _, row in df.iterrows():
         def clean(col: str) -> str:
-            v = (row.get(col) or "").strip()
+            v = row.get(col)
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return ""
+            v = str(v).strip()
             return "" if v in ("nan", "NaN", "None") else v
 
         name = clean("Нэр")
