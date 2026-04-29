@@ -1,8 +1,9 @@
 """
 Тооцоо хаах — Хаанбанкны хуулга Excel файлаар импортлох,
-гүйлгээ бүрт харилцагч/данс/тайлбар оруулах API.
+Календар харагдац, гүйлгээ засах, тохиргоо.
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
 from pydantic import BaseModel
@@ -12,7 +13,7 @@ import io
 import re
 
 from app.api.deps import get_db, get_current_user
-from app.models.bank_statement import BankStatement, BankTransaction
+from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig
 from app.models.user import User
 
 router = APIRouter(prefix="/bank-statements", tags=["bank-statements"])
@@ -28,14 +29,12 @@ def _is_fee(desc: str) -> bool:
 
 
 def _parse_excel(content: bytes, filename: str) -> dict:
-    """Хаанбанкны Excel хуулгыг задлан dict буцаана."""
     account_number, currency = "", "MNT"
     m = re.search(r"Statement_([A-Z]+)_(\d+)", filename)
     if m:
         currency = m.group(1)
         account_number = m.group(2)
 
-    # Raw read — meta row (0), header row (1)
     raw = pd.read_excel(io.BytesIO(content), header=None, sheet_name=0)
 
     date_from = date_to = None
@@ -45,13 +44,12 @@ def _parse_excel(content: bytes, filename: str) -> dict:
         fmt = "%Y/%m/%d" if "/" in (parts[0] if parts else "") else "%Y-%m-%d"
         if len(parts) >= 2:
             date_from = datetime.strptime(parts[0], fmt).date()
-            date_to = datetime.strptime(parts[1], fmt).date()
+            date_to   = datetime.strptime(parts[1], fmt).date()
         elif len(parts) == 1:
             date_from = date_to = datetime.strptime(parts[0], fmt).date()
     except Exception:
         pass
 
-    # Data rows: header=row1, drop last totals row
     df = pd.read_excel(io.BytesIO(content), header=1, sheet_name=0)
     if len(df) > 0:
         last_val = str(df.iloc[-1, 0])
@@ -76,9 +74,9 @@ def _parse_excel(content: bytes, filename: str) -> dict:
         if cpart == "nan": cpart = ""
 
         transactions.append({
-            "txn_date":        txn_date,
-            "debit":           debit,
-            "credit":          credit,
+            "txn_date":         txn_date,
+            "debit":            debit,
+            "credit":           credit,
             "bank_description": desc,
             "bank_counterpart": cpart,
             "is_fee":           _is_fee(desc),
@@ -95,21 +93,24 @@ def _parse_excel(content: bytes, filename: str) -> dict:
 
 
 def _ser_stmt(s: BankStatement, include_txns: bool = False) -> dict:
+    txns = s.transactions
+    main_txns = [t for t in txns if not t.is_fee]
     d = {
         "id":             s.id,
         "account_number": s.account_number,
         "currency":       s.currency,
-        "date_from":      s.date_from.isoformat()  if s.date_from  else None,
-        "date_to":        s.date_to.isoformat()    if s.date_to    else None,
+        "date_from":      s.date_from.isoformat()   if s.date_from   else None,
+        "date_to":        s.date_to.isoformat()     if s.date_to     else None,
         "filename":       s.filename,
         "uploaded_at":    s.uploaded_at.isoformat() if s.uploaded_at else None,
-        "txn_count":      len(s.transactions),
-        "total_credit":   sum(t.credit for t in s.transactions),
-        "total_debit":    sum(t.debit  for t in s.transactions),
-        "filled_count":   sum(1 for t in s.transactions if t.partner_name or t.action),
+        "txn_count":      len(main_txns),
+        "fee_count":      len(txns) - len(main_txns),
+        "total_credit":   sum(t.credit for t in main_txns),
+        "total_debit":    sum(t.debit  for t in main_txns),
+        "filled_count":   sum(1 for t in main_txns if t.partner_name or t.action),
     }
     if include_txns:
-        d["transactions"] = [_ser_txn(t) for t in s.transactions]
+        d["transactions"] = [_ser_txn(t) for t in txns]
     return d
 
 
@@ -129,16 +130,131 @@ def _ser_txn(t: BankTransaction) -> dict:
     }
 
 
+def _ser_acct(a: BankAccountConfig) -> dict:
+    return {
+        "id":             a.id,
+        "account_number": a.account_number,
+        "partner_name":   a.partner_name,
+        "bank_name":      a.bank_name,
+        "is_fee_default": a.is_fee_default,
+        "note":           a.note,
+        "sort_order":     a.sort_order,
+    }
+
+
 # ── Pydantic ──────────────────────────────────────────────────────────────────
 
 class TxnUpdate(BaseModel):
     partner_name:       Optional[str] = None
     partner_account:    Optional[str] = None
     custom_description: Optional[str] = None
-    action:             Optional[str] = None   # "" | "close" | "create"
+    action:             Optional[str] = None
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+class AccountIn(BaseModel):
+    account_number: str = ""
+    partner_name:   str = ""
+    bank_name:      str = "Хаанбанк"
+    is_fee_default: bool = False
+    note:           str = ""
+    sort_order:     int = 0
+
+
+# ── Calendar ──────────────────────────────────────────────────────────────────
+
+@router.get("/calendar")
+def get_calendar(
+    year:  int = Query(...),
+    month: int = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Тухайн сард өдөр тус бүрт хэдэн хуулга оруулсныг буцаана."""
+    rows = db.query(
+        func.date(BankStatement.uploaded_at).label("day"),
+        func.count(BankStatement.id).label("cnt"),
+    ).filter(
+        func.strftime("%Y", BankStatement.uploaded_at) == str(year),
+        func.strftime("%m", BankStatement.uploaded_at) == f"{month:02d}",
+    ).group_by(func.date(BankStatement.uploaded_at)).all()
+    return {r.day: r.cnt for r in rows}
+
+
+@router.get("/by-date")
+def get_by_date(
+    date: str = Query(...),   # "YYYY-MM-DD"
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Тухайн өдрийн хуулгуудыг буцаана."""
+    rows = db.query(BankStatement).filter(
+        func.date(BankStatement.uploaded_at) == date,
+    ).order_by(BankStatement.uploaded_at).all()
+    return [_ser_stmt(s) for s in rows]
+
+
+# ── Config: accounts ──────────────────────────────────────────────────────────
+
+@router.get("/config/accounts")
+def list_accounts(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    rows = db.query(BankAccountConfig).order_by(
+        BankAccountConfig.sort_order, BankAccountConfig.id
+    ).all()
+    return [_ser_acct(a) for a in rows]
+
+
+@router.post("/config/accounts")
+def create_account(
+    body: AccountIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    # Шимтгэлийн данс нэг л байна
+    if body.is_fee_default:
+        db.query(BankAccountConfig).update({"is_fee_default": False})
+    a = BankAccountConfig(**body.model_dump())
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return _ser_acct(a)
+
+
+@router.patch("/config/accounts/{acct_id}")
+def update_account(
+    acct_id: int,
+    body: AccountIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    a = db.query(BankAccountConfig).filter(BankAccountConfig.id == acct_id).first()
+    if not a:
+        raise HTTPException(404, "Данс олдсонгүй")
+    if body.is_fee_default:
+        db.query(BankAccountConfig).filter(BankAccountConfig.id != acct_id).update({"is_fee_default": False})
+    for k, v in body.model_dump().items():
+        setattr(a, k, v)
+    db.commit()
+    return _ser_acct(a)
+
+
+@router.delete("/config/accounts/{acct_id}")
+def delete_account(
+    acct_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    a = db.query(BankAccountConfig).filter(BankAccountConfig.id == acct_id).first()
+    if not a:
+        raise HTTPException(404, "Данс олдсонгүй")
+    db.delete(a)
+    db.commit()
+    return {"ok": True}
+
+
+# ── Statements CRUD ───────────────────────────────────────────────────────────
 
 @router.post("/upload")
 async def upload_statement(
