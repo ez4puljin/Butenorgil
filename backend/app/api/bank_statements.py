@@ -66,10 +66,21 @@ def _parse_excel(content: bytes, filename: str) -> dict:
         except Exception:
             pass
 
-        debit  = float(row.iloc[1]) if pd.notna(row.iloc[1]) else 0.0
+        # Дебит: Excel-д сөрөг тоогоор хадгалагддаг (-50, -26871200) → abs() авна
+        raw_debit  = float(row.iloc[1]) if pd.notna(row.iloc[1]) else 0.0
+        debit  = abs(raw_debit)
         credit = float(row.iloc[2]) if pd.notna(row.iloc[2]) else 0.0
         desc   = str(row.iloc[3]) if pd.notna(row.iloc[3]) else ""
-        cpart  = str(row.iloc[4]) if df.shape[1] > 4 and pd.notna(row.iloc[4]) else ""
+
+        # Харьцсан данс: float-оор унших үед "5893180078.0" болдог → int болгож цэвэрлэнэ
+        cpart = ""
+        if df.shape[1] > 4 and pd.notna(row.iloc[4]):
+            raw_cp = row.iloc[4]
+            try:
+                # Дансны дугаар — бүхэл тоо болгоно (5893180078.0 → "5893180078")
+                cpart = str(int(float(str(raw_cp))))
+            except (ValueError, OverflowError):
+                cpart = str(raw_cp)
         if desc  == "nan": desc  = ""
         if cpart == "nan": cpart = ""
 
@@ -191,6 +202,34 @@ def get_by_date(
         func.date(BankStatement.uploaded_at) == date,
     ).order_by(BankStatement.uploaded_at).all()
     return [_ser_stmt(s) for s in rows]
+
+
+# ── One-time data fix: fix negative debits + .0 counterparts ─────────────────
+
+@router.post("/fix-legacy-data")
+def fix_legacy_data(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Хуучин өгөгдлийн дебит сөрөг байгааг abs() болгож,
+    харьцсан данс '5893180078.0' хэлбэрийг '5893180078' болгоно."""
+    txns = db.query(BankTransaction).all()
+    fixed = 0
+    for t in txns:
+        changed = False
+        if t.debit < 0:
+            t.debit = abs(t.debit)
+            changed = True
+        if t.bank_counterpart and t.bank_counterpart.endswith(".0"):
+            try:
+                t.bank_counterpart = str(int(float(t.bank_counterpart)))
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            fixed += 1
+    db.commit()
+    return {"fixed": fixed}
 
 
 # ── Config: accounts ──────────────────────────────────────────────────────────

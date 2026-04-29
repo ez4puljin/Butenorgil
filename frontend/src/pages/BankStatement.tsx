@@ -182,6 +182,11 @@ export default function BankStatementPage() {
 
   useEffect(() => { loadCalendar(year, month); }, [year, month]);
 
+  // Хуучин өгөгдлийн нэг удаагийн засвар (сөрөг дебит + .0 данс)
+  useEffect(() => {
+    api.post("/bank-statements/fix-legacy-data").catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Navigate months ────────────────────────────────────────────────
 
   function prevMonth() {
