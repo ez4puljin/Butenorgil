@@ -1591,7 +1591,7 @@ function BrandConfirmModal(p: {
           </button>
           <button
             onClick={p.onSubmit}
-            disabled={p.submitting || !p.receiptFile}
+            disabled={p.submitting}
             className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-apple bg-emerald-600 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50 sm:flex-none sm:px-4 sm:py-1.5"
           >
             {p.submitting ? <RefreshCw size={13} className="animate-spin"/> : <Check size={13}/>}
