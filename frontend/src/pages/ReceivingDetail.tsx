@@ -334,13 +334,12 @@ export default function ReceivingDetail() {
     const pcs = parseFloat(supplierPcs);
     const amount = parseFloat(supplierAmount);
     if (isNaN(pcs) || isNaN(amount)) { flash("Тоо/дүн оруулна уу", false); return; }
-    if (!receiptFile) { flash("Баримтны зураг оруулна уу", false); return; }
     setConfirming(true);
     try {
       const fd = new FormData();
       fd.append("supplier_total_pcs", String(pcs));
       fd.append("supplier_total_amount", String(amount));
-      fd.append("receipt", receiptFile);
+      if (receiptFile) fd.append("receipt", receiptFile);
       await api.post(`/receivings/${session.id}/brands/${encodeURIComponent(confirmBrand.brand)}/confirm`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -1532,8 +1531,9 @@ function BrandConfirmModal(p: {
 
           {/* Receipt upload / preview */}
           <div>
-            <label className="mb-1 block text-[11px] font-medium text-gray-500">
-              Баримт зураг <span className="text-red-500">*</span>
+            <label className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-gray-500">
+              Баримт зураг
+              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-normal text-gray-400">заавал биш</span>
             </label>
             <input
               ref={fileRef}

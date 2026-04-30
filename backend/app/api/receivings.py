@@ -466,7 +466,7 @@ async def confirm_brand(
     brand: str,
     supplier_total_pcs: float = Form(...),
     supplier_total_amount: float = Form(...),
-    receipt: UploadFile = File(...),
+    receipt: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor", "warehouse_clerk", "accountant")),
 ):
@@ -502,22 +502,22 @@ async def confirm_brand(
     if abs(my_amount - float(supplier_total_amount)) > 1.0:
         raise HTTPException(400, f"Нийт дүн таарсангүй. Таны оруулсан: {my_amount:.2f}₮, баримт дээр: {supplier_total_amount:.2f}₮")
 
-    # Баримтны зураг хадгалах
-    try:
-        sess_dir = UPLOAD_DIR / str(session_id)
-        sess_dir.mkdir(parents=True, exist_ok=True)
-        safe_brand = re.sub(r"[\\/:*?\"<>|]", "_", brand) or "no_brand"
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        suffix = Path(receipt.filename or "").suffix or ".jpg"
-        saved = sess_dir / f"{safe_brand}_{ts}{suffix}"
-        content = await receipt.read()
-        if not content:
-            raise HTTPException(400, "Баримтны файл хоосон байна. Зургийг дахин оруулна уу.")
-        saved.write_bytes(content)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Баримт хадгалахад алдаа гарлаа: {type(e).__name__}: {e}")
+    # Баримтны зураг хадгалах (заавал биш — зураггүй ч тулгаж болно)
+    saved_path = ""
+    if receipt and receipt.filename:
+        try:
+            sess_dir = UPLOAD_DIR / str(session_id)
+            sess_dir.mkdir(parents=True, exist_ok=True)
+            safe_brand = re.sub(r"[\\/:*?\"<>|]", "_", brand) or "no_brand"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = Path(receipt.filename or "").suffix or ".jpg"
+            saved_file = sess_dir / f"{safe_brand}_{ts}{suffix}"
+            content = await receipt.read()
+            if content:
+                saved_file.write_bytes(content)
+                saved_path = str(saved_file).replace("\\", "/")
+        except Exception as e:
+            raise HTTPException(500, f"Баримт хадгалахад алдаа гарлаа: {type(e).__name__}: {e}")
 
     bs = db.query(ReceivingBrandStatus).filter(
         ReceivingBrandStatus.session_id == session_id,
@@ -527,7 +527,8 @@ async def confirm_brand(
         bs = ReceivingBrandStatus(session_id=session_id, brand=brand)
         db.add(bs)
     bs.is_matched = True
-    bs.receipt_image_path = str(saved).replace("\\", "/")
+    if saved_path:
+        bs.receipt_image_path = saved_path
     bs.supplier_total_pcs = float(supplier_total_pcs)
     bs.supplier_total_amount = float(supplier_total_amount)
     bs.matched_at = datetime.utcnow()
