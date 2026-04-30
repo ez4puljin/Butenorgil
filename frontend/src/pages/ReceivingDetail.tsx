@@ -135,6 +135,8 @@ export default function ReceivingDetail() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [confirming, setConfirming] = useState(false);
 
+  const [errorModal, setErrorModal] = useState<string | null>(null);
+
   const [showERPModal, setShowERPModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [scanFlash, setScanFlash] = useState<string | null>(null);
@@ -147,7 +149,8 @@ export default function ReceivingDetail() {
     if (!session) return;
     setReceiptLoading(true);
     try {
-      const res = await api.get(`/receivings/${session.id}/brands/${encodeURIComponent(brand)}/receipt`, {
+      const res = await api.get(`/receivings/${session.id}/brands/receipt`, {
+        params: { brand },
         responseType: "blob",
       });
       const blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
@@ -340,9 +343,11 @@ export default function ReceivingDetail() {
       fd.append("supplier_total_pcs", String(pcs));
       fd.append("supplier_total_amount", String(amount));
       if (receiptFile) fd.append("receipt", receiptFile);
-      await api.post(`/receivings/${session.id}/brands/${encodeURIComponent(confirmBrand.brand)}/confirm`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      await api.post(
+        `/receivings/${session.id}/brands/confirm`,
+        fd,
+        { params: { brand: confirmBrand.brand }, headers: { "Content-Type": "multipart/form-data" } }
+      );
       flash(`${confirmBrand.brand} — баримт тулгалаа`);
       setConfirmBrand(null);
       setSupplierPcs("");
@@ -350,7 +355,8 @@ export default function ReceivingDetail() {
       setReceiptFile(null);
       await load();
     } catch (e: any) {
-      flash(e?.response?.data?.detail ?? "Алдаа", false);
+      const msg = e?.response?.data?.detail ?? e?.message ?? "Тодорхойгүй алдаа гарлаа";
+      setErrorModal(msg);
     } finally { setConfirming(false); }
   };
 
@@ -358,7 +364,7 @@ export default function ReceivingDetail() {
     if (!session) return;
     if (!confirm(`${brand} — тулгалтыг буцаах уу?`)) return;
     try {
-      await api.post(`/receivings/${session.id}/brands/${encodeURIComponent(brand)}/unmatch`);
+      await api.post(`/receivings/${session.id}/brands/unmatch`, null, { params: { brand } });
       await load();
     } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
   };
@@ -1320,6 +1326,34 @@ export default function ReceivingDetail() {
           onSubmit={confirmBrandMatch}
           submitting={confirming}
         />
+      )}
+
+      {/* Error modal — дэлгэрэнгүй алдааны мессеж */}
+      {errorModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4" onClick={() => setErrorModal(null)}>
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 p-5">
+              <div className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-500">
+                <AlertCircle size={20}/>
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-gray-900">Алдаа гарлаа</h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-gray-600 break-words">{errorModal}</p>
+              </div>
+            </div>
+            <div className="border-t border-gray-100 px-5 py-3 flex justify-end">
+              <button
+                onClick={() => setErrorModal(null)}
+                className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700"
+              >
+                Ойлголоо
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ERP modal */}

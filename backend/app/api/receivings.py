@@ -460,10 +460,10 @@ def delete_line(
 
 # ── Brand match + receipt upload ──────────────────────────────────────────────
 
-@router.post("/{session_id}/brands/{brand}/confirm")
+@router.post("/{session_id}/brands/confirm")
 async def confirm_brand(
     session_id: int,
-    brand: str,
+    brand: str = Query(...),
     supplier_total_pcs: float = Form(...),
     supplier_total_amount: float = Form(...),
     receipt: Optional[UploadFile] = File(None),
@@ -539,10 +539,10 @@ async def confirm_brand(
     return _serialize_session(s, db, include_lines=False)
 
 
-@router.post("/{session_id}/brands/{brand}/unmatch")
+@router.post("/{session_id}/brands/unmatch")
 def unmatch_brand(
     session_id: int,
-    brand: str,
+    brand: str = Query(...),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor")),
 ):
@@ -558,10 +558,10 @@ def unmatch_brand(
     return {"ok": True}
 
 
-@router.get("/{session_id}/brands/{brand}/receipt")
+@router.get("/{session_id}/brands/receipt")
 def get_receipt(
     session_id: int,
-    brand: str,
+    brand: str = Query(...),
     db: Session = Depends(get_db),
     u: User = Depends(get_current_user),
 ):
