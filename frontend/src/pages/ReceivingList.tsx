@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Plus, X, RefreshCw, Archive, ArchiveRestore, PackageCheck,
-  ChevronRight, Calendar, Package,
+  ChevronRight, Calendar, Package, Trash2,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -107,6 +107,8 @@ export default function ReceivingList() {
   });
   const [creating, setCreating] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<Session | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const flash = (text: string, ok = true) => {
     setMsg({ text, ok });
@@ -152,7 +154,23 @@ export default function ReceivingList() {
     } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
   };
 
+  const deleteSession = async () => {
+    if (!deleteConfirm) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/receivings/${deleteConfirm.id}`);
+      flash(`#${deleteConfirm.id} тулгалт устгагдлаа`);
+      setDeleteConfirm(null);
+      await load();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail ?? "Устгахад алдаа гарлаа", false);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const canArchive = ["admin", "manager", "supervisor"].includes(role ?? "");
+  const canDelete = role === "admin";
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="pb-24 sm:pb-0">
@@ -337,14 +355,24 @@ export default function ReceivingList() {
                       <p className="mt-2 line-clamp-2 text-[11px] italic text-gray-400">"{r.notes}"</p>
                     )}
 
-                    {canArchive && (
-                      <div className="mt-2 flex justify-end">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); toggleArchive(r.id, !r.is_archived); }}
-                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-amber-50 hover:text-amber-600"
-                        >
-                          {r.is_archived ? <><ArchiveRestore size={12}/> Буцаах</> : <><Archive size={12}/> Архив</>}
-                        </button>
+                    {(canArchive || canDelete) && (
+                      <div className="mt-2 flex justify-end gap-1">
+                        {canArchive && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleArchive(r.id, !r.is_archived); }}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-amber-50 hover:text-amber-600"
+                          >
+                            {r.is_archived ? <><ArchiveRestore size={12}/> Буцаах</> : <><Archive size={12}/> Архив</>}
+                          </button>
+                        )}
+                        {canDelete && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDeleteConfirm(r); }}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-red-400 hover:bg-red-50 hover:text-red-600"
+                          >
+                            <Trash2 size={12}/> Устгах
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -412,6 +440,15 @@ export default function ReceivingList() {
                               {r.is_archived ? <ArchiveRestore size={14}/> : <Archive size={14}/>}
                             </button>
                           )}
+                          {canDelete && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setDeleteConfirm(r); }}
+                              className="rounded-md p-1.5 text-gray-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+                              title="Устгах"
+                            >
+                              <Trash2 size={14}/>
+                            </button>
+                          )}
                           <ChevronRight size={16} className="text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-gray-500"/>
                         </div>
                       </td>
@@ -432,6 +469,45 @@ export default function ReceivingList() {
       >
         <Plus size={24} strokeWidth={2.4}/>
       </button>
+
+      {/* Delete confirm modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setDeleteConfirm(null)}>
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start gap-3 p-5">
+              <div className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-500">
+                <Trash2 size={18}/>
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-gray-900">Тулгалт устгах уу?</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  <span className="font-medium text-gray-700">#{deleteConfirm.id} · {deleteConfirm.date.replaceAll("-", "/")}</span>
+                  {deleteConfirm.notes && <> — {deleteConfirm.notes}</>}
+                </p>
+                <p className="mt-1.5 text-[12px] text-red-500">
+                  Бүх мөр, баримтын мэдээлэл хамт устгагдана. Буцаах боломжгүй.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 border-t border-gray-100 px-5 py-3">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="flex-1 rounded-xl border border-gray-200 bg-white py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Болих
+              </button>
+              <button
+                onClick={deleteSession}
+                disabled={deleting}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-red-600 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? <RefreshCw size={13} className="animate-spin"/> : <Trash2 size={13}/>}
+                Устгах
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create modal */}
       {showCreate && (
