@@ -181,14 +181,19 @@ def get_calendar(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Тухайн сард өдөр тус бүрт хэдэн хуулга оруулсныг буцаана."""
+    """Тухайн сард өдөр тус бүрт хэдэн хуулга оруулсныг буцаана.
+    date_from байгаа бол тэрийг, байхгүй бол uploaded_at-ийг ашиглана."""
+    day_expr = func.coalesce(
+        BankStatement.date_from,
+        func.date(BankStatement.uploaded_at),
+    )
     rows = db.query(
-        func.date(BankStatement.uploaded_at).label("day"),
+        day_expr.label("day"),
         func.count(BankStatement.id).label("cnt"),
     ).filter(
-        func.strftime("%Y", BankStatement.uploaded_at) == str(year),
-        func.strftime("%m", BankStatement.uploaded_at) == f"{month:02d}",
-    ).group_by(func.date(BankStatement.uploaded_at)).all()
+        func.strftime("%Y", day_expr) == str(year),
+        func.strftime("%m", day_expr) == f"{month:02d}",
+    ).group_by(day_expr).all()
     return {r.day: r.cnt for r in rows}
 
 
@@ -198,9 +203,14 @@ def get_by_date(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Тухайн өдрийн хуулгуудыг буцаана."""
+    """Тухайн өдрийн хуулгуудыг буцаана.
+    date_from байгаа бол тэрийг, байхгүй бол uploaded_at-ийг ашиглана."""
+    day_expr = func.coalesce(
+        BankStatement.date_from,
+        func.date(BankStatement.uploaded_at),
+    )
     rows = db.query(BankStatement).filter(
-        func.date(BankStatement.uploaded_at) == date,
+        day_expr == date,
     ).order_by(BankStatement.uploaded_at).all()
     return [_ser_stmt(s) for s in rows]
 
@@ -370,6 +380,7 @@ def delete_account(
 @router.post("/upload")
 async def upload_statement(
     file: UploadFile = File(...),
+    selected_date: Optional[str] = Form(None),   # frontend-ийн сонгосон огноо "YYYY-MM-DD"
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -380,11 +391,26 @@ async def upload_statement(
     except Exception as e:
         raise HTTPException(400, f"Excel уншихад алдаа: {e}")
 
+    # Сонгосон огноог date_from-д ашиглана (Excel-ийн header parse амжилтгүй болсон тохиолдолд ч зөв ажиллана)
+    effective_date_from = parsed["date_from"]
+    effective_date_to   = parsed["date_to"]
+    if selected_date:
+        from datetime import date as date_type
+        try:
+            parsed_sel = date_type.fromisoformat(selected_date)
+            # Excel-ийн date_from байхгүй эсвэл огноо зөрүүтэй бол override хийнэ
+            if effective_date_from is None:
+                effective_date_from = parsed_sel
+                effective_date_to   = parsed_sel
+
+        except ValueError:
+            pass
+
     stmt = BankStatement(
         account_number=parsed["account_number"],
         currency=parsed["currency"],
-        date_from=parsed["date_from"],
-        date_to=parsed["date_to"],
+        date_from=effective_date_from,
+        date_to=effective_date_to,
         filename=parsed["filename"],
         uploaded_by_id=current_user.id,
     )

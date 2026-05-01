@@ -323,6 +323,8 @@ export default function BankStatementPage() {
     for (const f of Array.from(files)) {
       const fd = new FormData();
       fd.append("file", f);
+      // Сонгосон огноог дамжуулна — calendar-д тэр өдөр харагдана
+      if (selectedDate) fd.append("selected_date", selectedDate);
       try {
         await api.post("/bank-statements/upload", fd, {
           headers: { "Content-Type": "multipart/form-data" },
