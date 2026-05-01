@@ -2,7 +2,7 @@
 Тооцоо хаах — Хаанбанкны хуулга Excel файлаар импортлох,
 Календар харагдац, гүйлгээ засах, тохиргоо.
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
