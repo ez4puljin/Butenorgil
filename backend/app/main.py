@@ -19,7 +19,7 @@ from app.models.kpi import KpiScheduledDay, KpiShiftTransfer, KpiAuditLog  # noq
 from app.models.calendar_label import CalendarLabel  # noqa: F401 – registers table
 from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrandStatus  # noqa: F401 – registers tables
 from app.models.min_stock_rule import MinStockRule  # noqa: F401 – registers table
-from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig  # noqa: F401 – registers tables
+from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig, SettlementConfig, CrossAccountPreset, FeeConfig  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
 
@@ -154,6 +154,20 @@ def ensure_shipment_lines_schema():
         if cols and "received_qty_box" not in cols:
             conn.execute(text("ALTER TABLE po_shipment_lines ADD COLUMN received_qty_box FLOAT DEFAULT 0"))
 
+def ensure_bank_account_configs_schema():
+    """bank_account_configs-д erp_account_code багана нэмнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(bank_account_configs)")).fetchall()]
+        if cols and "erp_account_code" not in cols:
+            conn.execute(text("ALTER TABLE bank_account_configs ADD COLUMN erp_account_code VARCHAR(20) DEFAULT ''"))
+
+def ensure_bank_transactions_schema():
+    """bank_transactions-д export_type багана нэмнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(bank_transactions)")).fetchall()]
+        if cols and "export_type" not in cols:
+            conn.execute(text("ALTER TABLE bank_transactions ADD COLUMN export_type VARCHAR(20) DEFAULT ''"))
+
 def ensure_admin_task_target_schema():
     """kpi_admin_daily_tasks-д target_employee_ids багана нэмнэ."""
     with engine.begin() as conn:
@@ -229,12 +243,13 @@ def ensure_inventory_count_schema():
             conn.execute(text(
                 "ALTER TABLE inventory_counts ADD COLUMN kpi_admin_task_id INTEGER REFERENCES kpi_admin_daily_tasks(id)"
             ))
-        # ── Checklist багануудыг нэмэв (Sync, бүрэн бус, №14 агуулах, өмнөх үлдэгдэл) ──
+        # ── Checklist багануудыг нэмэв (Sync, бүрэн бус, №14 агуулах, өмнөх үлдэгдэл, улайлт/дарагдсан) ──
         for col in (
             "check_all_synced",
             "check_no_partial",
             "check_no_wh14_sales",
             "check_balance_unchanged",
+            "check_red_blocked_fixed",
         ):
             if cols and col not in cols:
                 conn.execute(text(
@@ -429,6 +444,8 @@ def startup():
     ensure_shipment_lines_schema()
     ensure_min_stock_rules_schema()
     ensure_admin_task_target_schema()
+    ensure_bank_account_configs_schema()
+    ensure_bank_transactions_schema()
     ensure_roles_schema()
     ensure_roles_seeded()
     ensure_calendar_labels_seeded()

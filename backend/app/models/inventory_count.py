@@ -27,6 +27,8 @@ class InventoryCount(Base):
     check_no_wh14_sales = Column(Boolean, default=False, nullable=False)
     # 4) Өмнөх тооллогоны үлдэгдэл дээр өөрчлөлт ороогүй байх
     check_balance_unchanged = Column(Boolean, default=False, nullable=False)
+    # 5) Улайлт болон Дарагдсан барааны орлого/зарлага шалгаж зассан
+    check_red_blocked_fixed = Column(Boolean, default=False, nullable=False)
 
     files = relationship(
         "InventoryCountFile",

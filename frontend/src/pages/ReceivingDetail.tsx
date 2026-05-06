@@ -101,6 +101,25 @@ function StatusChip({ status, label }: { status: string; label: string }) {
   );
 }
 
+/**
+ * Тухайн line дээр харуулах боломжит брэндүүдийг нэгтгэн буцаана.
+ * Дарааллыг: original → session brands → system brands → current override (хэрэв новч)
+ */
+function getBrandOptions(line: Line, sessionBrands: { brand: string }[], allBrands: string[]): string[] {
+  const seen = new Set<string>();
+  const opts: string[] = [];
+  const add = (b: string) => {
+    const v = (b || "").trim();
+    if (v && v !== "Брэнд байхгүй" && !seen.has(v)) { seen.add(v); opts.push(v); }
+  };
+  add(line.original_brand);
+  sessionBrands.forEach(b => add(b.brand));
+  allBrands.forEach(b => add(b));
+  add(line.override_brand);
+  return opts;
+}
+
+
 export default function ReceivingDetail() {
   const { id } = useParams<{ id: string }>();
   const { role } = useAuthStore();
@@ -277,6 +296,11 @@ export default function ReceivingDetail() {
     try {
       const sel = selected;
       const ob = (addBrand || "").trim();
+      // Брендгүй бараа сонгосон бол бренд заавал сонгох
+      if (!(sel.brand || "").trim() && !ob) {
+        flash("Брэндгүй бараа байна. Аль брэнд дор тулгах вэ — сонгоно уу", false);
+        return;
+      }
       const payload: any = {
         product_id: sel.id,
         qty_pcs: qty,
@@ -388,7 +412,11 @@ export default function ReceivingDetail() {
   }
 
   const visibleLines = session.lines.filter(l => {
-    if (filterBrand && l.brand !== filterBrand) return false;
+    if (filterBrand) {
+      // Брендгүй мөр (l.brand === "") нь "Брэнд байхгүй" дор бүлэглэгддэг
+      const effective = (l.brand || "").trim() || "Брэнд байхгүй";
+      if (effective !== filterBrand) return false;
+    }
     if (priceDiffOnly) {
       const diff = l.last_purchase_price > 0 && Math.abs(l.unit_price - l.last_purchase_price) > 0.01;
       if (!diff) return false;
@@ -397,7 +425,8 @@ export default function ReceivingDetail() {
   });
   const visibleByBrand: Record<string, Line[]> = {};
   for (const l of visibleLines) {
-    (visibleByBrand[l.brand || "—"] ??= []).push(l);
+    const effective = (l.brand || "").trim() || "Брэнд байхгүй";
+    (visibleByBrand[effective] ??= []).push(l);
   }
 
   const canEdit = session.status === "matching";
@@ -1112,6 +1141,29 @@ export default function ReceivingDetail() {
                                     · хасвал {l.stock_box} хайрцаг{l.stock_extra_pcs > 0 ? ` + ${l.stock_extra_pcs}ш` : ""}
                                   </span>
                                 </div>
+                                {/* Бренд солих dropdown */}
+                                {canEdit && (
+                                  <div className="mt-1 flex items-center gap-1">
+                                    <span className="text-[10px] text-gray-400">Бренд:</span>
+                                    <select
+                                      value={(l.brand || "").trim()}
+                                      onChange={e => {
+                                        const picked = e.target.value;
+                                        const orig = (l.original_brand || "").trim();
+                                        const newOverride = picked === orig ? "" : picked;
+                                        updateLine(l.id, { override_brand: newOverride });
+                                      }}
+                                      className="rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] outline-none focus:border-[#0071E3] focus:ring-1 focus:ring-[#0071E3]/15"
+                                    >
+                                      {!l.brand && <option value="">— Сонго —</option>}
+                                      {getBrandOptions(l, session?.brands ?? [], allBrands).map(b => (
+                                        <option key={b} value={b}>
+                                          {b}{b === l.original_brand ? " (анх)" : ""}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
                               </td>
                               <td className="px-3 py-2.5 align-top">
                                 {canEdit ? (
@@ -1226,6 +1278,29 @@ export default function ReceivingDetail() {
                                 <span className="font-mono">{l.item_code}</span>
                                 <span className="ml-1.5 text-gray-300">· {l.pack_ratio}ш/хайрцаг</span>
                               </div>
+                              {/* Бренд солих dropdown (mobile) */}
+                              {canEdit && (
+                                <div className="mt-1.5 flex items-center gap-1.5">
+                                  <span className="text-[10px] text-gray-400">Бренд:</span>
+                                  <select
+                                    value={(l.brand || "").trim()}
+                                    onChange={e => {
+                                      const picked = e.target.value;
+                                      const orig = (l.original_brand || "").trim();
+                                      const newOverride = picked === orig ? "" : picked;
+                                      updateLine(l.id, { override_brand: newOverride });
+                                    }}
+                                    className="flex-1 rounded border border-gray-200 bg-white px-2 py-1 text-[11px] outline-none focus:border-[#0071E3] focus:ring-1 focus:ring-[#0071E3]/15"
+                                  >
+                                    {!l.brand && <option value="">— Сонго —</option>}
+                                    {getBrandOptions(l, session?.brands ?? [], allBrands).map(b => (
+                                      <option key={b} value={b}>
+                                        {b}{b === l.original_brand ? " (анх)" : ""}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
                             </div>
                             {canEdit && (
                               <button

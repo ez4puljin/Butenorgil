@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card } from "../components/ui/Card";
 import {
@@ -19,6 +19,8 @@ import {
   Trash2,
   CheckSquare,
   Square,
+  ClipboardCheck,
+  Upload,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -39,15 +41,17 @@ type CountRecord = {
   check_no_partial: boolean;
   check_no_wh14_sales: boolean;
   check_balance_unchanged: boolean;
+  check_red_blocked_fixed: boolean;
 };
 
-type ChecklistKey = "check_all_synced" | "check_no_partial" | "check_no_wh14_sales" | "check_balance_unchanged";
+type ChecklistKey = "check_all_synced" | "check_no_partial" | "check_no_wh14_sales" | "check_balance_unchanged" | "check_red_blocked_fixed";
 
 const CHECKLIST_ITEMS: { key: ChecklistKey; label: string }[] = [
   { key: "check_all_synced",        label: "Бүх гүйлгээ татагдсан буюу Sync хийгдсэн" },
   { key: "check_no_partial",        label: "Бүрэн бус баримт байхгүй" },
   { key: "check_no_wh14_sales",     label: "№14 агуулахаас борлуулалт гараагүй" },
   { key: "check_balance_unchanged", label: "Өмнөх тооллогоны үлдэгдэл дээр өөрчлөлт ороогүй" },
+  { key: "check_red_blocked_fixed", label: "Улайлт болон Дарагдсан барааны орлого, зарлага байгаа эсэхийг шалгаж зассан" },
 ];
 type UserOption = {
   id: number;
@@ -80,7 +84,49 @@ export default function InventoryCount() {
   const { baseRole, role } = useAuthStore();
   const isAdmin = (baseRole ?? role) === "admin";
 
-  const [tab, setTab] = useState<"import" | "calendar">("import");
+  const [tab, setTab] = useState<"import" | "calendar" | "prev_check">("import");
+
+  // ── Өмнөх тооллогоны тохируулга шалгах state ─────────
+  const [prevAfterFile,   setPrevAfterFile]   = useState<File | null>(null);
+  const [prevCountedFile, setPrevCountedFile] = useState<File | null>(null);
+  const [prevRunning,     setPrevRunning]     = useState(false);
+  const prevAfterRef   = useRef<HTMLInputElement>(null);
+  const prevCountedRef = useRef<HTMLInputElement>(null);
+
+  async function runPrevInventoryCheck() {
+    if (!prevAfterFile || !prevCountedFile) return;
+    setPrevRunning(true);
+    try {
+      const form = new FormData();
+      form.append("after_file",   prevAfterFile);
+      form.append("counted_file", prevCountedFile);
+      const res = await api.post("/reports/run/inventory_check", form, {
+        responseType: "blob",
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      const cd = res.headers["content-disposition"] ?? "";
+      const m  = cd.match(/filename="?([^"]+)"?/);
+      const filename = m?.[1] ?? `prev_inventory_check.xlsx`;
+      const url = window.URL.createObjectURL(res.data);
+      const a   = document.createElement("a");
+      a.href = url; a.download = filename; a.click();
+      window.URL.revokeObjectURL(url);
+      setPrevAfterFile(null); setPrevCountedFile(null);
+      if (prevAfterRef.current)   prevAfterRef.current.value   = "";
+      if (prevCountedRef.current) prevCountedRef.current.value = "";
+      setFlash({ msg: "Тайлан амжилттай татагдлаа", ok: true });
+    } catch (e: any) {
+      let detail = "Тайлан гаргахад алдаа гарлаа";
+      try {
+        const txt = await e?.response?.data?.text?.();
+        const j = JSON.parse(txt ?? "");
+        detail = j?.detail ?? detail;
+      } catch { /* ignore */ }
+      setFlash({ msg: detail, ok: false });
+    } finally {
+      setPrevRunning(false);
+    }
+  }
   const [warehouses, setWarehouses] = useState<WarehouseDef[]>([]);
   const [counts, setCounts] = useState<CountRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -320,6 +366,7 @@ export default function InventoryCount() {
         {([
           { key: "import" as const, label: "Тооллого оруулах", icon: UploadCloud },
           { key: "calendar" as const, label: "Боловсруулсан тайлан", icon: CalendarIcon },
+          { key: "prev_check" as const, label: "Өмнөх тооллогоны тохируулга шалгах", icon: ClipboardCheck },
         ]).map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -824,6 +871,81 @@ export default function InventoryCount() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ═══════ TAB 3: Өмнөх тооллогоны тохируулга шалгах ═══════ */}
+      {tab === "prev_check" && (
+        <div className="mt-5 max-w-2xl">
+          <Card className="p-6">
+            <div className="mb-2 flex items-center gap-2">
+              <ClipboardCheck size={18} className="text-gray-700" />
+              <h2 className="text-lg font-semibold text-gray-900">Өмнөх тооллогоны тохируулга шалгах</h2>
+            </div>
+            <p className="mb-5 text-sm text-gray-500">
+              Тооллогоны дараах үлдэгдэл болон Тооллогоны тайланг эксэл файлаар оруул. Системээс зөрүүтэй мөрүүдийг гаргаж өгнө.
+            </p>
+
+            <div className="space-y-3">
+              {/* After-adjustment файл */}
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                  Тохируулгын дараах тайлан (I багана = тоо)
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 rounded-apple border border-dashed border-gray-200 px-3 py-2.5 text-sm text-gray-500 hover:border-gray-400 hover:bg-gray-50">
+                  <Upload size={14} className="shrink-0 text-gray-400" />
+                  <span className="truncate">
+                    {prevAfterFile ? prevAfterFile.name : "Файл сонгох..."}
+                  </span>
+                  <input
+                    ref={prevAfterRef}
+                    type="file"
+                    accept=".xlsx,.xls,.xlsm"
+                    className="hidden"
+                    onChange={(e) => setPrevAfterFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+              </div>
+
+              {/* Counted файл */}
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                  Тооллогын тайлан (D багана = тоо)
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 rounded-apple border border-dashed border-gray-200 px-3 py-2.5 text-sm text-gray-500 hover:border-gray-400 hover:bg-gray-50">
+                  <Upload size={14} className="shrink-0 text-gray-400" />
+                  <span className="truncate">
+                    {prevCountedFile ? prevCountedFile.name : "Файл сонгох..."}
+                  </span>
+                  <input
+                    ref={prevCountedRef}
+                    type="file"
+                    accept=".xlsx,.xls,.xlsm"
+                    className="hidden"
+                    onChange={(e) => setPrevCountedFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+              </div>
+
+              <button
+                onClick={runPrevInventoryCheck}
+                disabled={prevRunning || !prevAfterFile || !prevCountedFile}
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-apple bg-gray-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {prevRunning ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    Боловсруулж байна...
+                  </>
+                ) : (
+                  <>
+                    <Download size={14} />
+                    Татах
+                  </>
+                )}
+              </button>
+            </div>
+          </Card>
         </div>
       )}
 

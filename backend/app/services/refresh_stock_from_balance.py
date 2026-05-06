@@ -41,8 +41,16 @@ def refresh_stock_from_balance_report(db: Session, file_path: str) -> dict:
     """
     Үлдэгдлийн тайлан файлыг уншиж Product.stock_qty шинэчилнэ.
 
+    Логик:
+      1) Excel-д байгаа бараанууд → шинэ үлдэгдлээр шинэчилнэ
+      2) Excel-д БАЙХГҮЙ бараанууд (өмнө нь stock-той байсан) → 0 болгоно
+         (Энэ нь "үлдэгдэлгүй болсон" гэсэн утгатай)
+
+    Аюулгүй байдал: stock_map дотор хамгийн багадаа 50 код байхгүй бол
+    zero-out хийхгүй (буруу/хагас файлаас сэргийлэх).
+
     Returns:
-        {"mapped_codes": int, "updated": int}
+        {"mapped_codes": int, "updated": int, "zeroed": int}
     """
     p = str(file_path)
     engine = "xlrd" if p.lower().endswith(".xls") else "openpyxl"
@@ -75,11 +83,10 @@ def refresh_stock_from_balance_report(db: Session, file_path: str) -> dict:
         stock_map[code] = stock_map.get(code, 0.0) + qty
 
     if not stock_map:
-        return {"mapped_codes": 0, "updated": 0}
+        return {"mapped_codes": 0, "updated": 0, "zeroed": 0}
 
-    # ── DB-д тохирох бараануудыг шинэчилнэ ───────────────────────────────────
+    # ── 1) Excel-д байгаа бараануудыг шинэчилнэ ──────────────────────────────
     updated = 0
-    # Batch query: зөвхөн map-т байгаа код бүхий бараануудыг татна
     products = (
         db.query(Product)
         .filter(Product.item_code.in_(list(stock_map.keys())))
@@ -91,6 +98,22 @@ def refresh_stock_from_balance_report(db: Session, file_path: str) -> dict:
             prod.stock_qty = new_qty
             updated += 1
 
+    # ── 2) Excel-д БАЙХГҮЙ боловч stock>0 байсан бараануудыг 0 болгоно ───────
+    # Аюулгүй байдлын threshold: 50-аас дээш код map-тэй бол zero-out хийх.
+    # Энэ нь алдаатай/хагас файлаас сэргийлнэ (жишээ: эх файл нь 1000+ кодтой,
+    # хэрэв зөвхөн 5-10 код л map-т орвол файл асуудалтай байж магадгүй).
+    zeroed = 0
+    if len(stock_map) >= 50:
+        missing_products = (
+            db.query(Product)
+            .filter(Product.stock_qty != 0)
+            .filter(~Product.item_code.in_(list(stock_map.keys())))
+            .all()
+        )
+        for prod in missing_products:
+            prod.stock_qty = 0.0
+            zeroed += 1
+
     db.commit()
 
-    return {"mapped_codes": len(stock_map), "updated": updated}
+    return {"mapped_codes": len(stock_map), "updated": updated, "zeroed": zeroed}

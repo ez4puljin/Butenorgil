@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Card } from "../components/ui/Card";
 import { api } from "../lib/api";
-import { Download, FileSpreadsheet, CheckCircle2, AlertCircle, Upload } from "lucide-react";
+import { Download, FileSpreadsheet, CheckCircle2, AlertCircle } from "lucide-react";
 
 // ── Тайлангийн тодорхойлолт ───────────────────────────────────────────────────
 type ReportCard = {
@@ -56,12 +56,6 @@ const REPORT_CARDS: ReportCard[] = [
     description: "Орлого тайланаас (type=3) бараа бүрийн хамгийн сүүлийн орлогоны үнэ гаргана.",
     requiredTypes: [3],
   },
-  {
-    key: "inventory_check",
-    title: "Өмнөх тооллогоны тохируулга шалгах",
-    description: "Тооллогоны дараах үлдэгдэл болон Тооллогоны тайланг эксэл файлаар оруул.",
-    requiredTypes: [],
-  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,12 +64,6 @@ export default function Reports() {
   const [files, setFiles] = useState<any[]>([]);
   const [availableTypes, setAvailableTypes] = useState<number[]>([]);
   const [running, setRunning] = useState<string | null>(null);
-
-  // "inventory_check" тусгай карт — 2 файл upload
-  const [afterFile, setAfterFile] = useState<File | null>(null);
-  const [countedFile, setCountedFile] = useState<File | null>(null);
-  const afterRef = useRef<HTMLInputElement>(null);
-  const countedRef = useRef<HTMLInputElement>(null);
 
   const loadStatus = async () => {
     try {
@@ -109,25 +97,7 @@ export default function Reports() {
   const runReport = async (card: ReportCard) => {
     setRunning(card.key);
     try {
-      let res;
-
-      if (card.key === "inventory_check") {
-        // 2 файл multipart upload
-        const form = new FormData();
-        form.append("after_file", afterFile!);
-        form.append("counted_file", countedFile!);
-        res = await api.post(`/reports/run/inventory_check`, form, {
-          responseType: "blob",
-          headers: { "Content-Type": "multipart/form-data" },
-        });
-        // Upload-дсны дараа файл сонголтыг цэвэрлэх
-        setAfterFile(null);
-        setCountedFile(null);
-        if (afterRef.current) afterRef.current.value = "";
-        if (countedRef.current) countedRef.current.value = "";
-      } else {
-        res = await api.post(`/reports/run/${card.key}`, {}, { responseType: "blob" });
-      }
+      const res = await api.post(`/reports/run/${card.key}`, {}, { responseType: "blob" });
 
       const cd = res.headers["content-disposition"] ?? "";
       const match = cd.match(/filename="?([^"]+)"?/);
@@ -246,59 +216,11 @@ export default function Reports() {
                 </div>
               )}
 
-              {/* inventory_check: 2 файл upload */}
-              {card.key === "inventory_check" && (
-                <div className="mt-3 space-y-2">
-                  {/* After-adjustment файл */}
-                  <div>
-                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-400">
-                      Тохируулгын дараах тайлан (I багана = тоо)
-                    </div>
-                    <label className="flex cursor-pointer items-center gap-2 rounded-apple border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500 hover:border-gray-400 hover:bg-gray-50">
-                      <Upload size={12} className="shrink-0 text-gray-400" />
-                      <span className="truncate">
-                        {afterFile ? afterFile.name : "Файл сонгох..."}
-                      </span>
-                      <input
-                        ref={afterRef}
-                        type="file"
-                        accept=".xlsx,.xls,.xlsm"
-                        className="hidden"
-                        onChange={(e) => setAfterFile(e.target.files?.[0] ?? null)}
-                      />
-                    </label>
-                  </div>
-                  {/* Counted файл */}
-                  <div>
-                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-400">
-                      Тооллогын тайлан (D багана = тоо)
-                    </div>
-                    <label className="flex cursor-pointer items-center gap-2 rounded-apple border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500 hover:border-gray-400 hover:bg-gray-50">
-                      <Upload size={12} className="shrink-0 text-gray-400" />
-                      <span className="truncate">
-                        {countedFile ? countedFile.name : "Файл сонгох..."}
-                      </span>
-                      <input
-                        ref={countedRef}
-                        type="file"
-                        accept=".xlsx,.xls,.xlsm"
-                        className="hidden"
-                        onChange={(e) => setCountedFile(e.target.files?.[0] ?? null)}
-                      />
-                    </label>
-                  </div>
-                </div>
-              )}
-
               {/* Татах товч */}
               <div className="mt-auto pt-4">
                 <button
                   onClick={() => runReport(card)}
-                  disabled={
-                    isRunning ||
-                    ready === false ||
-                    (card.key === "inventory_check" && (!afterFile || !countedFile))
-                  }
+                  disabled={isRunning || ready === false}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-apple bg-gray-900 px-4 py-2 text-xs font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {isRunning ? (

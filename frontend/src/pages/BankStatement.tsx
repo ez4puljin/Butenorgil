@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  ChevronLeft, ChevronRight, Upload, Trash2, Settings,
+  ChevronLeft, ChevronRight, ChevronDown, Upload, Trash2, Settings,
   CalendarDays, X, Check, AlertCircle, RefreshCw,
   Landmark, Star, StarOff, Plus, Pencil, ArrowLeft,
-  Eye, EyeOff, CreditCard, Building2, Search,
+  Eye, EyeOff, CreditCard, Building2, Search, Download,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -22,6 +22,8 @@ interface Statement {
   total_credit: number;
   total_debit: number;
   filled_count: number;
+  erp_account_code: string;
+  is_registered: boolean;
 }
 
 interface Txn {
@@ -36,6 +38,32 @@ interface Txn {
   partner_account: string;
   custom_description: string;
   action: string;
+  export_type: string;   // "" | "kass" | "hariltsah"
+  is_settlement: boolean;
+}
+
+interface SettlementConfigT {
+  partner_name: string;
+  partner_account: string;
+  custom_description: string;
+  action: string;
+  account_code: string;
+}
+
+interface CrossAcct {
+  id: number;
+  code: string;
+  label: string;
+  sort_order: number;
+}
+
+interface FeeConfigT {
+  partner_name: string;
+  partner_account: string;
+  custom_description: string;
+  action: string;
+  export_type: string;
+  account_code: string;
 }
 
 interface AccountConfig {
@@ -44,6 +72,7 @@ interface AccountConfig {
   partner_name: string;
   bank_name: string;
   is_fee_default: boolean;
+  erp_account_code: string;
   note: string;
   sort_order: number;
 }
@@ -112,6 +141,97 @@ function EditCell({ value, placeholder, onSave }: {
   );
 }
 
+// ── CrossAccountSelect — Харьцсан данс (preset + custom) ───────────────────
+
+interface CrossPreset {
+  code: string;
+  label?: string;
+}
+
+function CrossAccountSelect({ value, onSave, presets }: {
+  value: string;
+  onSave: (v: string) => void;
+  presets: CrossPreset[];
+}) {
+  const [open, setOpen]       = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState(value);
+  const containerRef          = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setDraft(value); }, [value]);
+
+  // Гадна талаар click хийвэл хаах
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    if (open) document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  function commit(v: string) {
+    if (v !== value) onSave(v);
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { commit(draft); setEditing(false); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { commit(draft); setEditing(false); }
+          if (e.key === "Escape") { setDraft(value); setEditing(false); }
+        }}
+        placeholder="Харьцсан данс…"
+        className="w-24 rounded border border-blue-400 bg-white px-1.5 py-0.5 text-[11px] outline-none ring-2 ring-blue-200 font-mono"
+      />
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button onClick={() => setOpen(!open)}
+        className={`flex w-full min-w-[80px] items-center justify-between rounded px-1.5 py-0.5 text-[11px] font-mono hover:bg-blue-50 hover:text-blue-700 ${
+          value ? "text-gray-800" : "text-gray-300 italic"
+        }`}>
+        <span className="truncate">{value || "Харьцсан данс…"}</span>
+        <ChevronDown size={9} className="ml-1 shrink-0 text-gray-400" />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-0.5 w-44 rounded-lg border border-gray-200 bg-white shadow-lg">
+          {presets.length === 0 && (
+            <div className="px-2.5 py-1.5 text-[10px] text-gray-400 italic">
+              Тохиргоонд жагсаалт нэмнэ үү
+            </div>
+          )}
+          {presets.map((p) => (
+            <button key={p.code}
+              onMouseDown={(e) => { e.preventDefault(); commit(p.code); setOpen(false); }}
+              className={`flex w-full items-center justify-between px-2.5 py-1.5 text-left hover:bg-blue-50 ${
+                value === p.code ? "bg-blue-50 text-blue-700 font-bold" : "text-gray-700"
+              }`}>
+              <span className="text-[11px] font-mono">{p.code}</span>
+              {p.label && <span className="text-[10px] text-gray-400 truncate ml-2">{p.label}</span>}
+            </button>
+          ))}
+          <hr className="border-gray-100"/>
+          <button
+            onMouseDown={(e) => { e.preventDefault(); setEditing(true); setOpen(false); }}
+            className="flex w-full items-center gap-1 px-2.5 py-1.5 text-left text-[11px] text-gray-600 hover:bg-blue-50">
+            <Pencil size={10}/>Бусад…
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── ActionSelect ────────────────────────────────────────────────────────────
 
 function ActionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -130,6 +250,24 @@ function ActionSelect({ value, onChange }: { value: string; onChange: (v: string
   );
 }
 
+// ── ExportTypeSelect — дебит гүйлгээний экспорт төрөл ─────────────────────
+
+function ExportTypeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const cls: Record<string, string> = {
+    kass:      "bg-violet-50 text-violet-700 border-violet-200",
+    hariltsah: "bg-sky-50 text-sky-700 border-sky-200",
+    "":        "bg-gray-50 text-gray-400 border-gray-200",
+  };
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className={`rounded border px-1.5 py-0.5 text-[11px] font-medium outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer ${cls[value] ?? cls[""]}`}>
+      <option value="">—</option>
+      <option value="kass">Касс</option>
+      <option value="hariltsah">Харилцах</option>
+    </select>
+  );
+}
+
 // ── PartnerSearch — харилцагч хайх autocomplete ────────────────────────────
 
 interface Customer {
@@ -140,9 +278,10 @@ interface Customer {
   account: string;
 }
 
-function PartnerSearch({ value, onSave }: {
+function PartnerSearch({ value, onSave, onClear }: {
   value: string;
   onSave: (name: string, account: string) => void;
+  onClear?: () => void;
 }) {
   const [query,   setQuery]   = useState(value);
   const [results, setResults] = useState<Customer[]>([]);
@@ -187,6 +326,14 @@ function PartnerSearch({ value, onSave }: {
     }, 150);
   }
 
+  function clear() {
+    setQuery("");
+    setResults([]);
+    setOpen(false);
+    if (onClear) onClear();
+    else onSave("", "");
+  }
+
   return (
     <div className="relative">
       <input
@@ -195,8 +342,19 @@ function PartnerSearch({ value, onSave }: {
         onFocus={handleFocus}
         onBlur={handleBlur}
         placeholder="Хайх…"
-        className="w-full min-w-[120px] rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[11px] text-gray-800 outline-none hover:border-gray-200 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300"
+        className="w-full min-w-[120px] rounded border border-transparent bg-transparent px-1.5 py-0.5 pr-5 text-[11px] text-gray-800 outline-none hover:border-gray-200 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300"
       />
+
+      {/* Clear button — утга байгаа үед харагдана */}
+      {query && (
+        <button
+          onMouseDown={(e) => { e.preventDefault(); clear(); }}
+          title="Цэвэрлэх"
+          className="absolute right-1 top-1/2 -translate-y-1/2 grid h-4 w-4 place-items-center rounded-full text-gray-400 hover:bg-red-50 hover:text-red-500"
+        >
+          <X size={9}/>
+        </button>
+      )}
 
       {open && results.length > 0 && (
         <div className="absolute left-0 top-full z-[60] mt-0.5 max-h-60 w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
@@ -248,14 +406,152 @@ export default function BankStatementPage() {
   const fileRef  = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
+  // Export to Эрхэт
+  const [exportOpen,  setExportOpen]  = useState(false);
+  const [exportDate,  setExportDate]  = useState<string>("");
+  const [exporting,   setExporting]   = useState(false);
+
+  // Cross-account presets (Харьцсан данс жагсаалт)
+  const [crossPresets, setCrossPresets] = useState<CrossAcct[]>([]);
+  const [newCrossCode, setNewCrossCode] = useState("");
+  const [newCrossLabel, setNewCrossLabel] = useState("");
+
+  async function loadCrossPresets() {
+    try {
+      const r = await api.get("/bank-statements/config/cross-accounts");
+      setCrossPresets(r.data);
+    } catch { /* silent */ }
+  }
+  async function addCrossPreset() {
+    const c = newCrossCode.trim();
+    if (!c) return;
+    try {
+      await api.post("/bank-statements/config/cross-accounts", {
+        code: c, label: newCrossLabel.trim(), sort_order: crossPresets.length,
+      });
+      setNewCrossCode(""); setNewCrossLabel("");
+      loadCrossPresets();
+    } catch { setErr("Нэмэх амжилтгүй"); }
+  }
+  async function updateCrossPreset(id: number, patch: Partial<CrossAcct>) {
+    const target = crossPresets.find(c => c.id === id);
+    if (!target) return;
+    const merged = { ...target, ...patch };
+    try {
+      await api.patch(`/bank-statements/config/cross-accounts/${id}`, {
+        code: merged.code, label: merged.label, sort_order: merged.sort_order,
+      });
+      loadCrossPresets();
+    } catch { setErr("Хадгалах амжилтгүй"); }
+  }
+  async function deleteCrossPreset(id: number) {
+    if (!confirm("Энэ дансыг устгах уу?")) return;
+    try {
+      await api.delete(`/bank-statements/config/cross-accounts/${id}`);
+      loadCrossPresets();
+    } catch { setErr("Устгах амжилтгүй"); }
+  }
+
+  useEffect(() => { loadCrossPresets(); }, []);
+
+  // Settlement Config
+  const [settlementCfg, setSettlementCfg] = useState<SettlementConfigT>({
+    partner_name: "30000", partner_account: "", custom_description: "",
+    action: "close", account_code: "120105",
+  });
+  const [settlementLockModal, setSettlementLockModal] = useState(false);
+  const [reapplying, setReapplying] = useState(false);
+
+  // Fee Config (шимтгэл)
+  const [feeCfg, setFeeCfg] = useState<FeeConfigT>({
+    partner_name: "30000", partner_account: "703012",
+    custom_description: "Банкны шимтгэл", action: "close",
+    export_type: "hariltsah", account_code: "",
+  });
+  const [feeLockModal, setFeeLockModal] = useState(false);
+  const [feeReapplying, setFeeReapplying] = useState(false);
+
+  async function loadFeeCfg() {
+    try {
+      const r = await api.get("/bank-statements/config/fee");
+      setFeeCfg(r.data);
+    } catch { /* silent */ }
+  }
+  async function saveFeeCfg(patch: Partial<FeeConfigT>) {
+    try {
+      const r = await api.patch("/bank-statements/config/fee", patch);
+      setFeeCfg(r.data);
+    } catch { setErr("Шимтгэл тохиргоо хадгалах амжилтгүй"); }
+  }
+  async function reapplyFeeCfg() {
+    setFeeReapplying(true);
+    try {
+      const r = await api.post("/bank-statements/config/fee/reapply");
+      if (openStmt) {
+        const res = await api.get(`/bank-statements/${openStmt.id}`);
+        setTxns(res.data.transactions ?? []);
+      }
+      setErr("");
+      alert(`✓ ${r.data.fixed} шимтгэл мөр шинэчлэгдлээ`);
+    } catch { setErr("Дахин хэрэглэх амжилтгүй"); }
+    finally { setFeeReapplying(false); }
+  }
+  useEffect(() => { loadFeeCfg(); }, []);
+
+  async function loadSettlementCfg() {
+    try {
+      const r = await api.get("/bank-statements/config/settlement");
+      setSettlementCfg(r.data);
+    } catch { /* silent */ }
+  }
+  async function saveSettlementCfg(patch: Partial<SettlementConfigT>) {
+    try {
+      const r = await api.patch("/bank-statements/config/settlement", patch);
+      setSettlementCfg(r.data);
+    } catch { setErr("Settlement тохиргоо хадгалах амжилтгүй"); }
+  }
+  async function reapplySettlementCfg() {
+    setReapplying(true);
+    try {
+      const r = await api.post("/bank-statements/config/settlement/reapply");
+      // Хуулга нээлттэй бол гүйлгээг дахин ачаална
+      if (openStmt) {
+        const res = await api.get(`/bank-statements/${openStmt.id}`);
+        setTxns(res.data.transactions ?? []);
+      }
+      setErr("");
+      alert(`✓ ${r.data.fixed} SETTLEMENT мөр шинэчлэгдлээ`);
+    } catch { setErr("Дахин хэрэглэх амжилтгүй"); }
+    finally { setReapplying(false); }
+  }
+
+  useEffect(() => { loadSettlementCfg(); }, []);
+
+  // Bulk edit
+  const [selectedTxns,  setSelectedTxns]  = useState<Set<number>>(new Set());
+  const [bulkForm,      setBulkForm]      = useState({
+    partner_name: "", partner_account: "", custom_description: "",
+    action: null as string | null,       // null = өөрчлөхгүй
+    export_type: null as string | null,  // null = өөрчлөхгүй
+  });
+  const [bulkApplying, setBulkApplying] = useState(false);
+
   // Settings
   const [accounts,    setAccounts]    = useState<AccountConfig[]>([]);
   const [editAcct,    setEditAcct]    = useState<AccountConfig | null>(null); // null=new, obj=edit
   const [acctFormOpen, setAcctFormOpen] = useState(false);
   const [acctForm, setAcctForm] = useState<Omit<AccountConfig, "id">>({
     account_number: "", partner_name: "", bank_name: "Хаанбанк",
-    is_fee_default: false, note: "", sort_order: 0,
+    is_fee_default: false, erp_account_code: "", note: "", sort_order: 0,
   });
+
+  // Fee export modal
+  const [feeExportOpen,    setFeeExportOpen]    = useState(false);
+  const [feeExportFrom,    setFeeExportFrom]    = useState("");
+  const [feeExportTo,      setFeeExportTo]      = useState("");
+  const [feeExportPartner, setFeeExportPartner] = useState("30000");
+  const [feeExportAccount, setFeeExportAccount] = useState("703012");
+  const [feeExporting,     setFeeExporting]     = useState(false);
 
   const [err, setErr] = useState("");
 
@@ -360,6 +656,122 @@ export default function BankStatementPage() {
     } catch { setErr("Устгах амжилтгүй"); }
   }
 
+  // ── Export to Эрхэт ───────────────────────────────────────────────
+
+  function openExportModal() {
+    // Хуулгын date_from-оор анхдагч огноог тавина
+    setExportDate(openStmt?.date_from?.slice(0, 10) ?? todayStr());
+    setExportOpen(true);
+  }
+
+  async function exportErkhet() {
+    if (!openStmt) return;
+    setExporting(true);
+    try {
+      const params: Record<string, string> = {};
+      if (exportDate) params.export_date = exportDate;
+      const r = await api.get(`/bank-statements/${openStmt.id}/export`, {
+        params,
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(new Blob([r.data], { type: "application/zip" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Эрхэт_${openStmt.account_number}_${exportDate || "export"}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setExportOpen(false);
+    } catch { setErr("Экспортлох амжилтгүй"); }
+    finally { setExporting(false); }
+  }
+
+  // ── Fee export ─────────────────────────────────────────────────────
+
+  async function exportFees() {
+    setFeeExporting(true);
+    try {
+      const params: Record<string, string> = {
+        fee_partner: feeExportPartner,
+        fee_account: feeExportAccount,
+      };
+      if (feeExportFrom) params.date_from = feeExportFrom;
+      if (feeExportTo)   params.date_to   = feeExportTo;
+      const r = await api.get("/bank-statements/export/fees", {
+        params,
+        responseType: "blob",
+      });
+      const from = feeExportFrom || "all";
+      const to   = feeExportTo   ? `_${feeExportTo}` : "";
+      const url  = URL.createObjectURL(new Blob([r.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Шимтгэл_${from}${to}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setFeeExportOpen(false);
+    } catch (e: any) {
+      // Blob response-ийн доторх алдааг текст болгож харуулна
+      let detail = "Шимтгэл экспортлох амжилтгүй";
+      try {
+        const blob = e?.response?.data;
+        if (blob instanceof Blob) {
+          const txt = await blob.text();
+          const j = JSON.parse(txt);
+          if (j?.detail) detail = `Шимтгэл экспорт: ${j.detail}`;
+        } else if (e?.response?.data?.detail) {
+          detail = `Шимтгэл экспорт: ${e.response.data.detail}`;
+        } else if (e?.message) {
+          detail = `Шимтгэл экспорт: ${e.message}`;
+        }
+      } catch { /* ignore parse errors */ }
+      setErr(detail);
+    }
+    finally { setFeeExporting(false); }
+  }
+
+  // ── Bulk edit ──────────────────────────────────────────────────────
+
+  function toggleSelect(id: number) {
+    setSelectedTxns(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function selectAllVisible() {
+    setSelectedTxns(new Set(visibleTxns.map(t => t.id)));
+  }
+  function clearSelection() { setSelectedTxns(new Set()); }
+
+  async function applyBulkEdit() {
+    if (selectedTxns.size === 0 || !openStmt) return;
+    const patch: Record<string, string> = {};
+    if (bulkForm.partner_name.trim())       patch.partner_name       = bulkForm.partner_name.trim();
+    if (bulkForm.partner_account.trim())    patch.partner_account    = bulkForm.partner_account.trim();
+    if (bulkForm.custom_description.trim()) patch.custom_description = bulkForm.custom_description.trim();
+    if (bulkForm.action      !== null)      patch.action             = bulkForm.action;
+    if (bulkForm.export_type !== null)      patch.export_type        = bulkForm.export_type;
+    if (Object.keys(patch).length === 0) return;
+    setBulkApplying(true);
+    try {
+      await Promise.all(
+        [...selectedTxns].map(id =>
+          api.patch(`/bank-statements/${openStmt.id}/transactions/${id}`, patch)
+        )
+      );
+      setTxns(prev => prev.map(t => selectedTxns.has(t.id) ? { ...t, ...patch } : t));
+      clearSelection();
+      setBulkForm({ partner_name: "", partner_account: "", custom_description: "", action: null, export_type: null });
+    } catch { setErr("Bulk засах амжилтгүй"); }
+    finally { setBulkApplying(false); }
+  }
+
   // ── Settings ───────────────────────────────────────────────────────
 
   async function loadAccounts() {
@@ -368,16 +780,27 @@ export default function BankStatementPage() {
       setAccounts(r.data);
     } catch { /* silent */ }
   }
+  // Хуулга солигдоход болон fee toggle хийгдэхэд сонголтыг цэвэрлэнэ
+  useEffect(() => {
+    setSelectedTxns(new Set());
+    setBulkForm({ partner_name: "", partner_account: "", custom_description: "", action: null, export_type: null });
+  }, [openStmt?.id, showFees]);
+
   useEffect(() => { if (tab === "settings") loadAccounts(); }, [tab]);
 
   function openAcctForm(acct?: AccountConfig) {
     if (acct) {
       setEditAcct(acct);
-      setAcctForm({ account_number: acct.account_number, partner_name: acct.partner_name,
-        bank_name: acct.bank_name, is_fee_default: acct.is_fee_default, note: acct.note, sort_order: acct.sort_order });
+      setAcctForm({
+        account_number: acct.account_number, partner_name: acct.partner_name,
+        bank_name: acct.bank_name, is_fee_default: acct.is_fee_default,
+        erp_account_code: acct.erp_account_code || "",
+        note: acct.note, sort_order: acct.sort_order,
+      });
     } else {
       setEditAcct(null);
-      setAcctForm({ account_number: "", partner_name: "", bank_name: "Хаанбанк", is_fee_default: false, note: "", sort_order: 0 });
+      setAcctForm({ account_number: "", partner_name: "", bank_name: "Хаанбанк",
+        is_fee_default: false, erp_account_code: "", note: "", sort_order: 0 });
     }
     setAcctFormOpen(true);
   }
@@ -438,17 +861,9 @@ export default function BankStatementPage() {
           </button>
         ))}
 
-        {/* Upload button */}
-        {tab === "calendar" && (
-          <div className="ml-auto pb-1.5">
-            <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple className="hidden"
-              onChange={e => uploadFiles(e.target.files)} />
-            <button onClick={() => fileRef.current?.click()} disabled={uploading}
-              className="flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-60">
-              {uploading ? <><RefreshCw size={11} className="animate-spin"/>Оруулж байна…</> : <><Upload size={11}/>Файл оруулах</>}
-            </button>
-          </div>
-        )}
+        {/* Hidden file input (always in DOM) */}
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple className="hidden"
+          onChange={e => uploadFiles(e.target.files)} />
       </div>
 
       {/* Error banner */}
@@ -542,13 +957,27 @@ export default function BankStatementPage() {
             ) : (
               <>
                 {/* Day header */}
-                <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-4 py-3">
-                  <div className="flex-1">
+                <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2.5">
+                  <div className="flex-1 min-w-0">
                     <p className="text-[13px] font-bold text-gray-900">
                       {selectedDate.slice(0, 10)}
                     </p>
                     <p className="text-[11px] text-gray-400">{dayStmts.length} хуулга</p>
                   </div>
+                  {/* Fee export */}
+                  <button onClick={() => {
+                    setFeeExportFrom(selectedDate);
+                    setFeeExportTo(selectedDate);
+                    setFeeExportOpen(true);
+                  }}
+                    className="flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors shrink-0">
+                    <Download size={11}/>Шимтгэл
+                  </button>
+                  {/* Upload */}
+                  <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                    className="flex items-center gap-1 rounded-xl bg-[#0071E3] px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:opacity-60 shrink-0">
+                    {uploading ? <><RefreshCw size={11} className="animate-spin"/>Оруулж…</> : <><Upload size={11}/>Файл</>}
+                  </button>
                 </div>
 
                 {/* Statement cards */}
@@ -586,6 +1015,24 @@ export default function BankStatementPage() {
                           <span className={`text-[12px] font-bold ${isOpen ? "text-[#0071E3]" : "text-gray-800"}`}>
                             {s.account_number}
                           </span>
+                          {s.is_registered ? (
+                            s.erp_account_code ? (
+                              <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700"
+                                title={`ERP данс код: ${s.erp_account_code}`}>
+                                {s.erp_account_code}
+                              </span>
+                            ) : (
+                              <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700"
+                                title="Тохиргоонд бүртгэлтэй ч ERP код хоосон">
+                                ERP код ?
+                              </span>
+                            )
+                          ) : (
+                            <span className="flex items-center gap-0.5 rounded-md bg-rose-100 px-1.5 py-0.5 text-[9px] font-semibold text-rose-700"
+                              title="Энэ дансыг Тохиргоо tab дотор бүртгэнэ үү">
+                              <AlertCircle size={9}/>Бүртгэлгүй
+                            </span>
+                          )}
                           <span className="ml-auto text-[10px] text-gray-400 font-mono">{s.currency}</span>
                         </div>
                         <div className="flex gap-3 text-[11px] mb-2">
@@ -616,9 +1063,25 @@ export default function BankStatementPage() {
                   className="grid h-7 w-7 place-items-center rounded-lg text-gray-400 hover:bg-gray-100">
                   <ArrowLeft size={14}/>
                 </button>
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
                   <span className="text-[13px] font-bold text-gray-900">{openStmt.account_number}</span>
-                  <span className="ml-2 text-[11px] text-gray-400">{openStmt.date_from?.slice(0,10)} – {openStmt.date_to?.slice(0,10)}</span>
+                  {openStmt.is_registered ? (
+                    openStmt.erp_account_code ? (
+                      <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700"
+                        title="ERP данс код">
+                        {openStmt.erp_account_code}
+                      </span>
+                    ) : (
+                      <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">
+                        ERP код ?
+                      </span>
+                    )
+                  ) : (
+                    <span className="flex items-center gap-0.5 rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
+                      <AlertCircle size={10}/>Бүртгэлгүй данс
+                    </span>
+                  )}
+                  <span className="text-[11px] text-gray-400">{openStmt.date_from?.slice(0,10)} – {openStmt.date_to?.slice(0,10)}</span>
                 </div>
                 {/* Stats */}
                 <div className="hidden sm:flex items-center gap-4 text-[12px]">
@@ -642,7 +1105,73 @@ export default function BankStatementPage() {
                   }`}>
                   {showFees ? <><Eye size={11}/>Зөвхөн шимтгэл харуулах</> : <><EyeOff size={11}/>Шимтгэл нуусан</>}
                 </button>
+                {/* Export button */}
+                <button onClick={openExportModal}
+                  className="flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors">
+                  <Download size={11}/>Эрхэт экспорт
+                </button>
               </div>
+
+              {/* ── Bulk edit bar ─────────────────────────────────── */}
+              {selectedTxns.size > 0 && (
+                <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-blue-100 bg-blue-50 px-3 py-1.5">
+                  {/* Count badge + clear */}
+                  <span className="flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-[11px] font-bold text-white shrink-0">
+                    <Check size={9}/>{selectedTxns.size} мөр
+                  </span>
+                  <button onClick={clearSelection} title="Сонголтыг цуцлах"
+                    className="grid h-5 w-5 place-items-center rounded text-blue-500 hover:bg-blue-100">
+                    <X size={11}/>
+                  </button>
+                  <div className="h-4 w-px bg-blue-200 mx-0.5 shrink-0"/>
+
+                  {/* Partner name */}
+                  <input value={bulkForm.partner_name}
+                    onChange={e => setBulkForm(f => ({ ...f, partner_name: e.target.value }))}
+                    placeholder="Харилцагч…"
+                    className="w-36 rounded border border-blue-200 bg-white px-2 py-0.5 text-[11px] outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 placeholder:text-gray-300"/>
+
+                  {/* Partner account (Харьцсан данс) */}
+                  <input value={bulkForm.partner_account}
+                    onChange={e => setBulkForm(f => ({ ...f, partner_account: e.target.value }))}
+                    placeholder="Харьцсан данс…"
+                    className="w-32 rounded border border-blue-200 bg-white px-2 py-0.5 text-[11px] font-mono outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 placeholder:text-gray-300"/>
+
+                  {/* Description */}
+                  <input value={bulkForm.custom_description}
+                    onChange={e => setBulkForm(f => ({ ...f, custom_description: e.target.value }))}
+                    placeholder="Гүйлгээний утга…"
+                    className="w-40 rounded border border-blue-200 bg-white px-2 py-0.5 text-[11px] outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 placeholder:text-gray-300"/>
+
+                  {/* Action select */}
+                  <select value={bulkForm.action ?? "_skip"}
+                    onChange={e => setBulkForm(f => ({ ...f, action: e.target.value === "_skip" ? null : e.target.value }))}
+                    className="rounded border border-blue-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-blue-200 cursor-pointer text-gray-700">
+                    <option value="_skip">Үйлдэл…</option>
+                    <option value="">— (цэвэрлэх)</option>
+                    <option value="close">Хаах</option>
+                    <option value="create">Үүсгэх</option>
+                  </select>
+
+                  {/* Export type select */}
+                  <select value={bulkForm.export_type ?? "_skip"}
+                    onChange={e => setBulkForm(f => ({ ...f, export_type: e.target.value === "_skip" ? null : e.target.value }))}
+                    className="rounded border border-blue-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-blue-200 cursor-pointer text-gray-700">
+                    <option value="_skip">Экспорт…</option>
+                    <option value="">— (цэвэрлэх)</option>
+                    <option value="kass">Касс</option>
+                    <option value="hariltsah">Харилцах</option>
+                  </select>
+
+                  {/* Apply */}
+                  <button onClick={applyBulkEdit} disabled={bulkApplying}
+                    className="flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-0.5 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:opacity-60 shrink-0">
+                    {bulkApplying
+                      ? <><RefreshCw size={10} className="animate-spin"/>Хадгалж байна…</>
+                      : <><Check size={10}/>Хэрэглэх</>}
+                  </button>
+                </div>
+              )}
 
               {/* Table */}
               {loadingTxn ? (
@@ -651,30 +1180,50 @@ export default function BankStatementPage() {
                 </div>
               ) : (
                 <div className="flex-1 overflow-auto">
-                  <table className="w-full min-w-[860px] border-collapse text-[12px]">
+                  <table className="w-full min-w-[1000px] border-collapse text-[12px]">
                     <thead className="sticky top-0 z-10 bg-gray-50">
                       <tr>
+                        {/* Select-all checkbox */}
+                        <th className="w-8 border-b border-gray-100 px-2 py-2 text-center">
+                          <input type="checkbox"
+                            checked={visibleTxns.length > 0 && visibleTxns.every(t => selectedTxns.has(t.id))}
+                            ref={el => { if (el) el.indeterminate = selectedTxns.size > 0 && !visibleTxns.every(t => selectedTxns.has(t.id)); }}
+                            onChange={e => e.target.checked ? selectAllVisible() : clearSelection()}
+                            className="cursor-pointer accent-blue-600"/>
+                        </th>
                         <th className="w-7 border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-gray-400">#</th>
                         <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-gray-500 whitespace-nowrap">Огноо</th>
                         <th className="border-b border-gray-100 px-2 py-2 text-right text-[11px] font-semibold text-green-600 whitespace-nowrap">Кредит ₮</th>
                         <th className="border-b border-gray-100 px-2 py-2 text-right text-[11px] font-semibold text-red-500 whitespace-nowrap">Дебит ₮</th>
                         <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-gray-500">Банкны утга</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-gray-500 whitespace-nowrap">Харьцсан данс</th>
+                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-gray-500 whitespace-nowrap">Банкны харьцсан данс</th>
                         <th className="border-b border-l border-gray-200 px-2 py-2 text-left text-[11px] font-semibold text-blue-600 whitespace-nowrap">Харилцагч</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-blue-600 whitespace-nowrap">Данс</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-blue-600">Тайлбар</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-blue-600">Үйлдэл</th>
+                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-blue-600 whitespace-nowrap">Харьцсан данс</th>
+                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-blue-600 whitespace-nowrap">Гүйлгээний утга</th>
+                        <th className="border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-blue-600 whitespace-nowrap">Үйлдэл</th>
+                        <th className="border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-emerald-600 whitespace-nowrap">Экспорт</th>
+                        <th className="border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-emerald-600 whitespace-nowrap">Данс</th>
                       </tr>
                     </thead>
                     <tbody>
                       {visibleTxns.map((t, i) => {
-                        const rowBg = t.is_fee
-                          ? "bg-gray-50/40 opacity-55"
-                          : t.credit > 0
-                            ? "hover:bg-green-50/30"
-                            : "hover:bg-red-50/20";
+                        const isSelected = selectedTxns.has(t.id);
+                        const rowBg = isSelected
+                          ? "bg-blue-50/70"
+                          : t.is_fee
+                            ? "bg-gray-50/40 opacity-55"
+                            : t.credit > 0
+                              ? "hover:bg-green-50/30"
+                              : "hover:bg-red-50/20";
                         return (
                           <tr key={t.id} className={`border-b border-gray-50 transition-colors ${rowBg}`}>
+                            {/* Row checkbox */}
+                            <td className="px-2 py-1.5 text-center">
+                              <input type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleSelect(t.id)}
+                                className="cursor-pointer accent-blue-600"/>
+                            </td>
                             <td className="px-2 py-1.5 text-center text-[10px] text-gray-300">{i + 1}</td>
                             <td className="px-2 py-1.5 whitespace-nowrap text-[11px] text-gray-500">{fmtDate(t.txn_date)}</td>
                             <td className="px-2 py-1.5 text-right font-medium tabular-nums">
@@ -688,25 +1237,91 @@ export default function BankStatementPage() {
                             </td>
                             <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px] text-gray-500">{t.bank_counterpart || "—"}</td>
                             <td className="border-l border-gray-200 px-1 py-1.5 min-w-[140px]">
-                              <PartnerSearch
-                                value={t.partner_name}
-                                onSave={(name, account) => {
-                                  const patch: Partial<Txn> = { partner_name: name };
-                                  if (account && !t.partner_account) patch.partner_account = account;
-                                  updateTxn(t.id, patch);
-                                }}
-                              />
+                              {t.is_settlement ? (
+                                <div onClick={() => setSettlementLockModal(true)}
+                                  className="cursor-not-allowed rounded px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-amber-50"
+                                  title="Settlement тохиргооноос засна уу">
+                                  🔒 {t.partner_name || "—"}
+                                </div>
+                              ) : t.is_fee ? (
+                                <div onClick={() => setFeeLockModal(true)}
+                                  className="cursor-not-allowed rounded px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-amber-50"
+                                  title="Шимтгэл тохиргооноос засна уу">
+                                  🔒 {t.partner_name || "—"}
+                                </div>
+                              ) : (
+                                <PartnerSearch
+                                  value={t.partner_name}
+                                  onSave={(name, account) => {
+                                    const patch: Partial<Txn> = { partner_name: name };
+                                    if (account && !t.partner_account) patch.partner_account = account;
+                                    updateTxn(t.id, patch);
+                                  }}
+                                  onClear={() => updateTxn(t.id, { partner_name: "", partner_account: "" })}
+                                />
+                              )}
                             </td>
-                            <td className="px-1 py-1.5 min-w-[90px]">
-                              <EditCell value={t.partner_account} placeholder="Данс…"
-                                onSave={v => updateTxn(t.id, { partner_account: v })}/>
+                            <td className="px-1 py-1.5 min-w-[110px]">
+                              {(t.is_settlement || t.is_fee) ? (
+                                <div onClick={() => (t.is_settlement ? setSettlementLockModal(true) : setFeeLockModal(true))}
+                                  className="cursor-not-allowed rounded px-1.5 py-0.5 text-[11px] font-mono text-gray-700 hover:bg-amber-50">
+                                  {t.partner_account || "—"}
+                                </div>
+                              ) : (
+                                <CrossAccountSelect value={t.partner_account}
+                                  presets={crossPresets}
+                                  onSave={v => updateTxn(t.id, { partner_account: v })}/>
+                              )}
                             </td>
                             <td className="px-1 py-1.5 min-w-[130px]">
-                              <EditCell value={t.custom_description} placeholder="Тайлбар…"
-                                onSave={v => updateTxn(t.id, { custom_description: v })}/>
+                              {(t.is_settlement || t.is_fee) ? (
+                                <div onClick={() => (t.is_settlement ? setSettlementLockModal(true) : setFeeLockModal(true))}
+                                  className="cursor-not-allowed rounded px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-amber-50">
+                                  {t.custom_description || <span className="italic text-gray-300">—</span>}
+                                </div>
+                              ) : (
+                                <EditCell value={t.custom_description} placeholder="Гүйлгээний утга…"
+                                  onSave={v => updateTxn(t.id, { custom_description: v })}/>
+                              )}
                             </td>
                             <td className="px-2 py-1.5 text-center">
-                              <ActionSelect value={t.action} onChange={v => updateTxn(t.id, { action: v })}/>
+                              {t.is_settlement ? (
+                                <span onClick={() => setSettlementLockModal(true)}
+                                  className="cursor-not-allowed rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 hover:bg-amber-50">
+                                  Хаах
+                                </span>
+                              ) : t.is_fee ? (
+                                <span onClick={() => setFeeLockModal(true)}
+                                  className="cursor-not-allowed rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 hover:bg-amber-50">
+                                  {t.action === "create" ? "Үүсгэх" : "Хаах"}
+                                </span>
+                              ) : (
+                                <ActionSelect value={t.action} onChange={v => updateTxn(t.id, { action: v })}/>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 text-center">
+                              {t.is_fee ? (
+                                <span onClick={() => setFeeLockModal(true)}
+                                  className="cursor-not-allowed rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700 hover:bg-amber-200">
+                                  Шимтгэл
+                                </span>
+                              ) : t.debit > 0
+                                ? <ExportTypeSelect value={t.export_type} onChange={v => updateTxn(t.id, { export_type: v })}/>
+                                : <span className="rounded-full bg-green-100 px-1.5 py-0.5 text-[9px] font-semibold text-green-700">Авлага</span>
+                              }
+                            </td>
+                            <td className="px-2 py-1.5 text-center whitespace-nowrap">
+                              {t.credit > 0 && !t.is_fee ? (
+                                <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700">
+                                  120105
+                                </span>
+                              ) : (t.debit > 0 || t.is_fee) && openStmt?.erp_account_code ? (
+                                <span className="rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-sky-700">
+                                  {openStmt.erp_account_code}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-gray-300">—</span>
+                              )}
                             </td>
                           </tr>
                         );
@@ -729,7 +1344,218 @@ export default function BankStatementPage() {
       {/* ══ SETTINGS TAB ════════════════════════════════════════════ */}
       {tab === "settings" && (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex-1 overflow-y-auto p-4 space-y-6">
+
+            {/* ── Settlement хаах тохиргоо ─────────────────────────── */}
+            <div className="rounded-2xl border border-amber-100 bg-amber-50/50 p-4">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="flex items-center gap-2 text-[14px] font-bold text-gray-900">
+                    🔒 Settlement хаах тохиргоо
+                  </h2>
+                  <p className="mt-0.5 text-[11px] text-gray-500">
+                    POS гүйлгээ (SETTLEMENT) илрүүлбэл доорх утгуудаар автомат бөглөгдөнө. Гүйлгээ дээр өөрчлөх боломжгүй болно.
+                  </p>
+                </div>
+                <button onClick={reapplySettlementCfg} disabled={reapplying}
+                  className="flex shrink-0 items-center gap-1 rounded-xl border border-amber-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-60">
+                  {reapplying ? <><RefreshCw size={11} className="animate-spin"/>Дахин…</> : <><RefreshCw size={11}/>Бүх SETTLEMENT-д дахин хэрэглэх</>}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {/* Партнер */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Харилцагч</label>
+                  <input value={settlementCfg.partner_name}
+                    onChange={e => setSettlementCfg(c => ({...c, partner_name: e.target.value}))}
+                    onBlur={e => saveSettlementCfg({ partner_name: e.target.value })}
+                    placeholder="30000"
+                    className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                </div>
+                {/* Харьцсан данс */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">
+                    Харьцсан данс <span className="text-[10px] font-normal text-gray-400">(хоосон бол банкны ERP код)</span>
+                  </label>
+                  <input value={settlementCfg.partner_account}
+                    onChange={e => setSettlementCfg(c => ({...c, partner_account: e.target.value}))}
+                    onBlur={e => saveSettlementCfg({ partner_account: e.target.value })}
+                    placeholder="Auto: банкны ERP код"
+                    className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-[13px] font-mono outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                </div>
+                {/* Данс (account_code) */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Данс (Дансны код)</label>
+                  <input value={settlementCfg.account_code}
+                    onChange={e => setSettlementCfg(c => ({...c, account_code: e.target.value}))}
+                    onBlur={e => saveSettlementCfg({ account_code: e.target.value })}
+                    placeholder="120105"
+                    className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-[13px] font-mono outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                </div>
+                {/* Гүйлгээний утга */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">
+                    Гүйлгээний утга <span className="text-[10px] font-normal text-gray-400">(араас банкны утга залгагдана)</span>
+                  </label>
+                  <input value={settlementCfg.custom_description}
+                    onChange={e => setSettlementCfg(c => ({...c, custom_description: e.target.value}))}
+                    onBlur={e => saveSettlementCfg({ custom_description: e.target.value })}
+                    placeholder="Жишээ: Пос орлого"
+                    className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                  <p className="mt-1 text-[10px] text-gray-400">
+                    Үр дүн: <span className="font-mono">"{(settlementCfg.custom_description || "").trim() ? `${settlementCfg.custom_description.trim()} ` : ""}29/04/2026 SETTLEMENT - ORGIL BUUNII TUV"</span>
+                  </p>
+                </div>
+                {/* Үйлдэл */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Үйлдэл</label>
+                  <select value={settlementCfg.action}
+                    onChange={e => { setSettlementCfg(c => ({...c, action: e.target.value})); saveSettlementCfg({ action: e.target.value }); }}
+                    className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100">
+                    <option value="">—</option>
+                    <option value="close">Хаах</option>
+                    <option value="create">Үүсгэх</option>
+                  </select>
+                </div>
+                {/* Экспорт (info only) */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Экспорт</label>
+                  <div className="rounded-lg border border-amber-200 bg-emerald-50 px-3 py-2 text-[13px] font-medium text-emerald-700">
+                    Авлага (auto)
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Шимтгэл хаах тохиргоо ─────────────────────────────── */}
+            <div className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="flex items-center gap-2 text-[14px] font-bold text-gray-900">
+                    🔒 Шимтгэл хаах тохиргоо
+                  </h2>
+                  <p className="mt-0.5 text-[11px] text-gray-500">
+                    Банкны шимтгэл (хураамж, fee) илрүүлбэл доорх утгуудаар автомат бөглөгдөнө.
+                  </p>
+                </div>
+                <button onClick={reapplyFeeCfg} disabled={feeReapplying}
+                  className="flex shrink-0 items-center gap-1 rounded-xl border border-orange-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-60">
+                  {feeReapplying ? <><RefreshCw size={11} className="animate-spin"/>Дахин…</> : <><RefreshCw size={11}/>Бүх шимтгэлд дахин хэрэглэх</>}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {/* Партнер */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Харилцагч</label>
+                  <input value={feeCfg.partner_name}
+                    onChange={e => setFeeCfg(c => ({...c, partner_name: e.target.value}))}
+                    onBlur={e => saveFeeCfg({ partner_name: e.target.value })}
+                    placeholder="30000"
+                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"/>
+                </div>
+                {/* Харьцсан данс */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Харьцсан данс</label>
+                  <input value={feeCfg.partner_account}
+                    onChange={e => setFeeCfg(c => ({...c, partner_account: e.target.value}))}
+                    onBlur={e => saveFeeCfg({ partner_account: e.target.value })}
+                    placeholder="703012"
+                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-[13px] font-mono outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"/>
+                </div>
+                {/* Гүйлгээний утга */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Гүйлгээний утга</label>
+                  <input value={feeCfg.custom_description}
+                    onChange={e => setFeeCfg(c => ({...c, custom_description: e.target.value}))}
+                    onBlur={e => saveFeeCfg({ custom_description: e.target.value })}
+                    placeholder="Банкны шимтгэл"
+                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"/>
+                </div>
+                {/* Үйлдэл */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Үйлдэл</label>
+                  <select value={feeCfg.action}
+                    onChange={e => { setFeeCfg(c => ({...c, action: e.target.value})); saveFeeCfg({ action: e.target.value }); }}
+                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100">
+                    <option value="">—</option>
+                    <option value="close">Хаах</option>
+                    <option value="create">Үүсгэх</option>
+                  </select>
+                </div>
+                {/* Экспорт */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Экспорт</label>
+                  <select value={feeCfg.export_type}
+                    onChange={e => { setFeeCfg(c => ({...c, export_type: e.target.value})); saveFeeCfg({ export_type: e.target.value }); }}
+                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100">
+                    <option value="hariltsah">Харилцах</option>
+                    <option value="kass">Касс</option>
+                  </select>
+                </div>
+                {/* Данс (account_code) — info only, auto bank ERP */}
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Данс</label>
+                  <div className="rounded-lg border border-orange-200 bg-sky-50 px-3 py-2 text-[13px] font-mono text-sky-700">
+                    Auto: банкны ERP код
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Харьцсан дансны жагсаалт (preset CRUD) ───────────── */}
+            <div className="rounded-2xl border border-blue-100 bg-blue-50/30 p-4">
+              <div className="mb-3">
+                <h2 className="text-[14px] font-bold text-gray-900">📋 Харьцсан дансны жагсаалт</h2>
+                <p className="mt-0.5 text-[11px] text-gray-500">
+                  Гүйлгээний "Харьцсан данс" талбарт dropdown-ээр харагдана
+                </p>
+              </div>
+
+              {/* Existing list */}
+              <div className="space-y-1.5 mb-3">
+                {crossPresets.length === 0 && (
+                  <div className="text-[11px] text-gray-400 italic py-2">Жагсаалт хоосон</div>
+                )}
+                {crossPresets.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2 rounded-lg bg-white border border-blue-100 px-2 py-1.5">
+                    <input value={p.code}
+                      onChange={e => setCrossPresets(cs => cs.map(c => c.id === p.id ? { ...c, code: e.target.value } : c))}
+                      onBlur={e => updateCrossPreset(p.id, { code: e.target.value })}
+                      className="w-24 rounded border border-gray-200 px-2 py-1 text-[12px] font-mono outline-none focus:border-blue-400"/>
+                    <input value={p.label}
+                      onChange={e => setCrossPresets(cs => cs.map(c => c.id === p.id ? { ...c, label: e.target.value } : c))}
+                      onBlur={e => updateCrossPreset(p.id, { label: e.target.value })}
+                      placeholder="Тайлбар…"
+                      className="flex-1 rounded border border-gray-200 px-2 py-1 text-[12px] outline-none focus:border-blue-400"/>
+                    <button onClick={() => deleteCrossPreset(p.id)}
+                      className="grid h-7 w-7 place-items-center rounded-lg text-gray-400 hover:bg-red-50 hover:text-red-500"
+                      title="Устгах">
+                      <Trash2 size={12}/>
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add new */}
+              <div className="flex items-center gap-2 rounded-lg bg-white border border-dashed border-blue-200 px-2 py-1.5">
+                <input value={newCrossCode}
+                  onChange={e => setNewCrossCode(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") addCrossPreset(); }}
+                  placeholder="Код"
+                  className="w-24 rounded border border-gray-200 px-2 py-1 text-[12px] font-mono outline-none focus:border-blue-400"/>
+                <input value={newCrossLabel}
+                  onChange={e => setNewCrossLabel(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") addCrossPreset(); }}
+                  placeholder="Тайлбар (заавал биш)"
+                  className="flex-1 rounded border border-gray-200 px-2 py-1 text-[12px] outline-none focus:border-blue-400"/>
+                <button onClick={addCrossPreset} disabled={!newCrossCode.trim()}
+                  className="flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:opacity-40">
+                  <Plus size={11}/>Нэмэх
+                </button>
+              </div>
+            </div>
 
             {/* Header */}
             <div className="mb-4 flex items-center justify-between">
@@ -770,7 +1596,14 @@ export default function BankStatementPage() {
                       )}
                     </div>
                     <p className="text-[12px] text-gray-500 font-mono">{a.account_number || "—"}</p>
-                    <p className="text-[11px] text-gray-400">{a.bank_name}{a.note ? ` · ${a.note}` : ""}</p>
+                    <p className="text-[11px] text-gray-400">
+                      {a.bank_name}{a.note ? ` · ${a.note}` : ""}
+                      {a.erp_account_code && (
+                        <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 font-mono">
+                          ERP: {a.erp_account_code}
+                        </span>
+                      )}
+                    </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <button onClick={() => openAcctForm(a)}
@@ -784,6 +1617,220 @@ export default function BankStatementPage() {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Шимтгэл export modal ──────────────────────────────────── */}
+      {feeExportOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
+          <div className="w-full max-w-sm rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-[15px] font-bold text-gray-900">Банкны шимтгэл экспорт</h3>
+                <p className="mt-0.5 text-[11px] text-gray-400">
+                  Бүх хуулгын шимтгэлийг нэгтгэн Эрхэт импорт Excel болгоно
+                </p>
+              </div>
+              <button onClick={() => setFeeExportOpen(false)}
+                className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100">
+                <X size={16}/>
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {/* Date range */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Эхлэх огноо</label>
+                  <input type="date" value={feeExportFrom}
+                    onChange={e => setFeeExportFrom(e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-[12px] outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">Дуусах огноо</label>
+                  <input type="date" value={feeExportTo}
+                    onChange={e => setFeeExportTo(e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-[12px] outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-400 -mt-1">Хоосон орхивол бүх хуулга хамрагдана</p>
+
+              {/* ERP codes */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">
+                    Харилцагч код
+                  </label>
+                  <input value={feeExportPartner}
+                    onChange={e => setFeeExportPartner(e.target.value)}
+                    placeholder="30000"
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-[12px] font-mono outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                  <p className="mt-0.5 text-[10px] text-gray-400">Эрхэт дахь харилцагч</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold text-gray-500">
+                    Харьцсан данс
+                  </label>
+                  <input value={feeExportAccount}
+                    onChange={e => setFeeExportAccount(e.target.value)}
+                    placeholder="703012"
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-[12px] font-mono outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                  <p className="mt-0.5 text-[10px] text-gray-400">Шимтгэлийн зардлын данс</p>
+                </div>
+              </div>
+
+              {/* ERP code reminder */}
+              {accounts.some(a => !a.erp_account_code) && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                  <span className="font-semibold">Анхааруулга:</span>{" "}
+                  {accounts.filter(a => !a.erp_account_code).map(a => a.account_number || a.partner_name).join(", ")}
+                  {" "}данс(ууд)-д Эрхэт код тохируулаагүй байна.{" "}
+                  <button onClick={() => { setFeeExportOpen(false); setTab("settings"); }}
+                    className="underline hover:text-amber-900">
+                    Тохиргоо руу очих →
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex gap-2">
+              <button onClick={() => setFeeExportOpen(false)}
+                className="flex-1 rounded-xl border border-gray-200 py-2.5 text-[13px] font-semibold text-gray-600 hover:bg-gray-50">
+                Болих
+              </button>
+              <button onClick={exportFees} disabled={feeExporting}
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-amber-500 py-2.5 text-[13px] font-semibold text-white hover:bg-amber-600 disabled:opacity-60">
+                {feeExporting
+                  ? <><RefreshCw size={13} className="animate-spin"/>Гаргаж байна…</>
+                  : <><Download size={13}/>Excel татах</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Эрхэт export modal ────────────────────────────────────── */}
+      {exportOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
+          <div className="w-full max-w-sm rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-[15px] font-bold text-gray-900">Эрхэт рүү экспортлох</h3>
+                <p className="mt-0.5 text-[11px] text-gray-400">
+                  {openStmt?.account_number} · {mainTxns.filter(t => t.credit > 0).length} кредит,{" "}
+                  {mainTxns.filter(t => t.debit > 0 && (t.export_type === "kass" || t.export_type === "hariltsah")).length} дебит (таглагдсан)
+                </p>
+              </div>
+              <button onClick={() => setExportOpen(false)}
+                className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100">
+                <X size={16}/>
+              </button>
+            </div>
+
+            {/* Date picker */}
+            <div className="mb-4">
+              <label className="mb-1 block text-[11px] font-semibold text-gray-500">Экспортын огноо</label>
+              <input
+                type="date"
+                value={exportDate}
+                onChange={e => setExportDate(e.target.value)}
+                className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-[13px] outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              />
+              <p className="mt-1 text-[10px] text-gray-400">
+                Excel-ийн Огноо баганад энэ огноо бичигдэнэ. Хуулгын огноотой өөр байж болно.
+              </p>
+            </div>
+
+            {/* What will be exported */}
+            <div className="mb-5 rounded-xl border border-gray-100 bg-gray-50 p-3 space-y-1.5 text-[11px] text-gray-600">
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 shrink-0">Авлага</span>
+                <span>{mainTxns.filter(t => t.credit > 0).length} кредит гүйлгээ → <span className="font-medium">Авлага өглөгийн гүйлгээ.xlsx</span></span>
+              </div>
+              {mainTxns.some(t => t.debit > 0 && t.export_type === "kass") && (
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700 shrink-0">Касс</span>
+                  <span>{mainTxns.filter(t => t.debit > 0 && t.export_type === "kass").length} гүйлгээ → <span className="font-medium">Кассын гүйлгээ.xlsx</span></span>
+                </div>
+              )}
+              {mainTxns.some(t => t.debit > 0 && t.export_type === "hariltsah") && (
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-700 shrink-0">Харилцах</span>
+                  <span>{mainTxns.filter(t => t.debit > 0 && t.export_type === "hariltsah").length} гүйлгээ → <span className="font-medium">Харилцахын гүйлгээ.xlsx</span></span>
+                </div>
+              )}
+              {!mainTxns.some(t => t.debit > 0 && (t.export_type === "kass" || t.export_type === "hariltsah")) && (
+                <p className="text-gray-400 text-[10px]">Дебит гүйлгээнд Касс/Харилцах таг тавьж хамруулна уу</p>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <button onClick={() => setExportOpen(false)}
+                className="flex-1 rounded-xl border border-gray-200 py-2.5 text-[13px] font-semibold text-gray-600 hover:bg-gray-50">
+                Болих
+              </button>
+              <button onClick={exportErkhet} disabled={exporting}
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 py-2.5 text-[13px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-60">
+                {exporting ? <><RefreshCw size={13} className="animate-spin"/>Экспортлож байна…</> : <><Download size={13}/>ZIP татах</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Шимтгэл lock warning modal ─────────────────────────────── */}
+      {feeLockModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="grid h-9 w-9 place-items-center rounded-full bg-orange-100">
+                <AlertCircle size={18} className="text-orange-600"/>
+              </div>
+              <h3 className="text-[15px] font-bold text-gray-900">Шимтгэл тохиргоо засна уу?</h3>
+            </div>
+            <p className="mb-4 text-[12px] text-gray-600">
+              Энэ мөр банкны шимтгэл тул талбарууд автомат бөглөгдсөн ба өөрчлөх боломжгүй.
+              Утгыг өөрчлөхийг хүсвэл <span className="font-semibold">Тохиргоо</span> цэснээс <span className="font-semibold">Шимтгэл хаах тохиргоо</span>-г засна уу.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setFeeLockModal(false)}
+                className="flex-1 rounded-xl border border-gray-200 py-2 text-[13px] font-semibold text-gray-600 hover:bg-gray-50">
+                Болих
+              </button>
+              <button onClick={() => { setFeeLockModal(false); setTab("settings"); }}
+                className="flex-1 rounded-xl bg-orange-600 py-2 text-[13px] font-semibold text-white hover:bg-orange-700">
+                Тохиргоо засах
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Settlement lock warning modal ──────────────────────────── */}
+      {settlementLockModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="grid h-9 w-9 place-items-center rounded-full bg-amber-100">
+                <AlertCircle size={18} className="text-amber-600"/>
+              </div>
+              <h3 className="text-[15px] font-bold text-gray-900">Settlement тохиргоо засна уу?</h3>
+            </div>
+            <p className="mb-4 text-[12px] text-gray-600">
+              Энэ мөр SETTLEMENT (POS) гүйлгээ тул талбарууд автомат бөглөгдсөн ба өөрчлөх боломжгүй.
+              Утгыг өөрчлөхийг хүсвэл <span className="font-semibold">Тохиргоо</span> цэснээс <span className="font-semibold">Settlement хаах тохиргоо</span>-г засна уу.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setSettlementLockModal(false)}
+                className="flex-1 rounded-xl border border-gray-200 py-2 text-[13px] font-semibold text-gray-600 hover:bg-gray-50">
+                Болих
+              </button>
+              <button onClick={() => { setSettlementLockModal(false); setTab("settings"); }}
+                className="flex-1 rounded-xl bg-amber-600 py-2 text-[13px] font-semibold text-white hover:bg-amber-700">
+                Тохиргоо засах
+              </button>
             </div>
           </div>
         </div>
@@ -818,6 +1865,17 @@ export default function BankStatementPage() {
                 <input value={acctForm.account_number}
                   onChange={e => setAcctForm(f => ({ ...f, account_number: e.target.value }))}
                   placeholder="5890526699"
+                  className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-[13px] font-mono outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"/>
+              </div>
+              {/* ERP account code */}
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold text-gray-500">
+                  Эрхэт дансны код
+                  <span className="ml-1.5 font-normal text-gray-400">(шимтгэл экспортод ашиглана)</span>
+                </label>
+                <input value={acctForm.erp_account_code}
+                  onChange={e => setAcctForm(f => ({ ...f, erp_account_code: e.target.value }))}
+                  placeholder="110104"
                   className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-[13px] font-mono outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"/>
               </div>
               {/* Bank name */}

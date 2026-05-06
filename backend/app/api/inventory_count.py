@@ -55,6 +55,7 @@ class ChecklistUpdate(BaseModel):
     check_no_partial: Optional[bool] = None
     check_no_wh14_sales: Optional[bool] = None
     check_balance_unchanged: Optional[bool] = None
+    check_red_blocked_fixed: Optional[bool] = None
 
 
 def _build_kpi_task_name(warehouse_label: str, description: str) -> str:
@@ -240,6 +241,7 @@ def list_counts(
             "check_no_partial": bool(getattr(r, "check_no_partial", False)),
             "check_no_wh14_sales": bool(getattr(r, "check_no_wh14_sales", False)),
             "check_balance_unchanged": bool(getattr(r, "check_balance_unchanged", False)),
+            "check_red_blocked_fixed": bool(getattr(r, "check_red_blocked_fixed", False)),
         })
     return result
 
@@ -397,6 +399,8 @@ def update_checklist(
         c.check_no_wh14_sales = bool(body.check_no_wh14_sales)
     if body.check_balance_unchanged is not None:
         c.check_balance_unchanged = bool(body.check_balance_unchanged)
+    if body.check_red_blocked_fixed is not None:
+        c.check_red_blocked_fixed = bool(body.check_red_blocked_fixed)
     db.commit()
     return {
         "ok": True,
@@ -404,6 +408,7 @@ def update_checklist(
         "check_no_partial": bool(c.check_no_partial),
         "check_no_wh14_sales": bool(c.check_no_wh14_sales),
         "check_balance_unchanged": bool(c.check_balance_unchanged),
+        "check_red_blocked_fixed": bool(c.check_red_blocked_fixed),
     }
 
 
