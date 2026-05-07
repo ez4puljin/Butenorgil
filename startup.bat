@@ -28,10 +28,29 @@ echo.
 
 REM ---- Stop any previous instance on port 8000 (avoid conflicts) ----
 echo [1/3] Cleaning previous instances on port 8000...
-for /f "tokens=5" %%p in ('netstat -aon 2^>nul ^| findstr ":8000" ^| findstr "LISTENING"') do (
-    echo   Killing PID %%p
-    taskkill /PID %%p /F >nul 2>&1
+
+REM Run cleanup THREE times to catch parent + child uvicorn (--reload) processes.
+call :kill_port_8000
+timeout /t 1 /nobreak >nul
+call :kill_port_8000
+timeout /t 1 /nobreak >nul
+call :kill_port_8000
+
+REM Also kill any uvicorn-bearing python processes (catches reload children
+REM that may have detached from netstat's PID listing).
+for /f "tokens=2 delims=," %%p in (
+    'tasklist /FI "IMAGENAME eq python.exe" /FO CSV /NH 2^>nul'
+) do (
+    set "pid=%%~p"
+    wmic process where "ProcessId=!pid!" get CommandLine 2>nul | findstr /C:"uvicorn" >nul && (
+        echo   Killing uvicorn python PID !pid!
+        taskkill /PID !pid! /F >nul 2>&1
+    )
 )
+
+REM Give Windows time to release the socket binding.
+timeout /t 2 /nobreak >nul
+echo   [OK] Cleanup done.
 
 REM ---- Sanity checks ----
 if not exist "%ROOT%\backend\.venv\Scripts\python.exe" (
@@ -114,3 +133,14 @@ echo.
 pause
 endlocal
 exit /b 1
+
+
+REM ---- Subroutine: kill every PID listening on port 8000 ----
+:kill_port_8000
+for /f "tokens=5" %%p in ('netstat -aon 2^>nul ^| findstr ":8000" ^| findstr "LISTENING"') do (
+    if not "%%p"=="0" (
+        echo   Killing PID %%p
+        taskkill /PID %%p /F >nul 2>&1
+    )
+)
+exit /b 0
