@@ -155,12 +155,15 @@ echo   Backend  -^> http://localhost:8000
 echo   Frontend -^> http://localhost:3000
 echo.
 
-start "ERP-Backend" cmd /k "cd /d \"!ROOT!\backend\" && call .venv\Scripts\activate && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+REM Use start /D to set working directory - avoids path quoting issues with spaces.
+REM Use the venv's python directly (no `call activate`) so the `--reload`
+REM watchfiles subprocess inherits the same interpreter.
+start "ERP-Backend" /D "!ROOT!\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
 REM Give backend a moment to bind the port
 timeout /t 3 /nobreak >nul
 
-start "ERP-Frontend" cmd /k "cd /d \"!ROOT!\frontend\" && npm run dev"
+start "ERP-Frontend" /D "!ROOT!\frontend" cmd /k "npm run dev"
 
 echo.
 echo =========================================================
