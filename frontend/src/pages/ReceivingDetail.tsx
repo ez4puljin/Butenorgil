@@ -682,9 +682,16 @@ export default function ReceivingDetail() {
                 )}
 
                 {/* Brand override — chip товчнууд (Receiving Redesign дагуу) */}
-                <div className="mt-3">
-                  <label className="mb-1.5 block text-[11px] font-semibold text-gray-500">
-                    Тулгах брэнд
+                {(() => {
+                  const isBrandless = !(selected.brand || "").trim();
+                  const brandPicked = !!(addBrand && addBrand.trim());
+                  const needsBrand  = isBrandless && !brandPicked;
+                  return (
+                <div className={`mt-3 ${needsBrand ? "rounded-xl border-2 border-red-300 bg-red-50/60 p-2" : ""}`}>
+                  <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold">
+                    {needsBrand
+                      ? <span className="text-red-600">⚠ Брэндгүй бараа — заавал брэнд сонгоно уу</span>
+                      : <span className="text-gray-500">Тулгах брэнд</span>}
                   </label>
                   <div className="flex flex-wrap gap-1.5">
                     {/* Selected product-ын анхдагч brand */}
@@ -733,9 +740,13 @@ export default function ReceivingDetail() {
                             ? addBrand : ""
                         }
                         onChange={e => setAddBrand(e.target.value)}
-                        className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-600 outline-none focus:border-[#0071E3]"
+                        className={`rounded-full border bg-white px-3 py-1.5 text-[12px] font-medium outline-none ${
+                          needsBrand
+                            ? "border-red-300 text-red-700 focus:border-red-500"
+                            : "border-gray-200 text-gray-600 focus:border-[#0071E3]"
+                        }`}
                       >
-                        <option value="">+ Бусад брэнд</option>
+                        <option value="" disabled={needsBrand}>{needsBrand ? "Брэнд сонгоно уу..." : "+ Бусад брэнд"}</option>
                         {allBrands
                           .filter(b =>
                             b &&
@@ -754,6 +765,8 @@ export default function ReceivingDetail() {
                     </p>
                   )}
                 </div>
+                  );
+                })()}
 
                 <div className="mt-3 grid grid-cols-2 gap-2.5">
                   <div>
@@ -800,12 +813,24 @@ export default function ReceivingDetail() {
                   </div>
                 )}
 
-                <button
-                  onClick={addLine}
-                  className="mt-3 inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-xl bg-[#0071E3] py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#005BB5] active:scale-[0.99]"
-                >
-                  <Plus size={16}/> Нэмэх
-                </button>
+                {(() => {
+                  const isBrandless = !(selected.brand || "").trim();
+                  const brandPicked = !!(addBrand && addBrand.trim());
+                  const needsBrand  = isBrandless && !brandPicked;
+                  return (
+                    <button
+                      onClick={addLine}
+                      disabled={needsBrand}
+                      className={`mt-3 inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-semibold shadow-sm transition active:scale-[0.99] ${
+                        needsBrand
+                          ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                          : "bg-[#0071E3] text-white hover:bg-[#005BB5]"
+                      }`}
+                    >
+                      <Plus size={16}/> {needsBrand ? "Эхлээд брэнд сонго" : "Нэмэх"}
+                    </button>
+                  );
+                })()}
               </div>
             )}
 
@@ -1143,8 +1168,14 @@ export default function ReceivingDetail() {
                                 </div>
                                 {/* Бренд солих dropdown */}
                                 {canEdit && (
-                                  <div className="mt-1 flex items-center gap-1">
-                                    <span className="text-[10px] text-gray-400">Бренд:</span>
+                                  <div className={`mt-1 flex items-center gap-1 rounded ${
+                                    !(l.brand || "").trim() ? "bg-red-50 px-1 py-0.5 ring-1 ring-red-200" : ""
+                                  }`}>
+                                    <span className={`text-[10px] font-semibold ${
+                                      !(l.brand || "").trim() ? "text-red-700" : "text-gray-400"
+                                    }`}>
+                                      {!(l.brand || "").trim() ? "⚠ Брэнд:" : "Бренд:"}
+                                    </span>
                                     <select
                                       value={(l.brand || "").trim()}
                                       onChange={e => {
@@ -1153,7 +1184,11 @@ export default function ReceivingDetail() {
                                         const newOverride = picked === orig ? "" : picked;
                                         updateLine(l.id, { override_brand: newOverride });
                                       }}
-                                      className="rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] outline-none focus:border-[#0071E3] focus:ring-1 focus:ring-[#0071E3]/15"
+                                      className={`rounded border bg-white px-1.5 py-0.5 text-[10px] outline-none focus:ring-1 ${
+                                        !(l.brand || "").trim()
+                                          ? "border-red-300 focus:border-red-500 focus:ring-red-300/40"
+                                          : "border-gray-200 focus:border-[#0071E3] focus:ring-[#0071E3]/15"
+                                      }`}
                                     >
                                       {!l.brand && <option value="">— Сонго —</option>}
                                       {getBrandOptions(l, session?.brands ?? [], allBrands).map(b => (
