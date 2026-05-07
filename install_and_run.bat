@@ -159,11 +159,37 @@ popd
 echo   [OK] Frontend built. Backend will serve it directly.
 echo.
 
+REM ---- Detect LAN IP for the user-friendly banner ----
+REM Prefer 192.168.x.x (typical home/office LAN), fallback to first IPv4.
+set "LAN_IP="
+for /f "tokens=2 delims=:" %%a in (
+    'ipconfig ^| findstr /R /C:"IPv4 Address"'
+) do (
+    set "ip=%%a"
+    set "ip=!ip:~1!"
+    echo !ip! | findstr /R /C:"^192\.168\." >nul && (
+        if not defined LAN_IP set "LAN_IP=!ip!"
+    )
+)
+if not defined LAN_IP (
+    for /f "tokens=2 delims=:" %%a in (
+        'ipconfig ^| findstr /R /C:"IPv4 Address"'
+    ) do (
+        if not defined LAN_IP (
+            set "LAN_IP=%%a"
+            set "LAN_IP=!LAN_IP:~1!"
+        )
+    )
+)
+if not defined LAN_IP set "LAN_IP=<server-ip>"
+
 REM ---- Start services ----
 echo [4/4] Starting backend (serves API + frontend on port 8000)...
 echo.
-echo   Open from any device:  http://^<server-ip^>:8000
-echo   Local:                 http://localhost:8000
+echo   Local:  http://localhost:8000
+echo   LAN:    http://!LAN_IP!:8000
+echo.
+echo   IMPORTANT: use HTTP (not HTTPS) and port 8000 (not 3000).
 echo.
 
 REM Production mode: backend mounts frontend/dist as static.

@@ -94,11 +94,38 @@ if "%REBUILD%"=="1" (
 
 echo.
 
+REM ---- Detect LAN IP for the user-friendly banner ----
+REM Prefer 192.168.x.x (typical home/office LAN), fallback to first IPv4.
+set "LAN_IP="
+for /f "tokens=2 delims=:" %%a in (
+    'ipconfig ^| findstr /R /C:"IPv4 Address"'
+) do (
+    set "ip=%%a"
+    set "ip=!ip:~1!"
+    echo !ip! | findstr /R /C:"^192\.168\." >nul && (
+        if not defined LAN_IP set "LAN_IP=!ip!"
+    )
+)
+REM If no 192.168.x found, take the first IPv4
+if not defined LAN_IP (
+    for /f "tokens=2 delims=:" %%a in (
+        'ipconfig ^| findstr /R /C:"IPv4 Address"'
+    ) do (
+        if not defined LAN_IP (
+            set "LAN_IP=%%a"
+            set "LAN_IP=!LAN_IP:~1!"
+        )
+    )
+)
+if not defined LAN_IP set "LAN_IP=<server-ip>"
+
 REM ---- Start backend (serves API + frontend) ----
 echo [3/3] Starting server on port 8000...
 echo.
 echo   Local:  http://localhost:8000
-echo   LAN:    http://^<server-ip^>:8000
+echo   LAN:    http://!LAN_IP!:8000
+echo.
+echo   IMPORTANT: use HTTP (not HTTPS) and port 8000 (not 3000).
 echo.
 
 start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
