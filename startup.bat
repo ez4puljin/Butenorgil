@@ -27,29 +27,27 @@ echo   Project: %ROOT%
 echo.
 
 REM ---- Stop any previous instance on port 8000 (avoid conflicts) ----
-echo [1/3] Cleaning previous instances on port 8000...
+echo [1/3] Cleaning previous instances...
 
-REM Run cleanup THREE times to catch parent + child uvicorn (--reload) processes.
-call :kill_port_8000
-timeout /t 1 /nobreak >nul
-call :kill_port_8000
-timeout /t 1 /nobreak >nul
+REM First pass: kill processes listening on port 8000.
 call :kill_port_8000
 
-REM Also kill any uvicorn-bearing python processes (catches reload children
-REM that may have detached from netstat's PID listing).
-for /f "tokens=2 delims=," %%p in (
-    'tasklist /FI "IMAGENAME eq python.exe" /FO CSV /NH 2^>nul'
-) do (
-    set "pid=%%~p"
-    wmic process where "ProcessId=!pid!" get CommandLine 2>nul | findstr /C:"uvicorn" >nul && (
-        echo   Killing uvicorn python PID !pid!
-        taskkill /PID !pid! /F >nul 2>&1
-    )
+REM Second pass: kill ALL python.exe (this is a server box - only ERP runs here).
+REM This is brute force but reliable: catches uvicorn parent + reload workers
+REM + multiprocessing children that often slip out of netstat's PID listing.
+echo   Killing all python.exe processes...
+taskkill /IM python.exe /F >nul 2>&1
+
+REM Wait long enough for Windows to release sockets fully (TIME_WAIT cleanup).
+timeout /t 3 /nobreak >nul
+
+REM Final port verification.
+netstat -ano 2>nul | findstr ":8000" | findstr "LISTENING" >nul
+if not errorlevel 1 (
+    echo   [!] Port 8000 still appears bound; trying once more...
+    call :kill_port_8000
+    timeout /t 2 /nobreak >nul
 )
-
-REM Give Windows time to release the socket binding.
-timeout /t 2 /nobreak >nul
 echo   [OK] Cleanup done.
 
 REM ---- Sanity checks ----
