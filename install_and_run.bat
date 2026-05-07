@@ -1,13 +1,21 @@
 @echo off
+REM =========================================================
+REM   ERP - Install and Run
+REM   Clones repo, installs dependencies, starts services
+REM =========================================================
+
+REM Self-restart in a new cmd window if double-clicked, so errors do not auto-close it.
+if "%~1"=="" (
+    cmd /k "%~f0" --inner
+    exit /b
+)
+
 setlocal enabledelayedexpansion
 
-REM =========================================================
-REM   ERP Setup and Run Script
-REM   Clones repo, installs all dependencies, starts services
-REM =========================================================
-
-set REPO_URL=https://github.com/ez4puljin/Butenorgil.git
-set REPO_DIR=Butenorgil
+set "REPO_URL=https://github.com/ez4puljin/Butenorgil.git"
+set "REPO_NAME=Butenorgil"
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
 echo.
 echo =========================================================
@@ -15,87 +23,81 @@ echo   ERP - Install and Run
 echo =========================================================
 echo.
 
-REM ---- 1. Check prerequisites ----
+REM ---- Check tools ----
 echo [Check] Verifying required tools...
 
 where git >nul 2>&1
 if errorlevel 1 (
     echo   [X] Git not found.
-    echo       Please install: https://git-scm.com/downloads
-    pause
-    exit /b 1
+    echo       Install: https://git-scm.com/downloads
+    goto :fail
 )
-for /f "tokens=3" %%v in ('git --version') do set GITV=%%v
-echo   [OK] Git !GITV!
+echo   [OK] Git
 
 where python >nul 2>&1
 if errorlevel 1 (
     echo   [X] Python not found.
-    echo       Please install Python 3.11+ from https://www.python.org/downloads/
-    echo       Make sure to check "Add Python to PATH" during install.
-    pause
-    exit /b 1
+    echo       Install Python 3.11+ from https://www.python.org/downloads/
+    echo       Make sure "Add Python to PATH" is checked.
+    goto :fail
 )
-for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PYV=%%v
-echo   [OK] Python !PYV!
+echo   [OK] Python
 
 where node >nul 2>&1
 if errorlevel 1 (
     echo   [X] Node.js not found.
-    echo       Please install Node.js 20+ LTS from https://nodejs.org/
-    pause
-    exit /b 1
+    echo       Install Node.js 20+ LTS from https://nodejs.org/
+    goto :fail
 )
-for /f "delims=" %%v in ('node --version') do set NODEV=%%v
-echo   [OK] Node.js !NODEV!
+echo   [OK] Node.js
 
 where npm >nul 2>&1
 if errorlevel 1 (
     echo   [X] npm not found.
-    pause
-    exit /b 1
+    goto :fail
 )
-for /f "delims=" %%v in ('npm --version') do set NPMV=%%v
-echo   [OK] npm !NPMV!
+echo   [OK] npm
 
 echo.
 
-REM ---- 2. Determine project directory ----
-REM If this script lives inside a git repo (has .git), use that.
-REM Otherwise clone to a subfolder of the current location.
-
-if exist "%~dp0.git" (
-    set ROOT=%~dp0
-    REM strip trailing backslash
-    if "!ROOT:~-1!"=="\" set ROOT=!ROOT:~0,-1!
+REM ---- Determine project ROOT ----
+set "ROOT="
+if exist "%SCRIPT_DIR%\.git" (
+    set "ROOT=%SCRIPT_DIR%"
     echo [1/4] Using existing repo: !ROOT!
     pushd "!ROOT!"
     git pull --ff-only
     popd
 ) else (
-    if exist "%REPO_DIR%\.git" (
-        set ROOT=%CD%\%REPO_DIR%
+    if exist "%SCRIPT_DIR%\%REPO_NAME%\.git" (
+        set "ROOT=%SCRIPT_DIR%\%REPO_NAME%"
         echo [1/4] Repo exists, pulling latest...
         pushd "!ROOT!"
         git pull --ff-only
         popd
     ) else (
-        echo [1/4] Cloning %REPO_URL% ...
-        git clone %REPO_URL% %REPO_DIR%
+        echo [1/4] Cloning %REPO_URL%
+        pushd "%SCRIPT_DIR%"
+        git clone %REPO_URL% %REPO_NAME%
         if errorlevel 1 (
+            popd
             echo   [X] git clone failed.
-            pause
-            exit /b 1
+            goto :fail
         )
-        set ROOT=%CD%\%REPO_DIR%
+        popd
+        set "ROOT=%SCRIPT_DIR%\%REPO_NAME%"
     )
 )
 echo   Project root: !ROOT!
 echo.
 
-REM ---- 3. Backend setup ----
+REM ---- Backend ----
 echo [2/4] Setting up backend...
 pushd "!ROOT!\backend"
+if errorlevel 1 (
+    echo   [X] backend folder not found at !ROOT!\backend
+    goto :fail
+)
 
 if not exist ".venv\Scripts\python.exe" (
     echo   Creating Python virtualenv...
@@ -103,68 +105,77 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 (
         echo   [X] venv creation failed.
         popd
-        pause
-        exit /b 1
+        goto :fail
     )
 )
 
 echo   Upgrading pip...
-.venv\Scripts\python.exe -m pip install --upgrade pip --quiet
+".venv\Scripts\python.exe" -m pip install --upgrade pip --quiet --disable-pip-version-check
 
-echo   Installing Python packages from requirements.txt...
-.venv\Scripts\python.exe -m pip install -r requirements.txt
+echo   Installing Python packages from requirements.txt
+echo   (this may take a few minutes on first run)
+".venv\Scripts\python.exe" -m pip install -r requirements.txt --disable-pip-version-check
 if errorlevel 1 (
     echo   [X] pip install failed.
     popd
-    pause
-    exit /b 1
+    goto :fail
 )
 
 popd
 echo   [OK] Backend ready.
 echo.
 
-REM ---- 4. Frontend setup ----
+REM ---- Frontend ----
 echo [3/4] Setting up frontend...
 pushd "!ROOT!\frontend"
+if errorlevel 1 (
+    echo   [X] frontend folder not found at !ROOT!\frontend
+    goto :fail
+)
 
-if not exist "node_modules" (
-    echo   Running npm install (this may take several minutes)...
-    call npm install
-    if errorlevel 1 (
-        echo   [X] npm install failed.
-        popd
-        pause
-        exit /b 1
-    )
-) else (
-    echo   node_modules exists, running npm install for any updates...
-    call npm install
+echo   Running npm install (this may take several minutes)...
+call npm install
+if errorlevel 1 (
+    echo   [X] npm install failed.
+    popd
+    goto :fail
 )
 
 popd
 echo   [OK] Frontend ready.
 echo.
 
-REM ---- 5. Start services ----
+REM ---- Start services ----
 echo [4/4] Starting services...
 echo.
-echo   Backend  ^-^> http://localhost:8000
-echo   Frontend ^-^> http://localhost:3000
+echo   Backend  -^> http://localhost:8000
+echo   Frontend -^> http://localhost:3000
 echo.
 
-start "ERP-Backend" cmd /k "cd /d !ROOT!\backend && call .venv\Scripts\activate && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+start "ERP-Backend" cmd /k "cd /d \"!ROOT!\backend\" && call .venv\Scripts\activate && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
-REM Give the backend a moment to start binding the port
+REM Give backend a moment to bind the port
 timeout /t 3 /nobreak >nul
 
-start "ERP-Frontend" cmd /k "cd /d !ROOT!\frontend && npm run dev"
+start "ERP-Frontend" cmd /k "cd /d \"!ROOT!\frontend\" && npm run dev"
 
 echo.
 echo =========================================================
-echo   DONE - Both services are starting in separate windows.
+echo   DONE - Backend and Frontend are starting in new windows.
 echo   Close those windows to stop the services.
 echo =========================================================
 echo.
 pause
 endlocal
+exit /b 0
+
+
+:fail
+echo.
+echo =========================================================
+echo   FAILED - See message above.
+echo =========================================================
+echo.
+pause
+endlocal
+exit /b 1
