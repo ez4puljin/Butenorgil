@@ -530,6 +530,28 @@ app.include_router(bank_statements_router)
 def health():
     return {"ok": True}
 
+
+# ── Real-time event stream (Server-Sent Events) ─────────────────────────────
+# Frontend нь EventSource ашиглан subscribe хийж бусад device-ийн өөрчлөлтийг
+# мэдрэх боломжтой. Мутаций хийдэг route нь `bus.publish("topic", payload)`
+# дуудаж бүх listener-уудад push хийнэ.
+from app.core.event_bus import event_stream
+from fastapi.responses import StreamingResponse
+
+@app.get("/events")
+async def events(topics: str = "all"):
+    """SSE stream. ?topics=receivings,bank_statements (comma-separated)."""
+    topic_list = [t.strip() for t in (topics or "").split(",") if t.strip()] or ["all"]
+    return StreamingResponse(
+        event_stream(topic_list),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # disable nginx/proxy buffering
+            "Connection": "keep-alive",
+        },
+    )
+
 # ── PWA Root CA сертификат татах (HTTP:8000) ──────────────────────────────────
 # Планшет дээр CA суулгахын тулд: http://192.168.1.198:8000/rootca.crt
 _ROOT_CA = Path("app/data/rootCA.crt")
@@ -552,8 +574,25 @@ def download_rootca():
 from fastapi.staticfiles import StaticFiles
 _DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 if _DIST_DIR.exists() and (_DIST_DIR / "index.html").exists():
-    # html=True → 404 болсон үед index.html-ыг буцаана (SPA client-side routing)
-    app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True), name="frontend")
+    # /assets/* — hashed bundles (browser-cacheable)
+    if (_DIST_DIR / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=str(_DIST_DIR / "assets")), name="assets")
+
+    # SPA catch-all: any unmatched GET (e.g. /dashboard, /receivings/123) returns index.html
+    # so React Router can take over client-side. This MUST come AFTER all API routers.
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        # Real file at root (favicon.ico, manifest.json, etc.)
+        if full_path:
+            candidate = _DIST_DIR / full_path
+            try:
+                if candidate.is_file() and candidate.resolve().is_relative_to(_DIST_DIR.resolve()):
+                    return FileResponse(str(candidate))
+            except Exception:
+                pass
+        # Anything else → index.html (SPA route)
+        return FileResponse(str(_DIST_DIR / "index.html"))
+
     print(f"[startup] Serving frontend from: {_DIST_DIR}")
 else:
     print(f"[startup] Frontend dist not found at {_DIST_DIR} — running API-only mode.")

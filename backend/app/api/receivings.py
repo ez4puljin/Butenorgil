@@ -16,6 +16,16 @@ from app.api.deps import get_db, get_current_user, require_role
 from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrandStatus
 from app.models.product import Product
 from app.models.user import User
+from app.core.event_bus import publish as _publish_event
+
+
+def _notify(session_id: int, action: str = "update") -> None:
+    """Бусад device-ийн UI-д live refresh trigger өгнө."""
+    try:
+        _publish_event("receivings", session_id=session_id, action=action)
+    except Exception:
+        pass
+
 
 router = APIRouter(prefix="/receivings", tags=["receivings"])
 
@@ -249,6 +259,7 @@ def create_session(
         created_by_user_id=u.id,
     )
     db.add(s); db.commit(); db.refresh(s)
+    _notify(s.id, "session_created")
     return _serialize_session(s, db, include_lines=True)
 
 
@@ -298,6 +309,7 @@ def set_status(
         raise HTTPException(400, "Буруу статус")
     s.status = body.status
     db.commit()
+    _notify(session_id, "status_changed")
     return _serialize_session(s, db, include_lines=False)
 
 
@@ -361,6 +373,7 @@ def add_line(
         if body.note:
             existing.note = body.note
         db.commit(); db.refresh(existing)
+        _notify(session_id, "line_merged")
         return _serialize_line(existing, p)
     ln = ReceivingLine(
         session_id=session_id,
@@ -371,6 +384,7 @@ def add_line(
         note=body.note or "",
     )
     db.add(ln); db.commit(); db.refresh(ln)
+    _notify(session_id, "line_added")
     return _serialize_line(ln, p)
 
 
@@ -417,6 +431,7 @@ def update_line(
     if body.note is not None:
         ln.note = body.note
     db.commit(); db.refresh(ln)
+    _notify(session_id, "line_updated")
     return _serialize_line(ln, p)
 
 
@@ -437,6 +452,7 @@ def toggle_price_review(
         raise HTTPException(404, "Мөр олдсонгүй")
     ln.price_reviewed = bool(reviewed)
     db.commit(); db.refresh(ln)
+    _notify(session_id, "price_reviewed")
     p = db.query(Product).filter(Product.id == ln.product_id).first()
     return _serialize_line(ln, p)
 
@@ -455,6 +471,7 @@ def delete_line(
     if not ln:
         raise HTTPException(404, "Мөр олдсонгүй")
     db.delete(ln); db.commit()
+    _notify(session_id, "line_deleted")
     return {"ok": True}
 
 
@@ -536,6 +553,7 @@ async def confirm_brand(
 
     _auto_advance_if_all_matched(s, db)
     db.refresh(s)
+    _notify(session_id, "brand_confirmed")
     return _serialize_session(s, db, include_lines=False)
 
 
@@ -555,6 +573,7 @@ def unmatch_brand(
     bs.is_matched = False
     bs.matched_at = None
     db.commit()
+    _notify(session_id, "brand_unmatched")
     return {"ok": True}
 
 

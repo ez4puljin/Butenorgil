@@ -106,7 +106,6 @@ for /f "tokens=2 delims=:" %%a in (
         if not defined LAN_IP set "LAN_IP=!ip!"
     )
 )
-REM If no 192.168.x found, take the first IPv4
 if not defined LAN_IP (
     for /f "tokens=2 delims=:" %%a in (
         'ipconfig ^| findstr /R /C:"IPv4 Address"'
@@ -119,16 +118,23 @@ if not defined LAN_IP (
 )
 if not defined LAN_IP set "LAN_IP=<server-ip>"
 
-REM ---- Start backend (serves API + frontend) ----
-echo [3/3] Starting server on port 8000...
+REM ---- Generate HTTPS self-signed cert (covers localhost + this LAN IP) ----
+echo   Ensuring HTTPS cert exists...
+pushd "%ROOT%\backend"
+.venv\Scripts\python.exe -m app.generate_cert
+popd
+
+REM ---- Start backend (serves API + frontend over HTTPS on 8000) ----
+echo [3/3] Starting server on port 8000 (HTTPS)...
 echo.
-echo   Local:  http://localhost:8000
-echo   LAN:    http://!LAN_IP!:8000
+echo   Local:  https://localhost:8000
+echo   LAN:    https://!LAN_IP!:8000
 echo.
-echo   IMPORTANT: use HTTP (not HTTPS) and port 8000 (not 3000).
+echo   First time on a phone you will see "Not secure" - tap Advanced
+echo   and Continue. The self-signed cert is valid for 10 years.
 echo.
 
-start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile app/data/certs/server.key --ssl-certfile app/data/certs/server.crt"
 
 echo.
 echo =========================================================

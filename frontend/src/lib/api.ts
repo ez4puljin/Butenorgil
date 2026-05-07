@@ -4,8 +4,8 @@ import { getServerUrlSync, isNativeApp } from "./serverConfig";
 
 // Base URL сонголт:
 // 1) Native app (Capacitor APK) — хэрэглэгчийн оруулсан IP/порт (ServerConfig screen)
-// 2) HTTPS web — Vite proxy "/api"
-// 3) HTTP web — энгийн http://{hostname}:8000
+// 2) Production deploy (frontend served from same backend) — same origin (хоосон baseURL = relative)
+// 3) Vite dev server — backend нь өөр порт дээр (ихэвчлэн 8000)
 function computeDefaultBase(): string {
   if (typeof window === "undefined") return "http://localhost:8000";
   if (isNativeApp()) {
@@ -13,8 +13,13 @@ function computeDefaultBase(): string {
     if (saved) return saved.replace(/\/$/, "");
     return "";  // Хоосон — ServerConfig гарна
   }
-  if (window.location.protocol === "https:") return "/api";
-  return `http://${window.location.hostname}:8000`;
+  // Vite dev mode (port 3000) — call backend on the same host:8000.
+  // Production: frontend served from backend itself, so use same origin (relative URLs).
+  const port = window.location.port;
+  if (port === "3000" || port === "3001" || port === "5173") {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return "";   // same origin — works for both http and https
 }
 
 export const api = axios.create({

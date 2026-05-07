@@ -8,6 +8,7 @@ import {
   ChevronRight, AlertTriangle,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { useLiveRefresh } from "../lib/liveEvents";
 import { useAuthStore } from "../store/authStore";
 import BarcodeScanner from "../components/BarcodeScanner";
 
@@ -239,6 +240,15 @@ export default function ReceivingDetail() {
   };
 
   useEffect(() => { load(); }, [id]);
+
+  // Live updates: бусад device-ээс энэ session-д өөрчлөлт орвол автомат refresh
+  useLiveRefresh(["receivings"], (e) => {
+    if (!id) return;
+    const sid = (e.data as any)?.session_id;
+    // Энэ session-той хамаагүй event-ийг алгасна (sid тодорхойгүй бол refresh хийнэ)
+    if (sid !== undefined && String(sid) !== String(id)) return;
+    load();
+  });
 
   // Системийн бүх brand-ийг override dropdown-д ашиглахаар нэг удаа татна
   useEffect(() => {
