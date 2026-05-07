@@ -544,3 +544,16 @@ def download_rootca():
         media_type="application/x-x509-ca-cert",
         filename="rootCA.crt",
     )
+
+
+# ── Production: serve built frontend (frontend/dist) on the same port ────────
+# Энэ нь утас/алсын device-аас хандах үед хамгийн хурдан — нэг порт, минифи бундл,
+# browser cache, CORS-гүй. Хэрэв `frontend/dist` байхгүй бол хэт алгасна (dev mode).
+from fastapi.staticfiles import StaticFiles
+_DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if _DIST_DIR.exists() and (_DIST_DIR / "index.html").exists():
+    # html=True → 404 болсон үед index.html-ыг буцаана (SPA client-side routing)
+    app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True), name="frontend")
+    print(f"[startup] Serving frontend from: {_DIST_DIR}")
+else:
+    print(f"[startup] Frontend dist not found at {_DIST_DIR} — running API-only mode.")

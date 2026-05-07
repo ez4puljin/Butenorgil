@@ -133,42 +133,49 @@ popd
 echo   [OK] Backend ready.
 echo.
 
-REM ---- Frontend ----
-echo [3/4] Setting up frontend...
+REM ---- Frontend (production build) ----
+echo [3/4] Building frontend (production)...
 pushd "!ROOT!\frontend"
 
-echo   Running npm install (this may take several minutes)...
-call npm install
+if not exist "node_modules" (
+    echo   First-time npm install...
+    call npm install
+    if errorlevel 1 (
+        popd
+        goto :err_npm
+    )
+) else (
+    echo   node_modules exists, skipping npm install.
+)
+
+echo   Building optimized bundle (frontend\dist)...
+call npm run build
 if errorlevel 1 (
     popd
     goto :err_npm
 )
 
 popd
-echo   [OK] Frontend ready.
+echo   [OK] Frontend built. Backend will serve it directly.
 echo.
 
 REM ---- Start services ----
-echo [4/4] Starting services...
+echo [4/4] Starting backend (serves API + frontend on port 8000)...
 echo.
-echo   Backend  -^> http://localhost:8000
-echo   Frontend -^> http://localhost:3000
+echo   Open from any device:  http://^<server-ip^>:8000
+echo   Local:                 http://localhost:8000
 echo.
 
-REM Use start /D to set working directory - avoids path quoting issues with spaces.
-REM Use the venv's python directly (no `call activate`) so the `--reload`
-REM watchfiles subprocess inherits the same interpreter.
-start "ERP-Backend" /D "!ROOT!\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
-
-REM Give backend a moment to bind the port
-timeout /t 3 /nobreak >nul
-
-start "ERP-Frontend" /D "!ROOT!\frontend" cmd /k "npm run dev"
+REM Production mode: backend mounts frontend/dist as static.
+REM No --reload (production stability), no separate vite dev server.
+start "ERP-Server" /D "!ROOT!\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 echo.
 echo =========================================================
-echo   DONE - Backend and Frontend are starting in new windows.
-echo   Close those windows to stop the services.
+echo   DONE - Server is starting in a new window.
+echo   The frontend is served from the SAME port (8000) for fast
+echo   access from phones and other PCs.
+echo   Close the window to stop the server.
 echo =========================================================
 echo.
 pause
