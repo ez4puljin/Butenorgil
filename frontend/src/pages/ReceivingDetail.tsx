@@ -1013,11 +1013,25 @@ export default function ReceivingDetail() {
             </div>
 
             <div className={`grid grid-cols-1 gap-2 ${canEdit ? "sm:grid-cols-2" : "sm:grid-cols-2 lg:grid-cols-3"} lg:!grid-cols-1 lg:gap-1 lg:overflow-y-auto lg:p-2`}>
+              {/* "Бүгд" row — desktop only, шүүлтийг арилгана */}
+              <button
+                onClick={() => setFilterBrand("")}
+                className={`hidden lg:flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition ${
+                  !filterBrand
+                    ? "bg-white shadow-sm ring-1 ring-gray-200"
+                    : "hover:bg-white"
+                }`}
+              >
+                <span className="text-[12px] font-semibold text-gray-800">Бүгд</span>
+                <span className="text-[11px] text-gray-500 tabular-nums">{session.line_count}</span>
+              </button>
+
               {session.brands.map(b => {
                 const isActive = filterBrand === b.brand;
                 const zColor = b.is_matched
                   ? (b.has_price_diff ? "bg-amber-400" : "bg-emerald-500")
                   : "bg-gray-300";
+                const priceDiff = b.is_matched ? (b.supplier_total_amount - b.total_amount) : 0;
                 return (
                 <div
                   key={b.brand}
@@ -1029,47 +1043,76 @@ export default function ReceivingDetail() {
                   }}
                   className={`relative rounded-xl border p-3 transition lg:cursor-pointer lg:rounded-lg lg:border-0 lg:p-2.5 lg:pl-3.5 lg:hover:bg-white ${
                     isActive
-                      ? "lg:!bg-white lg:!shadow-sm lg:!ring-1 lg:!ring-[#0071E3]/40"
+                      ? "lg:!bg-white lg:!shadow-sm lg:!ring-1 lg:!ring-gray-200"
                       : ""
                   } ${
                     b.is_matched
-                      ? "border-emerald-200 bg-emerald-50/40"
-                      : "border-gray-200 bg-gray-50/40"
-                  }`}
+                      ? "border-emerald-200 bg-emerald-50/40 lg:!bg-transparent"
+                      : "border-gray-200 bg-gray-50/40 lg:!bg-transparent"
+                  } ${isActive ? "lg:!bg-white" : ""}`}
                 >
                   {/* Status zusmel — design-ийн дагуу зүүн талд 3px зураас (lg only) */}
                   <span className={`hidden lg:block absolute left-0 top-2 bottom-2 w-[3px] rounded ${zColor}`}/>
+
+                  {/* Title + status icon + receipt thumb */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
-                        {b.is_matched ? (
-                          <CheckCircle2 size={14} className="shrink-0 text-emerald-600"/>
-                        ) : (
-                          <Clock size={14} className="shrink-0 text-amber-500"/>
+                        {/* Mobile: бүрэн icon, Desktop: жижиг dot icon */}
+                        <CheckCircle2 size={14} className={`shrink-0 text-emerald-600 lg:hidden ${b.is_matched ? "" : "hidden"}`}/>
+                        <Clock size={14} className={`shrink-0 text-amber-500 lg:hidden ${!b.is_matched ? "" : "hidden"}`}/>
+                        <span className="truncate text-sm font-semibold text-gray-900 lg:text-[13px]">{b.brand}</span>
+                        {/* Desktop: status badge зөвхөн жижиг dot */}
+                        {b.is_matched && !b.has_price_diff && (
+                          <span className="hidden lg:inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white shrink-0">
+                            <Check size={9} strokeWidth={3.5}/>
+                          </span>
                         )}
-                        <span className="truncate text-sm font-semibold text-gray-900">{b.brand}</span>
+                        {b.has_price_diff && (
+                          <span className="hidden lg:inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-400 text-white shrink-0">
+                            <AlertTriangle size={9} strokeWidth={3}/>
+                          </span>
+                        )}
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-500">
-                        <span className="tabular-nums">{b.line_count} мөр</span>
-                        <span className="tabular-nums">{b.total_pcs.toFixed(0)} ш</span>
-                        <span className="font-medium tabular-nums text-gray-700">
-                          {b.total_amount.toLocaleString("mn-MN")}₮
+                      {/* Stats inline — М: x  Ш: y  ...  Дүн: z */}
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-500 lg:mt-1.5 lg:text-[10.5px]">
+                        <span className="tabular-nums lg:hidden">{b.line_count} мөр</span>
+                        <span className="tabular-nums lg:hidden">{b.total_pcs.toFixed(0)} ш</span>
+                        {/* Desktop: М: 9  Ш: 1,840 формат */}
+                        <span className="hidden lg:inline tabular-nums"><span className="opacity-70">М:</span> <span className="font-semibold text-gray-800">{b.line_count}</span></span>
+                        <span className="hidden lg:inline tabular-nums"><span className="opacity-70">Ш:</span> <span className="font-semibold text-gray-800">{b.total_pcs.toFixed(0)}</span></span>
+                        <span className="ml-auto font-medium tabular-nums text-gray-700 lg:font-bold lg:text-gray-800">
+                          <span className="hidden lg:inline opacity-70 font-normal">Дүн: </span>
+                          <span className="lg:hidden">{b.total_amount.toLocaleString("mn-MN")}₮</span>
+                          <span className="hidden lg:inline">{fmtMnt(b.total_amount)}₮</span>
                         </span>
                       </div>
                     </div>
+                    {/* Mobile: AlertTriangle badge для price diff */}
                     {b.has_price_diff && (
                       <span
                         title="Үнэ зөрүүтэй мөртэй"
-                        className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-600 ring-1 ring-inset ring-red-200/60"
+                        className="lg:hidden shrink-0 inline-flex items-center gap-0.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-600 ring-1 ring-inset ring-red-200/60"
                       >
                         <AlertTriangle size={10}/> зөрүү
                       </span>
                     )}
+                    {/* Desktop: receipt thumbnail */}
+                    {b.is_matched && b.receipt_image_path && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); viewReceipt(b.brand); }}
+                        disabled={receiptLoading}
+                        title="Баримт харах"
+                        className="hidden lg:grid h-6 w-6 place-items-center rounded bg-blue-100 text-[#0071E3] shrink-0 hover:bg-blue-200 disabled:opacity-50"
+                      >
+                        <ImageIcon size={11}/>
+                      </button>
+                    )}
                   </div>
 
-                  {/* Matched meta */}
+                  {/* Matched meta — mobile only (desktop-д supplier нийлбэрийг хасна) */}
                   {b.is_matched && (
-                    <div className="mt-2 rounded-lg bg-white/70 px-2 py-1 text-[10px] text-gray-500">
+                    <div className="mt-2 rounded-lg bg-white/70 px-2 py-1 text-[10px] text-gray-500 lg:hidden">
                       <div className="flex items-center justify-between gap-1">
                         <span>Нийлүүлэгч:</span>
                         <span className="tabular-nums text-gray-700">
@@ -1079,17 +1122,41 @@ export default function ReceivingDetail() {
                     </div>
                   )}
 
-                  {/* Actions */}
-                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  {/* Desktop: Үнэ зөрүүний тэмдэглэл — амбер фон */}
+                  {b.has_price_diff && Math.abs(priceDiff) > 0.5 && (
+                    <div className="hidden lg:inline-block mt-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-800 ring-1 ring-inset ring-amber-200/60">
+                      Үнэ {priceDiff.toLocaleString("mn-MN")}₮ зөрүүтэй
+                    </div>
+                  )}
+
+                  {/* Desktop: "Баримт нэмэх" dashed button — зөвхөн not matched + canEdit */}
+                  {!b.is_matched && canEdit && (
                     <button
-                      onClick={() => { setFilterBrand(b.brand); setPriceDiffOnly(false); setMobileView("lines"); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmBrand(b);
+                        setSupplierPcs(String(b.total_pcs.toFixed(0)));
+                        setSupplierAmount(String(b.total_amount.toFixed(0)));
+                        setReceiptFile(null);
+                      }}
+                      className="hidden lg:inline-flex mt-1.5 w-full items-center justify-center gap-1 rounded border border-dashed border-[#0071E3] bg-transparent px-2 py-1 text-[10.5px] font-semibold text-[#0071E3] hover:bg-[#0071E3]/5"
+                    >
+                      <Upload size={10}/> Баримт нэмэх
+                    </button>
+                  )}
+
+                  {/* Mobile: legacy Шүүж харах / Тулгах / Буцаах товчнууд (lg:hidden) */}
+                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5 lg:hidden">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setFilterBrand(b.brand); setPriceDiffOnly(false); setMobileView("lines"); }}
                       className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-200/70 hover:bg-gray-50"
                     >
                       <Eye size={11}/> Шүүж харах
                     </button>
                     {!b.is_matched && canEdit && (
                       <button
-                        onClick={() => {
+                        onClick={(e) => {
+                          e.stopPropagation();
                           setConfirmBrand(b);
                           setSupplierPcs(String(b.total_pcs.toFixed(0)));
                           setSupplierAmount(String(b.total_amount.toFixed(0)));
@@ -1102,7 +1169,7 @@ export default function ReceivingDetail() {
                     )}
                     {b.is_matched && b.receipt_image_path && (
                       <button
-                        onClick={() => viewReceipt(b.brand)}
+                        onClick={(e) => { e.stopPropagation(); viewReceipt(b.brand); }}
                         disabled={receiptLoading}
                         className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-medium text-blue-600 shadow-sm ring-1 ring-inset ring-blue-200/60 hover:bg-blue-50 disabled:opacity-50"
                       >
@@ -1111,7 +1178,7 @@ export default function ReceivingDetail() {
                     )}
                     {b.is_matched && canEdit && (role === "admin" || role === "manager" || role === "supervisor") && (
                       <button
-                        onClick={() => unmatch(b.brand)}
+                        onClick={(e) => { e.stopPropagation(); unmatch(b.brand); }}
                         className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1.5 text-[11px] font-medium text-red-500 ring-1 ring-inset ring-red-200/50 hover:bg-red-50"
                         title="Тулгалтыг буцаах"
                       >
@@ -1122,6 +1189,11 @@ export default function ReceivingDetail() {
                 </div>
                 );
               })}
+            </div>
+
+            {/* Desktop: footer hint */}
+            <div className="hidden lg:block shrink-0 border-t border-gray-100 px-3 py-2 text-center text-[10px] text-gray-400">
+              Брэнд автоматаар бараагаар үүсгэгдэнэ
             </div>
           </div>
         )}
