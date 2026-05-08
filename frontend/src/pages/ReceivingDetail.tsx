@@ -476,9 +476,10 @@ export default function ReceivingDetail() {
 
   const confirmBrandMatch = async () => {
     if (!session || !confirmBrand) return;
-    const pcs = parseFloat(supplierPcs);
-    const amount = parseFloat(supplierAmount);
-    if (isNaN(pcs) || isNaN(amount)) { flash("Тоо/дүн оруулна уу", false); return; }
+    // Хэрэглэгчийн оруулсан мөрүүдийн нийлбэрийг supplier total болгоно.
+    // (UI дотор тусдаа баримтны input хэрэггүй болсон.)
+    const pcs    = confirmBrand.total_pcs;
+    const amount = confirmBrand.total_amount;
     setConfirming(true);
     try {
       const fd = new FormData();
@@ -1708,12 +1709,9 @@ function BrandConfirmModal(p: {
     return () => window.removeEventListener("keydown", onKey);
   }, [p]);
 
-  const ourPcs = p.brand.total_pcs;
-  const ourAmt = p.brand.total_amount;
-  const supplierPcsNum = parseFloat(p.supplierPcs);
-  const supplierAmtNum = parseFloat(p.supplierAmount);
-  const pcsDiff = !isNaN(supplierPcsNum) ? supplierPcsNum - ourPcs : null;
-  const amtDiff = !isNaN(supplierAmtNum) ? supplierAmtNum - ourAmt : null;
+  const ourPcs   = p.brand.total_pcs;
+  const ourAmt   = p.brand.total_amount;
+  const ourLines = p.brand.line_count;
 
   return (
     <div
@@ -1743,47 +1741,26 @@ function BrandConfirmModal(p: {
         </div>
 
         <div className="flex-1 space-y-3.5 overflow-y-auto p-5">
-          {/* Our totals summary */}
-          <div className="rounded-xl bg-gradient-to-br from-blue-50/50 to-gray-50 p-3 ring-1 ring-inset ring-blue-100/60">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-gray-500">Та оруулсан</div>
-            <div className="mt-1 flex items-baseline justify-between gap-2">
-              <span className="text-lg font-bold tabular-nums text-gray-900">{ourPcs.toFixed(0)} ш</span>
-              <span className="text-sm font-semibold tabular-nums text-gray-700">
-                {ourAmt.toLocaleString("mn-MN")}₮
-              </span>
+          {/* Таны оруулсан мэдээлэл */}
+          <div className="rounded-xl bg-gradient-to-br from-blue-50/60 to-gray-50 p-3.5 ring-1 ring-inset ring-blue-100/60">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
+              Таны оруулсан мэдээлэл
             </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2.5">
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-gray-500">Баримтны нийт ш</label>
-              <input
-                type="number"
-                value={p.supplierPcs}
-                onChange={e => p.setSupplierPcs(e.target.value)}
-                inputMode="numeric"
-                className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-right text-[16px] font-semibold tabular-nums outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15 sm:text-sm"
-              />
-              {pcsDiff !== null && Math.abs(pcsDiff) >= 0.5 && (
-                <div className={`mt-1 text-right text-[10px] font-medium tabular-nums ${pcsDiff > 0 ? "text-amber-600" : "text-red-600"}`}>
-                  зөрүү {pcsDiff > 0 ? "+" : ""}{Math.round(pcsDiff)} ш
+            <div className="mt-1.5 grid grid-cols-3 gap-2">
+              <div>
+                <div className="text-[10px] text-gray-500">Бараа</div>
+                <div className="text-base font-bold tabular-nums text-gray-900">{ourLines}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-gray-500">Нийт ш</div>
+                <div className="text-base font-bold tabular-nums text-gray-900">{ourPcs.toFixed(0)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-gray-500">Нийт дүн</div>
+                <div className="text-base font-bold tabular-nums text-gray-900">
+                  {ourAmt.toLocaleString("mn-MN")}₮
                 </div>
-              )}
-            </div>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-gray-500">Баримтны нийт дүн (₮)</label>
-              <input
-                type="number"
-                value={p.supplierAmount}
-                onChange={e => p.setSupplierAmount(e.target.value)}
-                inputMode="numeric"
-                className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-right text-[16px] font-semibold tabular-nums outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15 sm:text-sm"
-              />
-              {amtDiff !== null && Math.abs(amtDiff) > 0.01 && (
-                <div className={`mt-1 text-right text-[10px] font-medium tabular-nums ${amtDiff > 0 ? "text-amber-600" : "text-red-600"}`}>
-                  зөрүү {amtDiff > 0 ? "+" : ""}{Math.round(amtDiff).toLocaleString("mn-MN")}₮
-                </div>
-              )}
+              </div>
             </div>
           </div>
 
