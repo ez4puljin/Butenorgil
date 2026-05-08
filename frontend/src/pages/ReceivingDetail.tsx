@@ -1866,7 +1866,16 @@ function ERPExportModal({ session, onClose }: { session: Session; onClose: () =>
     buten_orgil:  { related_account: "310101", account: "150101", single_location: "" },
     orgil_khorum: { related_account: "310104", account: "150101", single_location: "05" },
   };
-  const warehouses = [...new Set(session.lines.filter(l => l.qty_pcs > 0).map(l => l.warehouse_name).filter(Boolean))].sort();
+  // Бараа бүрийн warehouse_name-ээр group хийнэ. Эзэмшгүй (хоосон) барааг "" key-ээр харуулах боломжтой.
+  const positiveLines = session.lines.filter(l => l.qty_pcs > 0);
+  const warehouseCounts: Record<string, number> = {};
+  for (const l of positiveLines) {
+    const wh = (l.warehouse_name || "").trim();
+    warehouseCounts[wh] = (warehouseCounts[wh] || 0) + 1;
+  }
+  // Тагтай агуулахуудыг эрэмбэлэн жагсаах. Хоосон (таггүй) бараа байвал жагсаалтын төгсгөлд тусдаа мөр.
+  const warehouses = Object.keys(warehouseCounts).filter(Boolean).sort();
+  const untaggedCount = warehouseCounts[""] || 0;
   const [cfg, setCfg] = useState({
     company: "buten_orgil" as "buten_orgil" | "orgil_khorum",
     document_note: "",
@@ -2016,7 +2025,9 @@ function ERPExportModal({ session, onClose }: { session: Session; onClose: () =>
               <div className="space-y-1.5 rounded-lg bg-gray-50/70 p-2">
                 {warehouses.map(wh => (
                   <div key={wh} className="flex items-center gap-2">
-                    <span className="flex-1 truncate text-xs text-gray-700" title={wh}>{wh}</span>
+                    <span className="flex-1 truncate text-xs text-gray-700" title={wh}>
+                      {wh} <span className="text-gray-400">· {warehouseCounts[wh]} бараа</span>
+                    </span>
                     <input
                       value={cfg.warehouse_map[wh] ?? ""}
                       onChange={e => setCfg({ ...cfg, warehouse_map: { ...cfg.warehouse_map, [wh]: e.target.value } })}
@@ -2025,7 +2036,21 @@ function ERPExportModal({ session, onClose }: { session: Session; onClose: () =>
                     />
                   </div>
                 ))}
-                {warehouses.length === 0 && (
+                {/* Байршлын tag-гүй бараануудад зориулсан тусгай мөр */}
+                {untaggedCount > 0 && (
+                  <div className="flex items-center gap-2 rounded-md bg-amber-50 px-2 py-1 ring-1 ring-inset ring-amber-200/60">
+                    <span className="flex-1 truncate text-xs font-medium text-amber-800">
+                      ⚠ Таггүй <span className="font-normal text-amber-700/80">· {untaggedCount} бараа</span>
+                    </span>
+                    <input
+                      value={cfg.warehouse_map[""] ?? ""}
+                      onChange={e => setCfg({ ...cfg, warehouse_map: { ...cfg.warehouse_map, [""]: e.target.value } })}
+                      placeholder="ERP код"
+                      className="w-28 rounded-md border border-amber-300 bg-white px-2 py-1.5 text-right text-xs tabular-nums outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300/40"
+                    />
+                  </div>
+                )}
+                {warehouses.length === 0 && untaggedCount === 0 && (
                   <span className="block py-2 text-center text-xs text-gray-400">
                     Бараа оруулсан үед л гарна
                   </span>
