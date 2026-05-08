@@ -676,11 +676,12 @@ export default function ReceivingDetail() {
         )}
       </div>
 
-      {/* Two-column on desktop: left = add-product, right = brand summary; stacks on mobile */}
-      <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
+      {/* Desktop split-view: brand sidebar (left, 300px) + main column (right) with
+         add-product on top and lines section below. Mobile стек хэвээр (single column). */}
+      <div className="mb-4 grid grid-cols-1 gap-3 lg:items-start lg:[grid-template-columns:300px_minmax(0,1fr)] lg:[grid-template-areas:'sidebar_main-top'_'sidebar_main-bottom']">
         {/* Add-product (matching only) */}
         {canEdit && (
-          <div className="rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 lg:col-span-2">
+          <div className="rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 lg:[grid-area:main-top]">
             <div className="mb-2.5 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-gray-800">Бараа нэмэх</h3>
               <span className="text-[11px] text-gray-400">Баркод / нэр / кодоор</span>
@@ -996,24 +997,48 @@ export default function ReceivingDetail() {
 
         {/* Brand summary — Desktop: side panel; Mobile: hidden when mobileView === 'lines' */}
         {session.brands.length > 0 && (
-          <div className={`rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 ${canEdit ? "lg:col-span-3" : "lg:col-span-5"} ${mobileView === "lines" ? "hidden lg:block" : ""}`}>
-            <div className="mb-2.5 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-gray-800">Брэнд бүрийн тулгалт</h3>
-              <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+          <div className={`rounded-apple bg-white shadow-sm ring-1 ring-gray-100 lg:[grid-area:sidebar] lg:flex lg:flex-col lg:max-h-[calc(100vh-10rem)] lg:overflow-hidden ${mobileView === "lines" ? "hidden lg:block" : ""} p-4 lg:p-0`}>
+            {/* Sidebar header (mobile: regular, desktop: compact sticky) */}
+            <div className="mb-2.5 flex items-center justify-between lg:mb-0 lg:shrink-0 lg:border-b lg:border-gray-100 lg:bg-gray-50/60 lg:px-3 lg:py-2.5">
+              <div>
+                <div className="hidden lg:block text-[9px] font-semibold uppercase tracking-wider text-gray-400">Брэндүүд</div>
+                <h3 className="text-sm font-semibold text-gray-800 lg:text-[12px] lg:mt-0.5">
+                  <span className="lg:hidden">Брэнд бүрийн тулгалт</span>
+                  <span className="hidden lg:inline">{session.brands.length} брэнд · {matchedBrandCount} тулгасан</span>
+                </h3>
+              </div>
+              <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600 lg:hidden">
                 {matchedBrandCount}/{session.brands.length}
               </span>
             </div>
 
-            <div className={`grid grid-cols-1 gap-2 ${canEdit ? "sm:grid-cols-2" : "sm:grid-cols-2 lg:grid-cols-3"}`}>
-              {session.brands.map(b => (
+            <div className={`grid grid-cols-1 gap-2 ${canEdit ? "sm:grid-cols-2" : "sm:grid-cols-2 lg:grid-cols-3"} lg:!grid-cols-1 lg:gap-1 lg:overflow-y-auto lg:p-2`}>
+              {session.brands.map(b => {
+                const isActive = filterBrand === b.brand;
+                const zColor = b.is_matched
+                  ? (b.has_price_diff ? "bg-amber-400" : "bg-emerald-500")
+                  : "bg-gray-300";
+                return (
                 <div
                   key={b.brand}
-                  className={`relative rounded-xl border p-3 transition ${
+                  onClick={() => {
+                    // Desktop: бүтэн карт дээр дарахад шүүх (toggle)
+                    if (window.matchMedia("(min-width: 1024px)").matches) {
+                      setFilterBrand(filterBrand === b.brand ? "" : b.brand);
+                    }
+                  }}
+                  className={`relative rounded-xl border p-3 transition lg:cursor-pointer lg:rounded-lg lg:border-0 lg:p-2.5 lg:pl-3.5 lg:hover:bg-white ${
+                    isActive
+                      ? "lg:!bg-white lg:!shadow-sm lg:!ring-1 lg:!ring-[#0071E3]/40"
+                      : ""
+                  } ${
                     b.is_matched
                       ? "border-emerald-200 bg-emerald-50/40"
                       : "border-gray-200 bg-gray-50/40"
                   }`}
                 >
+                  {/* Status zusmel — design-ийн дагуу зүүн талд 3px зураас (lg only) */}
+                  <span className={`hidden lg:block absolute left-0 top-2 bottom-2 w-[3px] rounded ${zColor}`}/>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
@@ -1095,11 +1120,11 @@ export default function ReceivingDetail() {
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
-      </div>
 
       {/* Mobile view toggle: Брэнд тулгалт ↔ Бараа жагсаалт (зөвхөн mobile дээр) */}
       {session.brands.length > 0 && (
@@ -1128,7 +1153,7 @@ export default function ReceivingDetail() {
       )}
 
       {/* Lines section wrapper — Mobile дээр зөвхөн mobileView === "lines" үед харагдана */}
-      <div className={mobileView === "brands" && session.brands.length > 0 ? "hidden lg:block" : ""}>
+      <div className={`lg:[grid-area:main-bottom] ${mobileView === "brands" && session.brands.length > 0 ? "hidden lg:block" : ""}`}>
 
       {/* Filter bar — sticky on desktop, search + brand chips + diff toggle */}
       <div className="sticky top-0 z-20 mb-2 rounded-apple bg-white p-2 shadow-sm ring-1 ring-gray-100 lg:top-2">
@@ -1589,6 +1614,7 @@ export default function ReceivingDetail() {
         )}
       </div>
       </div>{/* /Lines section wrapper */}
+      </div>{/* /Outer split-view grid */}
 
       {/* Brand confirm modal */}
       {confirmBrand && (
