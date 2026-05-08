@@ -1764,9 +1764,9 @@ function BrandConfirmModal(p: {
                 inputMode="numeric"
                 className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-right text-[16px] font-semibold tabular-nums outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15 sm:text-sm"
               />
-              {pcsDiff !== null && pcsDiff !== 0 && (
+              {pcsDiff !== null && Math.abs(pcsDiff) >= 0.5 && (
                 <div className={`mt-1 text-right text-[10px] font-medium tabular-nums ${pcsDiff > 0 ? "text-amber-600" : "text-red-600"}`}>
-                  зөрүү {pcsDiff > 0 ? "+" : ""}{pcsDiff.toFixed(0)} ш
+                  зөрүү {pcsDiff > 0 ? "+" : ""}{Math.round(pcsDiff)} ш
                 </div>
               )}
             </div>
