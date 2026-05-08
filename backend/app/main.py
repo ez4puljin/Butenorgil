@@ -552,9 +552,15 @@ async def events(topics: str = "all"):
         },
     )
 
-# ── PWA Root CA сертификат татах (HTTP:8000) ──────────────────────────────────
-# Планшет дээр CA суулгахын тулд: http://192.168.1.198:8000/rootca.crt
-_ROOT_CA = Path("app/data/rootCA.crt")
+# ── Local CA download (for phones / other PCs to install as trusted root) ──
+# Утас/таблет дээрээс https://<server>:8000/rootca.crt-аар татаад "Install
+# certificate" гээд "Trusted Root" дотор оруулбал warning-гүй HTTPS болно.
+_ROOT_CA = Path(__file__).resolve().parent / "data" / "certs" / "rootCA.crt"
+# Backwards-compat: хуучин зам байсан бол түүнийг ашиглана
+if not _ROOT_CA.exists():
+    _alt = Path(__file__).resolve().parent / "data" / "rootCA.crt"
+    if _alt.exists():
+        _ROOT_CA = _alt
 
 @app.get("/rootca.crt", include_in_schema=False)
 def download_rootca():
