@@ -183,23 +183,28 @@ if not defined LAN_IP (
 )
 if not defined LAN_IP set "LAN_IP=<server-ip>"
 
-REM ---- Generate HTTPS self-signed cert ----
+REM ---- Generate HTTPS self-signed cert + auto-install in Windows trust ----
 echo   Ensuring HTTPS cert exists...
 pushd "!ROOT!\backend"
 .venv\Scripts\python.exe -m app.generate_cert
 popd
 
 REM ---- Start services ----
-echo [4/4] Starting server on port 8000 (HTTPS)...
+echo [4/4] Starting servers...
 echo.
-echo   Local:  https://localhost:8000
-echo   LAN:    https://!LAN_IP!:8000
+echo   App (HTTPS):         https://!LAN_IP!:8000
+echo   Setup helper (HTTP): http://!LAN_IP!:8080/
 echo.
-echo   First time on a phone you will see "Not secure" - tap Advanced
-echo   and Continue. The self-signed cert is valid for 10 years.
+echo   First time on a phone:
+echo     1. Open  http://!LAN_IP!:8080/  in the phone browser
+echo     2. Download rootCA.crt and install as Trusted Root
+echo     3. Open the app, set Protocol=HTTPS, IP=!LAN_IP!, Port=8000
 echo.
 
 start "ERP-Server" /D "!ROOT!\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile app/data/certs/server.key --ssl-certfile app/data/certs/server.crt"
+
+REM Helper for cert download (port 8080, plain HTTP)
+start "ERP-CertHelper" /D "!ROOT!\backend" /MIN cmd /k ".venv\Scripts\python.exe -m app.cert_helper_server"
 
 echo.
 echo =========================================================
