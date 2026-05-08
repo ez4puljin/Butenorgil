@@ -191,26 +191,30 @@ popd
 
 REM ---- Firewall: allow inbound TCP on 8000 and 8080 (admin once) ----
 netsh advfirewall firewall show rule name="ERP CertHelper 8080" >nul 2>&1
-if errorlevel 1 (
-    fltmc >nul 2>&1
-    if errorlevel 1 (
-        echo.
-        echo   ============================================================
-        echo   Firewall rules for port 8080 are missing.
-        echo   To open the ports, run this script ONCE as administrator:
-        echo     Right-click install_and_run.bat -^> "Run as administrator"
-        echo   Continuing with port 8000 only...
-        echo   ============================================================
-        echo.
-    ) else (
-        echo   Adding Windows Firewall rules (admin)...
-        netsh advfirewall firewall add rule name="ERP App 8000" dir=in action=allow protocol=TCP localport=8000 >nul
-        netsh advfirewall firewall add rule name="ERP CertHelper 8080" dir=in action=allow protocol=TCP localport=8080 >nul
-        echo   [OK] Firewall rules added.
-    )
-) else (
-    echo   Firewall rules already in place.
-)
+if errorlevel 1 goto :ifw_missing
+echo   Firewall rules already in place.
+goto :ifw_done
+
+:ifw_missing
+fltmc >nul 2>&1
+if errorlevel 1 goto :ifw_no_admin
+echo   Adding Windows Firewall rules (admin)...
+netsh advfirewall firewall add rule name="ERP App 8000" dir=in action=allow protocol=TCP localport=8000 >nul
+netsh advfirewall firewall add rule name="ERP CertHelper 8080" dir=in action=allow protocol=TCP localport=8080 >nul
+echo   [OK] Firewall rules added.
+goto :ifw_done
+
+:ifw_no_admin
+echo.
+echo   ============================================================
+echo   Firewall rules for port 8080 are missing.
+echo   Run open_firewall.bat ONCE as administrator
+echo   (right-click the file, then "Run as administrator").
+echo   Continuing with port 8000 only...
+echo   ============================================================
+echo.
+
+:ifw_done
 
 REM ---- Start services ----
 echo [4/4] Starting servers...

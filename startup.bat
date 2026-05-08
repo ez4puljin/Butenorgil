@@ -130,33 +130,35 @@ for /f "tokens=5" %%p in ('netstat -aon 2^>nul ^| findstr ":8080" ^| findstr "LI
 )
 
 REM ---- Firewall: allow inbound TCP on 8000 and 8080 (admin once) ----
-REM Skip if rules already exist.
 netsh advfirewall firewall show rule name="ERP CertHelper 8080" >nul 2>&1
-if errorlevel 1 (
-    REM Check admin status. fltmc returns 0 only if admin.
-    fltmc >nul 2>&1
-    if errorlevel 1 (
-        echo.
-        echo   ============================================================
-        echo   FIREWALL: Port 8080 is not yet open. Phones / other PCs
-        echo   will not be able to reach the cert helper.
-        echo.
-        echo   To open it, run open_firewall.bat ONCE as administrator:
-        echo     Right-click open_firewall.bat -^> "Run as administrator"
-        echo.
-        echo   After that you never need admin again.
-        echo   Continuing with port 8000 only for now...
-        echo   ============================================================
-        echo.
-    ) else (
-        echo   Adding Windows Firewall rules (admin)...
-        netsh advfirewall firewall add rule name="ERP App 8000" dir=in action=allow protocol=TCP localport=8000 >nul
-        netsh advfirewall firewall add rule name="ERP CertHelper 8080" dir=in action=allow protocol=TCP localport=8080 >nul
-        echo   [OK] Firewall rules added.
-    )
-) else (
-    echo   Firewall rules already in place.
-)
+if errorlevel 1 goto :fw_missing
+echo   Firewall rules already in place.
+goto :fw_done
+
+:fw_missing
+fltmc >nul 2>&1
+if errorlevel 1 goto :fw_no_admin
+echo   Adding Windows Firewall rules (admin)...
+netsh advfirewall firewall add rule name="ERP App 8000" dir=in action=allow protocol=TCP localport=8000 >nul
+netsh advfirewall firewall add rule name="ERP CertHelper 8080" dir=in action=allow protocol=TCP localport=8080 >nul
+echo   [OK] Firewall rules added.
+goto :fw_done
+
+:fw_no_admin
+echo.
+echo   ============================================================
+echo   FIREWALL: Port 8080 is not yet open. Phones / other PCs
+echo   will not be able to reach the cert helper.
+echo.
+echo   To open it, run open_firewall.bat ONCE as administrator
+echo   (right-click the file, then "Run as administrator").
+echo.
+echo   After that you never need admin again.
+echo   Continuing with port 8000 only for now...
+echo   ============================================================
+echo.
+
+:fw_done
 
 REM ---- Start backend (HTTPS) + cert helper (HTTP, cert download only) ----
 echo [3/3] Starting servers...
