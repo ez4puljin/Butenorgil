@@ -254,6 +254,7 @@ export default function ReceivingDetail() {
 
   const [filterBrand, setFilterBrand] = useState("");
   const [priceDiffOnly, setPriceDiffOnly] = useState(false);
+  const [filterText, setFilterText] = useState("");
   // Mobile-д "Брэнд тулгалт" ↔ "Бараа жагсаалт" хооронд toggle
   const [mobileView, setMobileView] = useState<"brands" | "lines">("brands");
 
@@ -530,6 +531,7 @@ export default function ReceivingDetail() {
     );
   }
 
+  const filterTextLow = filterText.trim().toLowerCase();
   const visibleLines = session.lines.filter(l => {
     if (filterBrand) {
       // Брендгүй мөр (l.brand === "") нь "Брэнд байхгүй" дор бүлэглэгддэг
@@ -539,6 +541,10 @@ export default function ReceivingDetail() {
     if (priceDiffOnly) {
       const diff = l.last_purchase_price > 0 && Math.abs(l.unit_price - l.last_purchase_price) > 0.01;
       if (!diff) return false;
+    }
+    if (filterTextLow) {
+      const blob = `${l.name} ${l.item_code}`.toLowerCase();
+      if (!blob.includes(filterTextLow)) return false;
     }
     return true;
   });
@@ -1124,50 +1130,88 @@ export default function ReceivingDetail() {
       {/* Lines section wrapper — Mobile дээр зөвхөн mobileView === "lines" үед харагдана */}
       <div className={mobileView === "brands" && session.brands.length > 0 ? "hidden lg:block" : ""}>
 
-      {/* Filters */}
-      <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-apple bg-white px-3 py-2 shadow-sm ring-1 ring-gray-100">
-        {/* "Шүүж харах"-аар орж ирсэн бол Back товчоор brand-ийн filter-ыг арилгана */}
-        {filterBrand && (
-          <button
-            onClick={() => setFilterBrand("")}
-            className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-200"
-          >
-            <ChevronLeft size={11}/> Буцах
-          </button>
-        )}
-        <span className="mr-1 text-xs font-medium text-gray-500 tabular-nums">
-          {visibleLines.length} мөр
-        </span>
-        <div className="relative">
-          <select
-            value={filterBrand}
-            onChange={e => setFilterBrand(e.target.value)}
-            className="appearance-none rounded-full border border-gray-200 bg-white py-1 pl-3 pr-7 text-xs outline-none transition hover:bg-gray-50 focus:border-[#0071E3] focus:ring-1 focus:ring-[#0071E3]/15"
-          >
-            <option value="">Бренд: бүгд</option>
-            {session.brands.map(b => <option key={b.brand} value={b.brand}>{b.brand}</option>)}
-          </select>
-          <ChevronRight size={11} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rotate-90 text-gray-400"/>
+      {/* Filter bar — sticky on desktop, search + brand chips + diff toggle */}
+      <div className="sticky top-0 z-20 mb-2 rounded-apple bg-white p-2 shadow-sm ring-1 ring-gray-100 lg:top-2">
+        {/* Top row: count + search + clear */}
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-700 tabular-nums">
+            {visibleLines.length} мөр
+          </span>
+          <div className="flex flex-1 min-w-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 transition focus-within:border-[#0071E3] focus-within:ring-2 focus-within:ring-[#0071E3]/15">
+            <Search size={13} className="shrink-0 text-gray-400"/>
+            <input
+              value={filterText}
+              onChange={e => setFilterText(e.target.value)}
+              placeholder="Барааны нэр / код-оор шүүх…"
+              className="flex-1 min-w-0 bg-transparent text-[13px] outline-none placeholder:text-gray-400"
+              inputMode="search"
+            />
+            {filterText && (
+              <button
+                onClick={() => setFilterText("")}
+                className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-100"
+                aria-label="Цэвэрлэх"
+              >
+                <X size={11}/>
+              </button>
+            )}
+          </div>
+          {session.status === "price_review" && (
+            <button
+              onClick={() => setPriceDiffOnly(v => !v)}
+              className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                priceDiffOnly
+                  ? "bg-red-600 text-white shadow-sm"
+                  : "bg-red-50 text-red-600 ring-1 ring-inset ring-red-200/60 hover:bg-red-100"
+              }`}
+            >
+              <AlertTriangle size={11}/>
+              <span className="hidden sm:inline">Зөрүү</span>
+              {priceDiffOnly ? <X size={10}/> : null}
+            </button>
+          )}
+          {(filterBrand || priceDiffOnly || filterText) && (
+            <button
+              onClick={() => { setFilterBrand(""); setPriceDiffOnly(false); setFilterText(""); }}
+              className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-[11px] text-gray-600 hover:bg-gray-50"
+              title="Бүх шүүлт цэвэрлэх"
+            >
+              <X size={11}/>
+            </button>
+          )}
         </div>
-        {session.status === "price_review" && (
-          <button
-            onClick={() => setPriceDiffOnly(v => !v)}
-            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition ${
-              priceDiffOnly
-                ? "bg-red-600 text-white shadow-sm"
-                : "bg-red-50 text-red-600 ring-1 ring-inset ring-red-200/60 hover:bg-red-100"
-            }`}
-          >
-            <AlertTriangle size={11}/> Үнэ зөрүүтэй{priceDiffOnly ? " ✕" : ""}
-          </button>
-        )}
-        {(filterBrand || priceDiffOnly) && (
-          <button
-            onClick={() => { setFilterBrand(""); setPriceDiffOnly(false); }}
-            className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] text-gray-600 hover:bg-gray-50"
-          >
-            <X size={11}/> Цэвэрлэх
-          </button>
+
+        {/* Brand chips row — quick visual filter */}
+        {session.brands.length > 1 && (
+          <div className="mt-1.5 flex flex-wrap gap-1 overflow-x-auto">
+            <button
+              onClick={() => setFilterBrand("")}
+              className={`shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium transition ${
+                !filterBrand
+                  ? "bg-[#0071E3] text-white shadow-sm"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              Бүгд · {session.brands.reduce((s, b) => s + b.line_count, 0)}
+            </button>
+            {session.brands.map(b => (
+              <button
+                key={b.brand}
+                onClick={() => setFilterBrand(filterBrand === b.brand ? "" : b.brand)}
+                className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium transition ${
+                  filterBrand === b.brand
+                    ? "bg-[#0071E3] text-white shadow-sm"
+                    : b.is_matched
+                      ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/60 hover:bg-emerald-100"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                }`}
+              >
+                {b.is_matched && <CheckCircle2 size={10}/>}
+                <span className="truncate max-w-[140px]">{b.brand}</span>
+                <span className="opacity-60">{b.line_count}</span>
+              </button>
+            ))}
+          </div>
         )}
       </div>
 
