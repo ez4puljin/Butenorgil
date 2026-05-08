@@ -674,7 +674,7 @@ export default function ReceivingDetail() {
       <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
         {/* Add-product (matching only) */}
         {canEdit && (
-          <div className="rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 lg:col-span-3">
+          <div className="rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 lg:col-span-2">
             <div className="mb-2.5 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-gray-800">Бараа нэмэх</h3>
               <span className="text-[11px] text-gray-400">Баркод / нэр / кодоор</span>
@@ -714,6 +714,15 @@ export default function ReceivingDetail() {
             </div>
             {scanFlash && (
               <div className="mt-1.5 text-[11px] text-gray-500">{scanFlash}</div>
+            )}
+
+            {/* Empty state hint — desktop дээр зүүн талын хоосон зайг дүүргэх */}
+            {!selected && !search.trim() && recentlyAdded.length === 0 && (
+              <div className="mt-3 hidden rounded-xl border border-dashed border-gray-200 bg-gray-50/60 p-4 text-center lg:block">
+                <Camera size={22} className="mx-auto mb-1.5 text-gray-300"/>
+                <p className="text-[12px] font-medium text-gray-500">Бараа нэмэхийн тулд</p>
+                <p className="mt-0.5 text-[11px] text-gray-400">баркод скан, нэр эсвэл код-оор хайна уу</p>
+              </div>
             )}
 
             {/* Search results */}
@@ -981,7 +990,7 @@ export default function ReceivingDetail() {
 
         {/* Brand summary — Desktop: side panel; Mobile: hidden when mobileView === 'lines' */}
         {session.brands.length > 0 && (
-          <div className={`rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 ${canEdit ? "lg:col-span-2" : "lg:col-span-5"} ${mobileView === "lines" ? "hidden lg:block" : ""}`}>
+          <div className={`rounded-apple bg-white p-4 shadow-sm ring-1 ring-gray-100 ${canEdit ? "lg:col-span-3" : "lg:col-span-5"} ${mobileView === "lines" ? "hidden lg:block" : ""}`}>
             <div className="mb-2.5 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-gray-800">Брэнд бүрийн тулгалт</h3>
               <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
@@ -989,7 +998,7 @@ export default function ReceivingDetail() {
               </span>
             </div>
 
-            <div className={`grid grid-cols-1 gap-2 ${canEdit ? "" : "sm:grid-cols-2 lg:grid-cols-3"}`}>
+            <div className={`grid grid-cols-1 gap-2 ${canEdit ? "sm:grid-cols-2" : "sm:grid-cols-2 lg:grid-cols-3"}`}>
               {session.brands.map(b => (
                 <div
                   key={b.brand}
