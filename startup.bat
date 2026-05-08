@@ -129,6 +129,16 @@ for /f "tokens=5" %%p in ('netstat -aon 2^>nul ^| findstr ":8080" ^| findstr "LI
     taskkill /PID %%p /F >nul 2>&1
 )
 
+REM ---- Firewall: allow inbound TCP on 8000 and 8080 (admin once) ----
+REM Skip silently if rules already exist.
+netsh advfirewall firewall show rule name="ERP CertHelper 8080" >nul 2>&1
+if errorlevel 1 (
+    echo   Adding Windows Firewall rules (will show a UAC prompt)...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\add_firewall_rules.ps1"
+) else (
+    echo   Firewall rules already in place.
+)
+
 REM ---- Start backend (HTTPS) + cert helper (HTTP, cert download only) ----
 echo [3/3] Starting servers...
 echo.

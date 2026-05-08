@@ -189,6 +189,15 @@ pushd "!ROOT!\backend"
 .venv\Scripts\python.exe -m app.generate_cert
 popd
 
+REM ---- Firewall: allow inbound TCP on 8000 and 8080 (admin once) ----
+netsh advfirewall firewall show rule name="ERP CertHelper 8080" >nul 2>&1
+if errorlevel 1 (
+    echo   Adding Windows Firewall rules (will show a UAC prompt)...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "!ROOT!\add_firewall_rules.ps1"
+) else (
+    echo   Firewall rules already in place.
+)
+
 REM ---- Start services ----
 echo [4/4] Starting servers...
 echo.
