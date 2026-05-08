@@ -1,11 +1,11 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   ChevronLeft, Search, Plus, Trash2, Upload, Check, X, FileDown,
   RefreshCw, Image as ImageIcon, AlertCircle, Package, Camera,
   Calendar, User, Hash, CheckCircle2, Clock, Undo2, Eye, TrendingUp,
-  ChevronRight, AlertTriangle,
+  ChevronRight, ChevronDown, AlertTriangle,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useLiveRefresh } from "../lib/liveEvents";
@@ -101,6 +101,114 @@ function StatusChip({ status, label }: { status: string; label: string }) {
     </span>
   );
 }
+
+/**
+ * Searchable brand picker — input + filtered list. Replaces a native <select>
+ * which doesn't support typing-to-search well on phones with long brand lists.
+ */
+function BrandSearchPicker({
+  value,
+  options,
+  onChange,
+  placeholder = "Бренд сонгох…",
+  warn = false,
+  className = "",
+}: {
+  value: string;
+  options: string[];
+  onChange: (b: string) => void;
+  placeholder?: string;
+  warn?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  // Auto-focus the search input when opening
+  useEffect(() => {
+    if (open) setTimeout(() => inputRef.current?.focus(), 30);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(b => b.toLowerCase().includes(q));
+  }, [query, options]);
+
+  const triggerCls =
+    `flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-[13px] outline-none transition ${
+      warn
+        ? "border-red-300 bg-white text-red-700"
+        : value
+          ? "border-gray-200 bg-white text-gray-800"
+          : "border-gray-200 bg-white text-gray-400"
+    }`;
+
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <button type="button" onClick={() => setOpen(o => !o)} className={triggerCls}>
+        <span className="truncate font-medium">{value || placeholder}</span>
+        <ChevronDown size={14} className={`shrink-0 ${warn ? "text-red-500" : "text-gray-400"}`}/>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-72 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
+          <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
+            <Search size={13} className="text-gray-400"/>
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Хайх…"
+              className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-gray-300"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => { setQuery(""); inputRef.current?.focus(); }}
+                className="rounded p-0.5 text-gray-400 hover:bg-gray-100"
+                aria-label="Цэвэрлэх"
+              >
+                <X size={11}/>
+              </button>
+            )}
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {filtered.length === 0 && (
+              <div className="px-3 py-3 text-center text-[12px] text-gray-400">Олдсонгүй</div>
+            )}
+            {filtered.map(b => (
+              <button
+                key={b}
+                type="button"
+                onClick={() => { onChange(b); setOpen(false); setQuery(""); }}
+                className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition ${
+                  value === b ? "bg-[#0071E3]/10 font-semibold text-[#0071E3]" : "hover:bg-gray-50 text-gray-700"
+                }`}
+              >
+                <span className="truncate">{b}</span>
+                {value === b && <Check size={13} className="shrink-0 text-[#0071E3]"/>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 /**
  * Тухайн line дээр харуулах боломжит брэндүүдийг нэгтгэн буцаана.
@@ -572,33 +680,35 @@ export default function ReceivingDetail() {
             </div>
 
             {/* Search + scan */}
-            <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 transition focus-within:border-[#0071E3] focus-within:ring-2 focus-within:ring-[#0071E3]/15">
-              <Search size={16} className="shrink-0 text-gray-400"/>
-              <input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Бараа хайх…"
-                className="flex-1 bg-transparent text-[16px] outline-none placeholder:text-gray-400 sm:text-sm"
-                inputMode="search"
-              />
-              {searching && <RefreshCw size={14} className="animate-spin text-gray-400"/>}
-              {search && !searching && (
-                <button
-                  onClick={() => { setSearch(""); setSearchResults([]); }}
-                  className="rounded p-1 text-gray-400 hover:bg-gray-100"
-                  aria-label="Цэвэрлэх"
-                >
-                  <X size={14}/>
-                </button>
-              )}
+            <div className="flex items-stretch gap-2">
+              <div className="flex flex-1 min-w-0 items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 transition focus-within:border-[#0071E3] focus-within:ring-2 focus-within:ring-[#0071E3]/15">
+                <Search size={16} className="shrink-0 text-gray-400"/>
+                <input
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Бараа хайх…"
+                  className="flex-1 min-w-0 bg-transparent text-[16px] outline-none placeholder:text-gray-400 sm:text-sm"
+                  inputMode="search"
+                />
+                {searching && <RefreshCw size={14} className="animate-spin shrink-0 text-gray-400"/>}
+                {search && !searching && (
+                  <button
+                    onClick={() => { setSearch(""); setSearchResults([]); }}
+                    className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100"
+                    aria-label="Цэвэрлэх"
+                  >
+                    <X size={14}/>
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => setShowScanner(true)}
                 title="Камераар баркод скан хийх"
-                className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#0071E3] px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#005BB5]"
+                aria-label="Скан"
+                className="inline-flex shrink-0 items-center justify-center rounded-xl bg-[#0071E3] px-3 text-white shadow-sm hover:bg-[#005BB5] active:scale-95"
               >
-                <Camera size={14}/>
-                <span className="hidden sm:inline">Скан</span>
+                <Camera size={18}/>
               </button>
             </div>
             {scanFlash && (
@@ -691,11 +801,25 @@ export default function ReceivingDetail() {
                   </div>
                 )}
 
-                {/* Brand override — chip товчнууд (Receiving Redesign дагуу) */}
+                {/* Brand override — chips + searchable picker */}
                 {(() => {
                   const isBrandless = !(selected.brand || "").trim();
                   const brandPicked = !!(addBrand && addBrand.trim());
                   const needsBrand  = isBrandless && !brandPicked;
+                  // Сонгох боломжтой бүх брэндийн нэгдсэн жагсаалт (давхрагүй)
+                  const sessionBrandNames = (session?.brands ?? [])
+                    .map(b => b.brand)
+                    .filter(b => b && b !== "Брэнд байхгүй");
+                  const seen = new Set<string>();
+                  const allOptions: string[] = [];
+                  const pushOpt = (b: string) => {
+                    const v = (b || "").trim();
+                    if (v && !seen.has(v)) { seen.add(v); allOptions.push(v); }
+                  };
+                  if (selected.brand) pushOpt(selected.brand);
+                  sessionBrandNames.forEach(pushOpt);
+                  allBrands.forEach(pushOpt);
+
                   return (
                 <div className={`mt-3 ${needsBrand ? "rounded-xl border-2 border-red-300 bg-red-50/60 p-2" : ""}`}>
                   <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold">
@@ -703,31 +827,29 @@ export default function ReceivingDetail() {
                       ? <span className="text-red-600">⚠ Брэндгүй бараа — заавал брэнд сонгоно уу</span>
                       : <span className="text-gray-500">Тулгах брэнд</span>}
                   </label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {/* Selected product-ын анхдагч brand */}
-                    {selected.brand && (
-                      <button
-                        type="button"
-                        onClick={() => setAddBrand("")}
-                        className={`rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all ${
-                          !addBrand || addBrand === selected.brand
-                            ? "bg-[#0071E3] text-white shadow-sm"
-                            : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
-                        }`}
-                      >
-                        {selected.brand}
-                      </button>
-                    )}
-                    {/* Session-доторх бусад brand-ууд */}
-                    {(session?.brands ?? [])
-                      .map(b => b.brand)
-                      .filter(b => b && b !== selected.brand && b !== "Брэнд байхгүй")
-                      .map(b => (
+
+                  {/* 1) Хурдан chip товчнууд: барааны өөрийн brand + session brands */}
+                  {(selected.brand || sessionBrandNames.length > 0) && (
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {selected.brand && (
+                        <button
+                          type="button"
+                          onClick={() => setAddBrand("")}
+                          className={`rounded-full px-3 py-1 text-[12px] font-semibold transition-all ${
+                            !addBrand || addBrand === selected.brand
+                              ? "bg-[#0071E3] text-white shadow-sm"
+                              : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
+                          }`}
+                        >
+                          {selected.brand}
+                        </button>
+                      )}
+                      {sessionBrandNames.filter(b => b !== selected.brand).map(b => (
                         <button
                           key={`s-${b}`}
                           type="button"
                           onClick={() => setAddBrand(b)}
-                          className={`rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all ${
+                          className={`rounded-full px-3 py-1 text-[12px] font-semibold transition-all ${
                             addBrand === b
                               ? "bg-[#0071E3] text-white shadow-sm"
                               : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
@@ -736,37 +858,19 @@ export default function ReceivingDetail() {
                           {b}
                         </button>
                       ))}
-                    {/* Системийн бусад brand-ууд (collapsed dropdown — overflow гарахгүй) */}
-                    {allBrands.filter(b =>
-                      b &&
-                      b !== selected.brand &&
-                      !(session?.brands ?? []).some(sb => sb.brand === b)
-                    ).length > 0 && (
-                      <select
-                        value={
-                          addBrand &&
-                          addBrand !== selected.brand &&
-                          !(session?.brands ?? []).some(sb => sb.brand === addBrand)
-                            ? addBrand : ""
-                        }
-                        onChange={e => setAddBrand(e.target.value)}
-                        className={`rounded-full border bg-white px-3 py-1.5 text-[12px] font-medium outline-none ${
-                          needsBrand
-                            ? "border-red-300 text-red-700 focus:border-red-500"
-                            : "border-gray-200 text-gray-600 focus:border-[#0071E3]"
-                        }`}
-                      >
-                        <option value="" disabled={needsBrand}>{needsBrand ? "Брэнд сонгоно уу..." : "+ Бусад брэнд"}</option>
-                        {allBrands
-                          .filter(b =>
-                            b &&
-                            b !== selected.brand &&
-                            !(session?.brands ?? []).some(sb => sb.brand === b)
-                          )
-                          .map(b => <option key={b} value={b}>{b}</option>)}
-                      </select>
-                    )}
-                  </div>
+                    </div>
+                  )}
+
+                  {/* 2) Searchable picker for system brands */}
+                  <BrandSearchPicker
+                    value={addBrand && addBrand !== selected.brand ? addBrand : ""}
+                    options={allOptions}
+                    onChange={(b) => setAddBrand(b)}
+                    placeholder={needsBrand ? "Брэнд сонгоно уу…" : "Бусад брэнд хайх…"}
+                    warn={needsBrand}
+                    className="max-w-xs"
+                  />
+
                   {addBrand && addBrand !== (selected.brand || "") && (
                     <p className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200/60">
                       <AlertTriangle size={11}/>
