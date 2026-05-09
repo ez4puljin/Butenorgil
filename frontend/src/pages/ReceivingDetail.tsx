@@ -522,6 +522,30 @@ export default function ReceivingDetail() {
     } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
   };
 
+  // Admin/manager/supervisor зөвхөн өмнөх төлөв рүү (price_review→matching эсвэл
+  // received→price_review) гар аргаар буцаах боломжтой. Confirm modal-аар хамгаалсан.
+  const canRevertStatus = role === "admin" || role === "manager" || role === "supervisor";
+  const revertToPrev = async () => {
+    if (!session) return;
+    const cur = session.status;
+    const prev = cur === "received" ? "price_review" : cur === "price_review" ? "matching" : null;
+    if (!prev) return;
+    const labelOf: Record<string, string> = {
+      matching: "Тулгаж байна",
+      price_review: "Үнэ хянагдаж байна",
+      received: "Орлого авсан",
+    };
+    if (!window.confirm(
+      `Статусыг "${labelOf[cur]}" → "${labelOf[prev]}" руу буцаах уу?\n\n` +
+      `Анхааруулга: Хойшид хийсэн өөрчлөлт алдагдахгүй боловч өмнөх алхамд ороод дахин баталгаажуулах хэрэгтэй болно.`
+    )) return;
+    try {
+      await api.patch(`/receivings/${session.id}/status`, { status: prev });
+      flash(`Статус "${labelOf[prev]}" руу буцлаа`);
+      await load();
+    } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
+  };
+
   if (!session) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-24 text-gray-400">
@@ -595,7 +619,23 @@ export default function ReceivingDetail() {
               <span className="ml-2 text-xs font-medium text-gray-400">#{session.id}</span>
             </h1>
           </div>
-          <StatusChip status={session.status} label={session.status_label}/>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <StatusChip status={session.status} label={session.status_label}/>
+            {canRevertStatus && session.status !== "matching" && (
+              <button
+                onClick={revertToPrev}
+                className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200/80 hover:bg-amber-100"
+                title={
+                  session.status === "received"
+                    ? "Үнэ хянах руу буцаах"
+                    : "Тулгаж байна руу буцаах"
+                }
+              >
+                <Undo2 size={11}/>
+                Буцаах
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Sub-info row — created_by + brand count */}

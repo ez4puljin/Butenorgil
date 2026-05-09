@@ -180,26 +180,45 @@ def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = T
     return result
 
 
-def _auto_advance_if_all_matched(session: ReceivingSession, db: Session):
-    """Бүх effective brand matched болсон бөгөөд одоогоор 'matching' төлөвт байвал 'price_review' рүү шилжүүлнэ."""
-    if session.status != "matching":
-        return
-    # Override-тай line-ыг тооцох тул Python-side-аар effective brand тооцно.
-    # Хоосон brand нь UI-д "Брэнд байхгүй" гэж confirm хийгддэг тул тэр хэлбэрт нь хөрвүүлэв.
+def _all_and_matched_brands(session: ReceivingSession, db: Session) -> tuple[set[str], set[str]]:
+    """Session-ы өнөөгийн line-уудаас effective brand-ууд + ReceivingBrandStatus
+    дотроос is_matched=True брэндүүдийг буцаана."""
     lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == session.id).all()
     prod_ids = [l.product_id for l in lines]
     products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
     all_brands = {(_effective_brand(l, products.get(l.product_id)) or "Брэнд байхгүй") for l in lines}
-    if not all_brands:
-        return
     matched_brands = set(
         bs.brand for bs in db.query(ReceivingBrandStatus).filter(
             ReceivingBrandStatus.session_id == session.id,
             ReceivingBrandStatus.is_matched == True,
         ).all()
     )
+    return all_brands, matched_brands
+
+
+def _auto_advance_if_all_matched(session: ReceivingSession, db: Session):
+    """Бүх effective brand matched болсон бөгөөд одоогоор 'matching' төлөвт байвал 'price_review' рүү шилжүүлнэ."""
+    if session.status != "matching":
+        return
+    all_brands, matched_brands = _all_and_matched_brands(session, db)
+    if not all_brands:
+        return
     if all_brands.issubset(matched_brands):
         session.status = "price_review"
+        db.commit()
+
+
+def _revert_if_unmatched_brand_appears(session: ReceivingSession, db: Session):
+    """Session нь price_review/received төлөвт ороод дараа нь шинэ brand-тай line
+    нэмэгдсэн бол → matching рүү буцаана. (Жишээ: "Нүнжиг цех" нэмэгдчихсэн ч баримт
+    тулгагдаагүй учир тулгалт дуусаагүй гэж үзнэ.)"""
+    if session.status not in ("price_review", "received"):
+        return
+    all_brands, matched_brands = _all_and_matched_brands(session, db)
+    if not all_brands:
+        return
+    if not all_brands.issubset(matched_brands):
+        session.status = "matching"
         db.commit()
 
 
@@ -373,6 +392,10 @@ def add_line(
         if body.note:
             existing.note = body.note
         db.commit(); db.refresh(existing)
+        # Шинэ brand гарч ирвэл (ховор боловч merge тохиолдолд override өөрчлөгдөхгүй
+        # учир ихэвчлэн нөлөөгүй) session-ыг шалгаад matching-руу буцаах хэрэгтэй
+        # эсэхийг шалгана.
+        _revert_if_unmatched_brand_appears(s, db)
         _notify(session_id, "line_merged")
         return _serialize_line(existing, p)
     ln = ReceivingLine(
@@ -384,6 +407,9 @@ def add_line(
         note=body.note or "",
     )
     db.add(ln); db.commit(); db.refresh(ln)
+    # Шинэ line нэмэгдсэний дараа: хэрэв тулгалтын дараа шинэ brand гарсан бол
+    # session-ыг "matching" төлөв рүү буцаана (auto-revert).
+    _revert_if_unmatched_brand_appears(s, db)
     _notify(session_id, "line_added")
     return _serialize_line(ln, p)
 
@@ -431,6 +457,10 @@ def update_line(
     if body.note is not None:
         ln.note = body.note
     db.commit(); db.refresh(ln)
+    # override_brand өөрчлөгдсөн бол шинэ brand нэмэгдэх боломжтой → session-ыг шалгана.
+    s_obj = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
+    if s_obj:
+        _revert_if_unmatched_brand_appears(s_obj, db)
     _notify(session_id, "line_updated")
     return _serialize_line(ln, p)
 
@@ -471,6 +501,12 @@ def delete_line(
     if not ln:
         raise HTTPException(404, "Мөр олдсонгүй")
     db.delete(ln); db.commit()
+    # Line устгасны дараа: үлдсэн brand-ууд бүгд тулгагдсан байж auto-advance
+    # хийгдэх ёстой бол шилжүүлнэ; эсрэгээрээ шинэ brand гарсан бол буцаана.
+    s_obj = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
+    if s_obj:
+        _auto_advance_if_all_matched(s_obj, db)
+        _revert_if_unmatched_brand_appears(s_obj, db)
     _notify(session_id, "line_deleted")
     return {"ok": True}
 
@@ -573,6 +609,11 @@ def unmatch_brand(
     bs.is_matched = False
     bs.matched_at = None
     db.commit()
+    # Тулгалт буцаасны дараа: session нь price_review/received төлөвт байсан бол
+    # автоматаар matching рүү буцаана.
+    s_obj = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
+    if s_obj:
+        _revert_if_unmatched_brand_appears(s_obj, db)
     _notify(session_id, "brand_unmatched")
     return {"ok": True}
 
