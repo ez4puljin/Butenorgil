@@ -697,22 +697,42 @@ export default function ReceivingDetail() {
           </button>
         )}
         {session.status === "price_review" && (
-          <div className="mt-3 grid grid-cols-2 gap-1.5">
-            <button
-              onClick={() => setShowERPModal(true)}
-              className="flex h-10 items-center justify-center gap-1.5 rounded-xl bg-indigo-50 text-[12px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-200/60 hover:bg-indigo-100"
-            >
-              <FileDown size={14}/>
-              Нэгтгэсэн ERP
-            </button>
-            <button
-              onClick={() => advanceTo("received")}
-              className="flex h-10 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-[12px] font-bold text-white shadow-sm hover:bg-emerald-700"
-            >
-              <CheckCircle2 size={14}/>
-              Орлого авсан
-            </button>
-          </div>
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => setShowERPModal(true)}
+                className="flex h-10 items-center justify-center gap-1.5 rounded-xl bg-indigo-50 text-[12px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-200/60 hover:bg-indigo-100"
+              >
+                <FileDown size={14}/>
+                Нэгтгэсэн ERP
+              </button>
+              <button
+                onClick={() => advanceTo("received")}
+                className="flex h-10 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-[12px] font-bold text-white shadow-sm hover:bg-emerald-700"
+              >
+                <CheckCircle2 size={14}/>
+                Орлого авсан
+              </button>
+            </div>
+            {canRevertStatus && (
+              <button
+                onClick={revertToPrev}
+                className="mt-1.5 flex h-9 w-full items-center justify-center gap-1.5 rounded-xl bg-amber-50 text-[12px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-200/80 hover:bg-amber-100"
+              >
+                <Undo2 size={13}/>
+                Тулгаж байна руу буцаах
+              </button>
+            )}
+          </>
+        )}
+        {session.status === "received" && canRevertStatus && (
+          <button
+            onClick={revertToPrev}
+            className="mt-3 flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-amber-50 text-[13px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200/80 hover:bg-amber-100"
+          >
+            <Undo2 size={14}/>
+            Үнэ хянах руу буцаах
+          </button>
         )}
       </div>
 
