@@ -77,6 +77,18 @@ def _extract_date_from_desc(desc: str):
 
 
 def _parse_excel(content: bytes, filename: str) -> dict:
+    """Хаанбанкны бодит хуулга Excel-ийн форматыг танина:
+
+    Row 0: Хэвлэсэн огноо / Хэрэглэгч / Интервал гэх мэт нийтлэг
+            мэдээлэл (col[6] нь интервал огноо, e.g. "2026/05/07").
+    Row 1: Багана-ын гарчиг
+        col[0] Гүйлгээний огноо   col[1] Салбар
+        col[2] Эхний үлдэгдэл     col[3] Дебит гүйлгээ (- утгатай)
+        col[4] Кредит гүйлгээ     col[5] Эцсийн үлдэгдэл
+        col[6] Гүйлгээний утга    col[7] Харьцсан данс
+    Row 2..n: Гүйлгээний мөрүүд.
+    Last row: "Нийт дүн:" нийлбэр (хасна).
+    """
     account_number, currency = "", "MNT"
     m = re.search(r"Statement_([A-Z]+)_(\d+)", filename)
     if m:
@@ -85,55 +97,86 @@ def _parse_excel(content: bytes, filename: str) -> dict:
 
     raw = pd.read_excel(io.BytesIO(content), header=None, sheet_name=0)
 
+    # Row 0-аас Интервал огноо ялгаж авна. col[5] = "Интервал:", col[6] = "YYYY/MM/DD"
+    # Зарим хуулга нэг өдрийнх (col[6] -д нэг л огноо), зарим нь "from to" range.
     date_from = date_to = None
     try:
-        date_str = str(raw.iloc[0, 2]) if raw.shape[1] > 2 else ""
-        parts = re.findall(r"\d{4}[/\-]\d{2}[/\-]\d{2}", date_str)
-        fmt = "%Y/%m/%d" if "/" in (parts[0] if parts else "") else "%Y-%m-%d"
-        if len(parts) >= 2:
-            date_from = datetime.strptime(parts[0], fmt).date()
-            date_to   = datetime.strptime(parts[1], fmt).date()
-        elif len(parts) == 1:
-            date_from = date_to = datetime.strptime(parts[0], fmt).date()
+        # Бүх row 0-н текстээс огноо хайна (Хэвлэсэн огноо + Интервал хоёулангаас)
+        joined = " ".join(str(v) for v in raw.iloc[0].tolist() if pd.notna(v))
+        parts = re.findall(r"\d{4}[/\-]\d{2}[/\-]\d{2}", joined)
+        # Эхний нь Хэвлэсэн огноо (MM/DD/YYYY байж болно), сүүлийн 1-2 нь Интервал
+        # → Интервал-ыг сонгохын тулд YYYY-prefix хоёрт нь анхаарна
+        ymd_parts = [p for p in parts if re.match(r"^\d{4}", p)]
+        if len(ymd_parts) >= 2:
+            date_from = datetime.strptime(ymd_parts[-2], "%Y/%m/%d").date()
+            date_to   = datetime.strptime(ymd_parts[-1], "%Y/%m/%d").date()
+        elif len(ymd_parts) == 1:
+            date_from = date_to = datetime.strptime(ymd_parts[-1], "%Y/%m/%d").date()
     except Exception:
         pass
 
-    df = pd.read_excel(io.BytesIO(content), header=1, sheet_name=0)
-    if len(df) > 0:
-        last_val = str(df.iloc[-1, 0])
-        if last_val.startswith("Нийт") or pd.isna(df.iloc[-1, 0]):
-            df = df.iloc[:-1]
+    # Header нь row 1 — гарчиг тэмдэглэгээ. Data row 2-оос эхэлнэ.
+    # `header=None`-аар уншиж шууд багана index-ээр хандана.
+    df = raw
 
     transactions = []
-    for _, row in df.iterrows():
+    for i in range(2, len(df)):
+        row = df.iloc[i]
+        # Эхний баганд "Нийт дүн" эсвэл хоосон бол алгасна (нийлбэр мөр)
+        first = row.iloc[0]
+        if pd.isna(first):
+            continue
+        first_str = str(first).strip()
+        if not first_str or first_str.startswith("Нийт"):
+            continue
+
+        # col[0] — Гүйлгээний огноо (datetime)
         txn_date = None
         try:
-            raw_date = row.iloc[0]
-            if pd.notna(raw_date):
-                txn_date = pd.to_datetime(raw_date).to_pydatetime()
+            txn_date = pd.to_datetime(first).to_pydatetime()
+        except Exception:
+            continue  # огноо парс хийгдэхгүй бол data row биш
+
+        # col[3] — Дебит (Excel-д сөрөг утгатай → abs())
+        raw_debit  = 0.0
+        try:
+            v = row.iloc[3] if df.shape[1] > 3 else 0
+            if pd.notna(v): raw_debit = float(v)
+        except Exception:
+            pass
+        debit = abs(raw_debit)
+
+        # col[4] — Кредит
+        credit = 0.0
+        try:
+            v = row.iloc[4] if df.shape[1] > 4 else 0
+            if pd.notna(v): credit = float(v)
         except Exception:
             pass
 
-        # Дебит: Excel-д сөрөг тоогоор хадгалагддаг (-50, -26871200) → abs() авна
-        raw_debit  = float(row.iloc[1]) if pd.notna(row.iloc[1]) else 0.0
-        debit  = abs(raw_debit)
-        credit = float(row.iloc[2]) if pd.notna(row.iloc[2]) else 0.0
-        desc   = str(row.iloc[3]) if pd.notna(row.iloc[3]) else ""
+        # col[6] — Гүйлгээний утга
+        desc = ""
+        if df.shape[1] > 6:
+            v = row.iloc[6]
+            if pd.notna(v):
+                desc = str(v).strip()
+                if desc.lower() == "nan":
+                    desc = ""
 
-        # Харьцсан данс: float-оор унших үед "5893180078.0" болдог → int болгож цэвэрлэнэ
+        # col[7] — Харьцсан данс (зарим мөрд хоосон)
         cpart = ""
-        if df.shape[1] > 4 and pd.notna(row.iloc[4]):
-            raw_cp = row.iloc[4]
-            try:
-                # Дансны дугаар — бүхэл тоо болгоно (5893180078.0 → "5893180078")
-                cpart = str(int(float(str(raw_cp))))
-            except (ValueError, OverflowError):
-                cpart = str(raw_cp)
-        if desc  == "nan": desc  = ""
-        if cpart == "nan": cpart = ""
+        if df.shape[1] > 7:
+            v = row.iloc[7]
+            if pd.notna(v):
+                try:
+                    # 5303363476.0 → "5303363476"
+                    cpart = str(int(float(str(v))))
+                except (ValueError, OverflowError):
+                    cpart = str(v).strip()
+                if cpart.lower() == "nan":
+                    cpart = ""
 
         is_fee_row = _is_fee(desc)
-        # Кредит (орлого) мөр шимтгэл биш бол → анхдагч action = "close" (Хаах)
         default_action = "close" if (credit > 0 and not is_fee_row) else ""
         transactions.append({
             "txn_date":         txn_date,
