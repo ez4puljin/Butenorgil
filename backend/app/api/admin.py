@@ -1,7 +1,10 @@
 ﻿import re
+import json
 import pandas as pd
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -10,6 +13,7 @@ from app.api.deps import get_db, parse_tag_ids, require_role
 from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.models.role import Role
+from app.models.audit_log import AuditLog
 from app.schemas.user import UserCreate
 from app.services.master_refresh import refresh_products_from_master
 from app.models.min_stock_rule import MinStockRule
@@ -747,3 +751,125 @@ def list_distinct_tags(
         "location_tags": sorted(loc),
         "price_tags": sorted(pri),
     }
+
+
+# ── Audit Log ──────────────────────────────────────────────────────────────
+def _serialize_audit(a: AuditLog) -> dict:
+    """AuditLog row-г JSON хариунд бэлдэх (before/after-ыг дискодлоно)."""
+    def _decode(s: str):
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except Exception:
+            return s
+
+    return {
+        "id": a.id,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "user_id": a.user_id,
+        "username": a.username,
+        "role": a.role,
+        "ip_address": a.ip_address,
+        "action": a.action,
+        "entity_type": a.entity_type,
+        "entity_id": a.entity_id,
+        "parent_type": a.parent_type,
+        "parent_id": a.parent_id,
+        "before": _decode(a.before_value),
+        "after": _decode(a.after_value),
+        "extra": _decode(a.extra),
+    }
+
+
+@router.get("/audit-log")
+def list_audit_log(
+    action: Optional[str] = Query(None, description="Action prefix-ээр шүүх"),
+    parent_type: Optional[str] = Query(None),
+    parent_id: Optional[int] = Query(None),
+    entity_type: Optional[str] = Query(None),
+    entity_id: Optional[int] = Query(None),
+    user_id: Optional[int] = Query(None),
+    username: Optional[str] = Query(None),
+    ip_address: Optional[str] = Query(None),
+    since_hours: Optional[int] = Query(
+        None, description="Сүүлийн N цагт хийгдсэн audit бичлэгүүд"
+    ),
+    since_date: Optional[str] = Query(
+        None, description="YYYY-MM-DD огнооноос хойш"
+    ),
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "supervisor")),
+):
+    """
+    Audit log жагсаалт. Гол filters:
+    - parent_type='purchase_order'&parent_id=46 → PO #46-тай холбоотой бүх үйлдэл
+    - action='po_set_lines' → set-lines дуудалтууд
+    - user_id эсвэл username → тухайн хэрэглэгчийн үйлдлүүд
+    - ip_address → тухайн IP-ийн үйлдлүүд
+    - since_hours=24 → сүүлийн 24 цаг
+
+    Sort: хамгийн шинэ нь эхэнд.
+    """
+    q = db.query(AuditLog)
+    if action:
+        # Prefix match — "po_" нь PO-тэй холбоотой бүгдийг авна
+        if action.endswith("*"):
+            q = q.filter(AuditLog.action.like(action.rstrip("*") + "%"))
+        else:
+            q = q.filter(AuditLog.action == action)
+    if parent_type:
+        q = q.filter(AuditLog.parent_type == parent_type)
+    if parent_id is not None:
+        q = q.filter(AuditLog.parent_id == int(parent_id))
+    if entity_type:
+        q = q.filter(AuditLog.entity_type == entity_type)
+    if entity_id is not None:
+        q = q.filter(AuditLog.entity_id == int(entity_id))
+    if user_id is not None:
+        q = q.filter(AuditLog.user_id == int(user_id))
+    if username:
+        q = q.filter(AuditLog.username.like(f"%{username}%"))
+    if ip_address:
+        q = q.filter(AuditLog.ip_address == ip_address)
+    if since_hours:
+        cutoff = datetime.utcnow() - timedelta(hours=int(since_hours))
+        q = q.filter(AuditLog.created_at >= cutoff)
+    if since_date:
+        try:
+            d = datetime.strptime(since_date, "%Y-%m-%d")
+            q = q.filter(AuditLog.created_at >= d)
+        except Exception:
+            pass
+
+    total = q.count()
+    rows = (
+        q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [_serialize_audit(r) for r in rows],
+    }
+
+
+@router.get("/audit-log/distinct-actions")
+def list_audit_distinct_actions(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "supervisor")),
+):
+    """Filter UI-д ашиглах distinct action жагсаалт."""
+    rows = (
+        db.query(AuditLog.action)
+        .filter(AuditLog.action != "")
+        .distinct()
+        .order_by(AuditLog.action.asc())
+        .all()
+    )
+    return [r[0] for r in rows if r[0]]

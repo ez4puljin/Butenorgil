@@ -3,13 +3,14 @@ from datetime import date as date_type
 from typing import Optional, List
 import io
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.api.deps import get_db, get_current_user, require_role, parse_tag_ids
+from app.core.audit import audit
 from app.models.purchase_order import (
     PurchaseOrder, PurchaseOrderLine, PurchaseOrderBrandVehicle,
     PurchaseOrderBrandStatus, OrderExtraLine, POShipment, POShipmentLine,
@@ -608,6 +609,7 @@ def get_order_dashboard(
 @router.patch("/{order_id}/brand-advance")
 def advance_brand_status(
     order_id: int,
+    request: Request,
     brand: str = Query(...),
     db: Session = Depends(get_db),
     u: User = Depends(get_current_user),
@@ -648,7 +650,16 @@ def advance_brand_status(
                 if (line.unit_price or 0) == 0 and (p.last_purchase_price or 0) > 0:
                     line.unit_price = p.last_purchase_price
 
+    old_status = bs.status
     bs.status = next_st
+    audit(db, request, u,
+          action="po_brand_advance",
+          entity_type="purchase_order_brand_status",
+          entity_id=int(bs.id),
+          parent_type="purchase_order",
+          parent_id=int(po.id),
+          before={"brand": brand, "status": old_status},
+          after={"brand": brand, "status": next_st})
     db.commit()
 
     _sync_po_status_from_brands(order_id, db)
@@ -1086,6 +1097,7 @@ class ArchiveIn(BaseModel):
 def archive_order(
     order_id: int,
     body: ArchiveIn,
+    request: Request,
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor")),
 ):
@@ -1093,7 +1105,18 @@ def archive_order(
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
-    po.is_archived = bool(body.archived)
+    old_archived = bool(po.is_archived)
+    new_archived = bool(body.archived)
+    po.is_archived = new_archived
+    if old_archived != new_archived:
+        audit(db, request, u,
+              action="po_archive" if new_archived else "po_unarchive",
+              entity_type="purchase_order",
+              entity_id=int(po.id),
+              parent_type="purchase_order",
+              parent_id=int(po.id),
+              before={"is_archived": old_archived},
+              after={"is_archived": new_archived})
     db.commit()
     return {"ok": True, "is_archived": po.is_archived}
 
@@ -1101,6 +1124,7 @@ def archive_order(
 def force_status(
     order_id: int,
     body: ForceStatusIn,
+    request: Request,
     brand: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin")),
@@ -1123,7 +1147,16 @@ def force_status(
         ).first()
         if not bs:
             raise HTTPException(404, f"'{brand}' брендийн статус олдсонгүй")
+        old_status = bs.status
         bs.status = body.status
+        audit(db, request, u,
+              action="po_force_status_brand",
+              entity_type="purchase_order_brand_status",
+              entity_id=int(bs.id),
+              parent_type="purchase_order",
+              parent_id=int(po.id),
+              before={"brand": brand, "status": old_status},
+              after={"brand": brand, "status": body.status})
         db.commit()
         _sync_po_status_from_brands(order_id, db)
         return {
@@ -1135,11 +1168,23 @@ def force_status(
         }
 
     # Бүх бренд + PO status нэг утгад шилжүүлэх
+    old_po_status = po.status
     po.status = body.status
+    brand_changes = []
     for bs in db.query(PurchaseOrderBrandStatus).filter(
         PurchaseOrderBrandStatus.purchase_order_id == order_id
     ).all():
+        brand_changes.append({"brand": bs.brand, "from": bs.status, "to": body.status})
         bs.status = body.status
+    audit(db, request, u,
+          action="po_force_status_all",
+          entity_type="purchase_order",
+          entity_id=int(po.id),
+          parent_type="purchase_order",
+          parent_id=int(po.id),
+          before={"status": old_po_status},
+          after={"status": body.status},
+          extra={"brand_changes": brand_changes})
     db.commit()
     return {"ok": True, "new_status": po.status, "new_status_label": STATUS_LABEL.get(po.status, po.status)}
 
@@ -1148,6 +1193,7 @@ def force_status(
 def set_lines(
     order_id: int,
     lines: List[POLineIn],
+    request: Request,
     db: Session = Depends(get_db),
     u: User = Depends(get_current_user),
 ):
@@ -1188,6 +1234,22 @@ def set_lines(
     # Build lookup map for existing lines
     line_map = {l.product_id: l for l in po.lines}
 
+    # Audit log хадгалах: өөрчлөгдсөн line бүрт өмнөх ба шинэ snapshot
+    audit_entries: list[dict] = []
+
+    def _snapshot(ln: PurchaseOrderLine) -> dict:
+        """Audit-д хадгалах гол талбаруудыг dict болгож буцаана."""
+        return {
+            "order_qty_box": float(ln.order_qty_box or 0),
+            "order_qty_pcs": float(ln.order_qty_pcs or 0),
+            "supplier_qty_box": float(ln.supplier_qty_box or 0),
+            "loaded_qty_box": float(ln.loaded_qty_box or 0),
+            "received_qty_box": float(ln.received_qty_box or 0),
+            "received_qty_extra_pcs": float(ln.received_qty_extra_pcs or 0),
+            "unit_price": float(ln.unit_price or 0),
+            "line_remark": ln.line_remark or "",
+        }
+
     for li in lines:
         if li.product_id not in line_map:
             continue
@@ -1201,6 +1263,8 @@ def set_lines(
 
         # Use per-brand status if available, fallback to PO status
         effective_st = brand_status_map.get(p.brand, po.status)
+
+        before_snap = _snapshot(line)
 
         if effective_st == "arrived":
             if li.received_qty_box is not None:
@@ -1240,6 +1304,30 @@ def set_lines(
                     if len(sh_lines) == 1:
                         sh_lines[0].loaded_qty_box = new_loaded
 
+        after_snap = _snapshot(line)
+        # Зөвхөн утга нь үнэхээр өөрчлөгдсөн line-уудыг audit-д бичнэ
+        if before_snap != after_snap:
+            audit_entries.append({
+                "action": "po_set_lines",
+                "entity_type": "purchase_order_line",
+                "entity_id": int(line.id),
+                "parent_type": "purchase_order",
+                "parent_id": int(po.id),
+                "before": before_snap,
+                "after": after_snap,
+                "extra": {
+                    "product_id": int(p.id),
+                    "product_name": p.name,
+                    "brand": p.brand or "",
+                    "effective_status": effective_st,
+                },
+            })
+
+    # Audit row-уудыг үндсэн commit-ийн өмнө нэмнэ — ингэснээр transaction
+    # нэгдмэл байх ба audit алдагдвал бодит өөрчлөлт ч rollback болно.
+    for e in audit_entries:
+        audit(db, request, u, **e)
+
     db.commit()
 
     # Ensure brand status records exist for any new brands
@@ -1252,12 +1340,32 @@ def set_lines(
 @router.delete("/{order_id}")
 def delete_order(
     order_id: int,
+    request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    u: User = Depends(require_role("admin")),
 ):
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
+    # AUDIT — PO өөрийг устгахын өмнө snapshot
+    line_count = db.query(PurchaseOrderLine).filter(
+        PurchaseOrderLine.purchase_order_id == order_id
+    ).count()
+    audit(db, request, u,
+          action="po_delete",
+          entity_type="purchase_order",
+          entity_id=int(po.id),
+          parent_type="purchase_order",
+          parent_id=int(po.id),
+          before={
+              "id": po.id,
+              "order_date": str(po.order_date) if po.order_date else "",
+              "status": po.status,
+              "notes": po.notes or "",
+              "is_archived": bool(po.is_archived),
+              "line_count": line_count,
+          },
+          after=None)
     # Delete brand-vehicle assignments first (no cascade on this model)
     db.query(PurchaseOrderBrandVehicle).filter(
         PurchaseOrderBrandVehicle.purchase_order_id == order_id
@@ -1271,6 +1379,7 @@ def delete_order(
 def delete_line(
     order_id: int,
     line_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     u: User = Depends(require_role("manager", "admin", "supervisor", "warehouse_clerk")),
 ):
@@ -1304,6 +1413,27 @@ def delete_line(
     else:
         if effective_st not in ("loading", "arrived"):
             raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' болон 'Ачаа ирсэн' статуст мөр устгана")
+
+    # AUDIT — line устгахын өмнө snapshot
+    audit(db, request, u,
+          action="po_delete_line",
+          entity_type="purchase_order_line",
+          entity_id=int(line.id),
+          parent_type="purchase_order",
+          parent_id=int(po.id),
+          before={
+              "product_id": line.product_id,
+              "product_name": product.name if product else "",
+              "brand": brand or "",
+              "order_qty_box": float(line.order_qty_box or 0),
+              "order_qty_pcs": float(line.order_qty_pcs or 0),
+              "supplier_qty_box": float(line.supplier_qty_box or 0),
+              "loaded_qty_box": float(line.loaded_qty_box or 0),
+              "received_qty_box": float(line.received_qty_box or 0),
+              "unit_price": float(line.unit_price or 0),
+              "effective_status": effective_st,
+          },
+          after=None)
 
     # Холбоотой shipment line-уудыг эхлээд устгах (FK clean)
     db.query(POShipmentLine).filter(POShipmentLine.po_line_id == line_id).delete()

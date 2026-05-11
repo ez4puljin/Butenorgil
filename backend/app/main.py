@@ -20,6 +20,7 @@ from app.models.calendar_label import CalendarLabel  # noqa: F401 – registers 
 from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrandStatus  # noqa: F401 – registers tables
 from app.models.min_stock_rule import MinStockRule  # noqa: F401 – registers table
 from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig, SettlementConfig, CrossAccountPreset, FeeConfig  # noqa: F401 – registers tables
+from app.models.audit_log import AuditLog  # noqa: F401 – registers table
 
 app = FastAPI(title=settings.app_name)
 

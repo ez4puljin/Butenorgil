@@ -8,6 +8,7 @@ import Imports from "./pages/Imports";
 import Reports from "./pages/Reports";
 import Admin from "./pages/Admin";
 import AdminMinStock from "./pages/AdminMinStock";
+import AuditLogPage from "./pages/AuditLog";
 import ManagerOrders from "./pages/ManagerOrders";
 import OrderSupervisor from "./pages/OrderSupervisor";
 import AccountsReceivable from "./pages/AccountsReceivable";
@@ -193,6 +194,10 @@ export default function App() {
                 <Route
                   path="/admin/min-stock"
                   element={can("admin_panel") ? <AdminMinStock /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/admin/audit-log"
+                  element={can("admin_panel") ? <AuditLogPage /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/kpi/checklist"

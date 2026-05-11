@@ -1,7 +1,7 @@
 """
 Бараа тулгаж авах (receiving) endpoint-ууд.
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func as _func
@@ -13,6 +13,7 @@ import io
 import re
 
 from app.api.deps import get_db, get_current_user, require_role
+from app.core.audit import audit
 from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrandStatus
 from app.models.product import Product
 from app.models.user import User
@@ -318,6 +319,7 @@ def update_session(
 def set_status(
     session_id: int,
     body: StatusIn,
+    request: Request,
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor", "accountant")),
 ):
@@ -326,7 +328,17 @@ def set_status(
         raise HTTPException(404, "Receiving session олдсонгүй")
     if body.status not in STATUS_SEQUENCE:
         raise HTTPException(400, "Буруу статус")
+    old_status = s.status
     s.status = body.status
+    if old_status != body.status:
+        audit(db, request, u,
+              action="receiving_set_status",
+              entity_type="receiving_session",
+              entity_id=int(s.id),
+              parent_type="receiving_session",
+              parent_id=int(s.id),
+              before={"status": old_status},
+              after={"status": body.status})
     db.commit()
     _notify(session_id, "status_changed")
     return _serialize_session(s, db, include_lines=False)
@@ -335,6 +347,7 @@ def set_status(
 @router.patch("/{session_id}/archive")
 def archive_session(
     session_id: int,
+    request: Request,
     archived: bool = Query(True),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor")),
@@ -342,7 +355,18 @@ def archive_session(
     s = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
     if not s:
         raise HTTPException(404, "Receiving session олдсонгүй")
-    s.is_archived = bool(archived)
+    old_archived = bool(s.is_archived)
+    new_archived = bool(archived)
+    s.is_archived = new_archived
+    if old_archived != new_archived:
+        audit(db, request, u,
+              action="receiving_archive" if new_archived else "receiving_unarchive",
+              entity_type="receiving_session",
+              entity_id=int(s.id),
+              parent_type="receiving_session",
+              parent_id=int(s.id),
+              before={"is_archived": old_archived},
+              after={"is_archived": new_archived})
     db.commit()
     return {"ok": True, "is_archived": s.is_archived}
 
@@ -350,12 +374,31 @@ def archive_session(
 @router.delete("/{session_id}")
 def delete_session(
     session_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor")),
 ):
     s = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
     if not s:
         raise HTTPException(404, "Receiving session олдсонгүй")
+    line_count = db.query(ReceivingLine).filter(
+        ReceivingLine.session_id == session_id
+    ).count()
+    audit(db, request, u,
+          action="receiving_delete",
+          entity_type="receiving_session",
+          entity_id=int(s.id),
+          parent_type="receiving_session",
+          parent_id=int(s.id),
+          before={
+              "id": s.id,
+              "date": str(s.date) if s.date else "",
+              "status": s.status,
+              "notes": s.notes or "",
+              "is_archived": bool(s.is_archived),
+              "line_count": line_count,
+          },
+          after=None)
     db.delete(s); db.commit()
     return {"ok": True}
 
@@ -491,6 +534,7 @@ def toggle_price_review(
 def delete_line(
     session_id: int,
     line_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor", "warehouse_clerk", "accountant")),
 ):
@@ -500,6 +544,23 @@ def delete_line(
     ).first()
     if not ln:
         raise HTTPException(404, "Мөр олдсонгүй")
+    p_for_audit = db.query(Product).filter(Product.id == ln.product_id).first()
+    audit(db, request, u,
+          action="receiving_delete_line",
+          entity_type="receiving_line",
+          entity_id=int(ln.id),
+          parent_type="receiving_session",
+          parent_id=int(session_id),
+          before={
+              "product_id": ln.product_id,
+              "product_name": p_for_audit.name if p_for_audit else "",
+              "brand": _effective_brand(ln, p_for_audit),
+              "qty_pcs": float(ln.qty_pcs or 0),
+              "unit_price": float(ln.unit_price or 0),
+              "override_brand": ln.override_brand or "",
+              "note": ln.note or "",
+          },
+          after=None)
     db.delete(ln); db.commit()
     # Line устгасны дараа: үлдсэн brand-ууд бүгд тулгагдсан байж auto-advance
     # хийгдэх ёстой бол шилжүүлнэ; эсрэгээрээ шинэ brand гарсан бол буцаана.
@@ -596,6 +657,7 @@ async def confirm_brand(
 @router.post("/{session_id}/brands/unmatch")
 def unmatch_brand(
     session_id: int,
+    request: Request,
     brand: str = Query(...),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor")),
@@ -606,6 +668,20 @@ def unmatch_brand(
     ).first()
     if not bs:
         raise HTTPException(404, "Тулгалт олдсонгүй")
+    audit(db, request, u,
+          action="receiving_unmatch_brand",
+          entity_type="receiving_brand_status",
+          entity_id=int(bs.id),
+          parent_type="receiving_session",
+          parent_id=int(session_id),
+          before={
+              "brand": bs.brand,
+              "is_matched": True,
+              "supplier_total_pcs": float(bs.supplier_total_pcs or 0),
+              "supplier_total_amount": float(bs.supplier_total_amount or 0),
+              "matched_at": bs.matched_at.isoformat() if bs.matched_at else None,
+          },
+          after={"brand": bs.brand, "is_matched": False, "matched_at": None})
     bs.is_matched = False
     bs.matched_at = None
     db.commit()
