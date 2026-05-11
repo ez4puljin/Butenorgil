@@ -5,7 +5,7 @@ from sqlalchemy import text
 from pathlib import Path
 import asyncio
 import sqlite3 as _sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
@@ -363,17 +363,20 @@ _BACKUP_DIR = Path(__file__).resolve().parent / "data" / "backups"
 
 def perform_db_backup() -> Path:
     """DB-г SQLite online backup API-аар хуулж хадгална.
-    Зөвхөн нэг Lastest_YYYYMMDD_HHMM.db файл байна — хуучин нь устгагдана.
+
+    Хадгалах policy: rolling retention. Доорхи snapshot-уудыг хадгална.
+      - Сүүлийн 24 цагийн ЦАГ ТУТМЫН backup (24 ширхэг)
+      - Сүүлийн 14 хоногийн ӨДӨР ТУТМЫН backup (өдөр бүрийн эхний backup)
+      - Сүүлийн 12 сарын САР ТУТМЫН backup (сар бүрийн эхний backup)
+
+    Бусад нь автоматаар устгагдана.
+
+    Энэ нь өмнө байсан "ганц л Lastest_*.db" policy-ийг орлуулсан —
+    мэдээлэл алдсан тохиолдолд илүү алс хол буцаж сэргээх боломжтой.
     """
     _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    # Өмнөх backup файлуудыг устга
-    for old in _BACKUP_DIR.glob("Lastest_*.db"):
-        try:
-            old.unlink()
-        except Exception:
-            pass
     ts = datetime.now().strftime("%Y%m%d_%H%M")
-    target = _BACKUP_DIR / f"Lastest_{ts}.db"
+    target = _BACKUP_DIR / f"backup_{ts}.db"
     src = _sqlite3.connect(str(_DB_PATH))
     dst = _sqlite3.connect(str(target))
     try:
@@ -382,7 +385,79 @@ def perform_db_backup() -> Path:
     finally:
         src.close()
         dst.close()
+    # Symlink/copy-биш — зөвхөн нэр өөрчилж "Lastest" pointer хадгална
+    try:
+        latest_ptr = _BACKUP_DIR / "Lastest_pointer.txt"
+        latest_ptr.write_text(target.name, encoding="utf-8")
+    except Exception:
+        pass
+    _prune_backups()
     return target
+
+
+def _prune_backups() -> None:
+    """Backup retention policy enforce хийнэ.
+
+    Хадгалах: сүүлийн 24 цагийн hourly, 14 хоногийн daily, 12 сарын monthly.
+    """
+    try:
+        now = datetime.now()
+        files = []
+        # Хуучин "Lastest_*.db" хэлбэрийг ч хүлээн авна
+        for pattern in ("backup_*.db", "Lastest_*.db"):
+            for p in _BACKUP_DIR.glob(pattern):
+                # Файлын нэрнээс timestamp гаргах: backup_YYYYMMDD_HHMM.db
+                try:
+                    stem = p.stem
+                    # "backup_" эсвэл "Lastest_" prefix-ийг арилгана
+                    if stem.startswith("backup_"):
+                        ts_str = stem[len("backup_"):]
+                    elif stem.startswith("Lastest_"):
+                        ts_str = stem[len("Lastest_"):]
+                    else:
+                        continue
+                    t = datetime.strptime(ts_str, "%Y%m%d_%H%M")
+                    files.append((t, p))
+                except Exception:
+                    continue
+        if not files:
+            return
+        files.sort(key=lambda x: x[0], reverse=True)
+
+        keep = set()
+        # Hourly: сүүлийн 24 цаг (now - 24h хүртэл)
+        cutoff_hourly = now.replace(microsecond=0) - timedelta(hours=24)
+        for t, p in files:
+            if t >= cutoff_hourly:
+                keep.add(p)
+        # Daily: сүүлийн 14 хоног — өдөр бүрийн хамгийн эртний (эсвэл хамгийн сүүлийн) backup-г үлдээнэ
+        by_day: dict[str, Path] = {}
+        cutoff_daily = (now - timedelta(days=14)).date()
+        for t, p in files:
+            if t.date() >= cutoff_daily and t.date() not in by_day:
+                # Хамгийн сүүлийн backup нь топ-д орсон тул by_day-д эхлээд орсон нь хамгийн сүүлийнх
+                by_day[t.date()] = p
+        keep.update(by_day.values())
+        # Monthly: сүүлийн 12 сар
+        by_month: dict[str, Path] = {}
+        cutoff_monthly_y = now.year - (1 if now.month <= 12 else 0)
+        for t, p in files:
+            ym = (t.year, t.month)
+            # 12 сарын өмнөх онд тооцоолно
+            months_back = (now.year - t.year) * 12 + (now.month - t.month)
+            if 0 <= months_back <= 12 and ym not in by_month:
+                by_month[ym] = p
+        keep.update(by_month.values())
+
+        # Үлдсэн файлуудыг устгана
+        for t, p in files:
+            if p not in keep:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[backup] prune error: {e}")
 
 async def _hourly_backup_loop():
     """Цаг тутам DB backup хийнэ."""
