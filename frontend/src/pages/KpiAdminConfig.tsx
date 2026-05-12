@@ -342,7 +342,7 @@ type View = "matrix" | "employee" | "role";
 function AssignmentPanel({
   templates, groups, configs, users, visibleRoles, roleLabel, roleSortIndex,
   view, setView,
-  roleFilter, setRoleFilter, search, setSearch,
+  roleFilter, setRoleFilter, groupFilter, setGroupFilter, search, setSearch,
   highlightedTpl, setHighlightedTpl, highlightedEmp, setHighlightedEmp,
   onToggle, onRemove, onBulkAssignRole, onBulkRemoveRole, onChangeApprover,
 }: {
@@ -352,6 +352,7 @@ function AssignmentPanel({
   roleSortIndex: Map<string, number>;
   view: View; setView: (v: View) => void;
   roleFilter: string; setRoleFilter: (v: string) => void;
+  groupFilter: string; setGroupFilter: (v: string) => void;
   search: string; setSearch: (v: string) => void;
   highlightedTpl: number | null; setHighlightedTpl: (v: number | null) => void;
   highlightedEmp: number | null; setHighlightedEmp: (v: number | null) => void;
@@ -390,6 +391,21 @@ function AssignmentPanel({
           <option value="all">Бүх тушаал</option>
           {visibleRoles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
         </select>
+        {/* Зөвхөн матриц/тушаалаар view-д бүлгийн шүүлтүүр хэрэгтэй (ажилтнаар view-д баруун талын карт бүлгээр харагдаж байгаа тул шаардлагагүй) */}
+        {(view === "matrix" || view === "role") && (
+          <select value={groupFilter} onChange={e => setGroupFilter(e.target.value)}
+            className={`rounded-lg border px-2.5 py-1 text-xs font-semibold focus:border-[#0071E3] focus:outline-none focus:ring-2 focus:ring-[#0071E3]/15 ${
+              groupFilter === "all"
+                ? "border-gray-200 bg-white text-gray-700"
+                : "border-[#0071E3] bg-[#0071E3] text-white"
+            }`}>
+            <option value="all">Бүх бүлэг</option>
+            <option value="ung">Бүлэггүй</option>
+            {groups.filter(g => g.is_active).map(g => (
+              <option key={g.id} value={String(g.id)}>{g.name}</option>
+            ))}
+          </select>
+        )}
         <div className="relative flex-1 max-w-[280px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
           <input value={search} onChange={e => setSearch(e.target.value)}
@@ -413,7 +429,7 @@ function AssignmentPanel({
         {view === "matrix" && (
           <MatrixView templates={templates} groups={groups} configs={configs} users={users}
             roleLabel={roleLabel} roleSortIndex={roleSortIndex}
-            roleFilter={roleFilter} search={search}
+            roleFilter={roleFilter} groupFilter={groupFilter} search={search}
             highlightedTpl={highlightedTpl} setHighlightedTpl={setHighlightedTpl}
             highlightedEmp={highlightedEmp} setHighlightedEmp={setHighlightedEmp}
             onToggle={onToggle}/>
@@ -428,7 +444,8 @@ function AssignmentPanel({
         {view === "role" && (
           <RoleView templates={templates} groups={groups} configs={configs} users={users}
             visibleRoles={visibleRoles}
-            roleFilter={roleFilter} setRoleFilter={setRoleFilter} search={search}
+            roleFilter={roleFilter} setRoleFilter={setRoleFilter}
+            groupFilter={groupFilter} search={search}
             onBulkAssign={onBulkAssignRole} onBulkRemove={onBulkRemoveRole}/>
         )}
       </div>
@@ -438,14 +455,18 @@ function AssignmentPanel({
 
 // ── Matrix view ─────────────────────────────────────────────────────────
 function MatrixView({
-  templates, groups, configs, users, roleLabel, roleSortIndex, roleFilter, search,
+  templates, groups, configs, users, roleLabel, roleSortIndex,
+  roleFilter, groupFilter, search,
   highlightedTpl, setHighlightedTpl, highlightedEmp, setHighlightedEmp,
   onToggle,
 }: {
   templates: Template[]; groups: TaskGroup[]; configs: Config[]; users: UserOption[];
   roleLabel: (v: string) => string;
   roleSortIndex: Map<string, number>;
-  roleFilter: string; search: string;
+  roleFilter: string;
+  /** "all" | "ung" | "<groupId>" */
+  groupFilter: string;
+  search: string;
   highlightedTpl: number | null; setHighlightedTpl: (v: number | null) => void;
   highlightedEmp: number | null; setHighlightedEmp: (v: number | null) => void;
   onToggle: (empId: number, tplId: number) => Promise<void>;
@@ -462,10 +483,22 @@ function MatrixView({
 
   const tplOrdered = useMemo(() => {
     const out: (Template & { _group: string })[] = [];
-    groups.forEach(g => templates.filter(t => t.group_id === g.id && t.is_active).forEach(t => out.push({ ...t, _group: g.name })));
-    templates.filter(t => t.group_id == null && t.is_active).forEach(t => out.push({ ...t, _group: "Бүлэггүй" }));
+    // groupFilter: "all" → бүх бүлэг, "ung" → зөвхөн бүлэггүй, эсвэл group_id-ээр шүүх
+    const wantUng = groupFilter === "ung";
+    const wantGroupId = groupFilter !== "all" && groupFilter !== "ung" ? Number(groupFilter) : null;
+    if (!wantUng) {
+      groups.forEach(g => {
+        if (wantGroupId !== null && g.id !== wantGroupId) return;
+        templates.filter(t => t.group_id === g.id && t.is_active)
+          .forEach(t => out.push({ ...t, _group: g.name }));
+      });
+    }
+    if (wantUng || groupFilter === "all") {
+      templates.filter(t => t.group_id == null && t.is_active)
+        .forEach(t => out.push({ ...t, _group: "Бүлэггүй" }));
+    }
     return out;
-  }, [templates, groups]);
+  }, [templates, groups, groupFilter]);
 
   const has = (eid: number, tid: number) => configs.some(c => c.employee_id === eid && c.template_id === tid);
   const rowCount = (eid: number) => configs.filter(c => c.employee_id === eid).length;
@@ -814,12 +847,16 @@ function EmployeeView({
 
 // ── Role view ───────────────────────────────────────────────────────────
 function RoleView({
-  templates, groups, configs, users, visibleRoles, roleFilter, setRoleFilter, search,
+  templates, groups, configs, users, visibleRoles, roleFilter, setRoleFilter,
+  groupFilter, search,
   onBulkAssign, onBulkRemove,
 }: {
   templates: Template[]; groups: TaskGroup[]; configs: Config[]; users: UserOption[];
   visibleRoles: RoleOption[];
-  roleFilter: string; setRoleFilter: (v: string) => void; search: string;
+  roleFilter: string; setRoleFilter: (v: string) => void;
+  /** "all" | "ung" | "<groupId>" */
+  groupFilter: string;
+  search: string;
   onBulkAssign: (tplId: number, role: string) => Promise<void>;
   onBulkRemove: (tplId: number, role: string) => Promise<void>;
 }) {
@@ -829,8 +866,15 @@ function RoleView({
     : (visibleRoles[0]?.value ?? "");
   const targets = users.filter(u => u.role === effectiveRole);
   const filtered = templates.filter(t => t.is_active && (!search || t.name.toLowerCase().includes(search.toLowerCase())));
-  const grouped = groups.map(g => ({ name: g.name, items: filtered.filter(t => t.group_id === g.id) })).filter(g => g.items.length);
-  const ung = filtered.filter(t => t.group_id == null);
+  const wantUng = groupFilter === "ung";
+  const wantGroupId = groupFilter !== "all" && groupFilter !== "ung" ? Number(groupFilter) : null;
+  const grouped = wantUng
+    ? []
+    : groups
+        .filter(g => wantGroupId === null || g.id === wantGroupId)
+        .map(g => ({ name: g.name, items: filtered.filter(t => t.group_id === g.id) }))
+        .filter(g => g.items.length);
+  const ung = (groupFilter === "all" || wantUng) ? filtered.filter(t => t.group_id == null) : [];
   const sections = [...grouped, ...(ung.length ? [{ name: "Бүлэггүй", items: ung }] : [])];
 
   return (
@@ -1161,6 +1205,7 @@ export default function KpiAdminConfig() {
   // Assignment panel
   const [view, setView] = useState<View>("matrix");
   const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [groupFilter, setGroupFilter] = useState<string>("all");
   const [aSearch, setASearch] = useState("");
 
   function notify(msg: string, ok = true) {
@@ -1333,6 +1378,7 @@ export default function KpiAdminConfig() {
           visibleRoles={visibleRoles} roleLabel={roleLabel} roleSortIndex={roleSortIndex}
           view={view} setView={setView}
           roleFilter={roleFilter} setRoleFilter={setRoleFilter}
+          groupFilter={groupFilter} setGroupFilter={setGroupFilter}
           search={aSearch} setSearch={setASearch}
           highlightedTpl={highlightedTpl} setHighlightedTpl={setHighlightedTpl}
           highlightedEmp={highlightedEmp} setHighlightedEmp={setHighlightedEmp}
