@@ -18,7 +18,7 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { to: "/order",               label: "Захиалга",            icon: ClipboardList, pageKey: "order" },
-  { to: "/receivings",          label: "Бараа тулгаж авах",  icon: PackageCheck,  pageKey: "order" },
+  { to: "/receivings",          label: "Бараа тулгаж авах",  icon: PackageCheck,  pageKey: "receivings" },
   { to: "/kpi/checklist",       label: "Өдрийн даалгавар",   icon: CheckSquare,   pageKey: "kpi_checklist" },
   { to: "/dashboard",           label: "Хянах самбар",        icon: LayoutGrid,    pageKey: "dashboard" },
   { to: "/kpi/approvals",       label: "KPI зөвшөөрөл",      icon: BadgeCheck,    pageKey: "kpi_approvals" },
@@ -29,8 +29,8 @@ const navItems: NavItem[] = [
   { to: "/logistics",           label: "Логистик",            icon: Truck,         pageKey: "logistics" },
   { to: "/calendar",            label: "Календар",            icon: CalendarDays,  pageKey: "calendar" },
   { to: "/admin",               label: "Удирдлага",           icon: Shield,        pageKey: "admin_panel" },
-  { to: "/admin/min-stock",     label: "Доод үлдэгдэл",      icon: ClipboardCheck, pageKey: "admin_panel" },
-  { to: "/admin/audit-log",     label: "Үйлдлийн бүртгэл",  icon: History,        pageKey: "admin_panel" },
+  { to: "/admin/min-stock",     label: "Доод үлдэгдэл",      icon: ClipboardCheck, pageKey: "min_stock" },
+  { to: "/admin/audit-log",     label: "Үйлдлийн бүртгэл",  icon: History,        pageKey: "audit_log" },
   { to: "/kpi/admin",           label: "KPI тохиргоо",        icon: Settings2,     pageKey: "kpi_admin" },
   { to: "/new-product",         label: "Шинэ бараа",          icon: Sparkles,      pageKey: "new_product" },
   { to: "/sales-report-detail", label: "Борлуулалтын тайлан", icon: BarChart3,     pageKey: "sales_report" },

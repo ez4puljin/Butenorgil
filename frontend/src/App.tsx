@@ -40,10 +40,13 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "reports",             path: "/reports" },
   { key: "accounts_receivable", path: "/accounts-receivable" },
   { key: "order",               path: "/order" },
+  { key: "receivings",          path: "/receivings" },
   { key: "suppliers",           path: "/suppliers" },
   { key: "logistics",           path: "/logistics" },
   { key: "calendar",            path: "/calendar" },
   { key: "admin_panel",         path: "/admin" },
+  { key: "min_stock",           path: "/admin/min-stock" },
+  { key: "audit_log",           path: "/admin/audit-log" },
   { key: "kpi_checklist",       path: "/kpi/checklist" },
   { key: "kpi_approvals",       path: "/kpi/approvals" },
   { key: "kpi_admin",           path: "/kpi/admin" },
@@ -175,8 +178,14 @@ export default function App() {
                 />
                 <Route path="/order/:id/dashboard" element={<OrderDashboard />} />
                 <Route path="/order/:id" element={<PurchaseOrderDetail />} />
-                <Route path="/receivings" element={<ReceivingList />} />
-                <Route path="/receivings/:id" element={<ReceivingDetail />} />
+                <Route
+                  path="/receivings"
+                  element={can("receivings") ? <ReceivingList /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/receivings/:id"
+                  element={can("receivings") ? <ReceivingDetail /> : <DefaultRedirect />}
+                />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/accounts-receivable" element={<AccountsReceivable />} />
                 <Route
@@ -193,11 +202,11 @@ export default function App() {
                 />
                 <Route
                   path="/admin/min-stock"
-                  element={can("admin_panel") ? <AdminMinStock /> : <DefaultRedirect />}
+                  element={can("min_stock") ? <AdminMinStock /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/admin/audit-log"
-                  element={can("admin_panel") ? <AuditLogPage /> : <DefaultRedirect />}
+                  element={can("audit_log") ? <AuditLogPage /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/kpi/checklist"

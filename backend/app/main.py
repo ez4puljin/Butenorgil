@@ -51,12 +51,44 @@ def ensure_users_schema():
             conn.execute(text("UPDATE users SET base_role = role WHERE base_role = '' OR base_role IS NULL"))
 
 _ROLE_PERMISSIONS = {
-    "admin":           "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,admin_panel,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements",
-    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto,bank_statements",
-    "manager":         "dashboard,imports,reports,order,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count",
-    "warehouse_clerk": "order,calendar,kpi_checklist,kpi_approvals",
-    "accountant":      "dashboard,reports,accounts_receivable,order,calendar,kpi_checklist,kpi_approvals,sales_report,bank_statements",
+    "admin":           "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,admin_panel,min_stock,audit_log,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements",
+    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto,bank_statements",
+    "manager":         "dashboard,imports,reports,order,receivings,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count",
+    "warehouse_clerk": "order,receivings,calendar,kpi_checklist,kpi_approvals",
+    "accountant":      "dashboard,reports,accounts_receivable,order,receivings,calendar,kpi_checklist,kpi_approvals,sales_report,bank_statements",
 }
+
+
+def ensure_new_permissions_backfill():
+    """Хэрэв одоо байгаа role-ууд хуучин 'order' / 'admin_panel' permission-тай боловч
+    шинэ задлагдсан permission (receivings/min_stock/audit_log)-гүй бол автоматаар нэмнэ.
+    Энэ нь backward-compat хадгалах зорилготой."""
+    from app.models.role import Role as RoleModel
+    db = SessionLocal()
+    try:
+        roles = db.query(RoleModel).all()
+        for r in roles:
+            perms = set((r.permissions or "").split(","))
+            perms.discard("")
+            changed = False
+            # 'order' permission-той role-уудад 'receivings'-ыг нэмэх
+            if "order" in perms and "receivings" not in perms:
+                perms.add("receivings")
+                changed = True
+            # 'admin_panel'-той role-уудад 'min_stock' болон 'audit_log'-ыг нэмэх
+            if "admin_panel" in perms:
+                if "min_stock" not in perms:
+                    perms.add("min_stock")
+                    changed = True
+                if "audit_log" not in perms:
+                    perms.add("audit_log")
+                    changed = True
+            if changed:
+                # Sort-аар тогтвортой дараалал хадгалах
+                r.permissions = ",".join(sorted(perms))
+        db.commit()
+    finally:
+        db.close()
 
 def ensure_roles_schema():
     """Add permissions column to roles table if missing."""
@@ -524,6 +556,7 @@ def startup():
     ensure_bank_transactions_schema()
     ensure_roles_schema()
     ensure_roles_seeded()
+    ensure_new_permissions_backfill()
     ensure_calendar_labels_seeded()
     db = SessionLocal()
     try:

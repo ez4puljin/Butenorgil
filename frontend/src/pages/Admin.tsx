@@ -50,7 +50,7 @@ const COLOR_OPTIONS = [
 const PAGE_KEYS = [
   // Үндсэн ажлын модулиуд
   { key: "order",               label: "Захиалга" },
-  // 'order' permission нь /receivings-ыг бас хамгаална (Shell.tsx-д)
+  { key: "receivings",          label: "Бараа тулгаж авах" },
   { key: "kpi_checklist",       label: "Өдрийн даалгавар" },
   { key: "dashboard",           label: "Хянах самбар" },
   { key: "kpi_approvals",       label: "KPI зөвшөөрөл" },
@@ -62,6 +62,8 @@ const PAGE_KEYS = [
   { key: "calendar",            label: "Календар" },
   // Зөвхөн админ/нягтлан
   { key: "admin_panel",         label: "Удирдлага" },
+  { key: "min_stock",           label: "Доод үлдэгдэл" },
+  { key: "audit_log",           label: "Үйлдлийн бүртгэл" },
   { key: "kpi_admin",           label: "KPI тохиргоо" },
   { key: "new_product",         label: "Шинэ бараа" },
   { key: "sales_report",        label: "Борлуулалтын тайлан" },
