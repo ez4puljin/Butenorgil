@@ -35,8 +35,8 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 STATUS_SEQUENCE = ["matching", "price_review", "received"]
 STATUS_LABEL = {
-    "matching": "Тулгаж байна",
-    "price_review": "Үнэ хянагдаж байна",
+    "matching": "Бараа хүлээн авч байна",
+    "price_review": "Падаан тулгаж байна",
     "received": "Орлого авсан",
 }
 
@@ -172,6 +172,22 @@ def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = T
     result["line_count"] = len(lines)
     result["total_pcs"] = round(sum(l.qty_pcs for l in lines), 2)
     result["total_amount"] = round(sum(l.qty_pcs * l.unit_price for l in lines), 2)
+    # Price-diff counters: барааны өмнөх (last_purchase_price) ба одоо орлого
+    # авч буй (unit_price) хоёр зөрсөн тул хянагдах ёстой line-уудын тоо
+    price_diff_total = 0
+    price_diff_unreviewed = 0
+    for l in lines:
+        p = products.get(l.product_id)
+        if not p:
+            continue
+        lpp = float(p.last_purchase_price or 0)
+        up = float(l.unit_price or 0)
+        if lpp > 0 and up > 0 and abs(up - lpp) > 0.01:
+            price_diff_total += 1
+            if not bool(getattr(l, "price_reviewed", False)):
+                price_diff_unreviewed += 1
+    result["price_diff_line_count"] = price_diff_total
+    result["price_diff_unreviewed_count"] = price_diff_unreviewed
     # Brand info
     result["brands"] = _brand_aggregate(s.id, db)
     all_brands_matched = result["brands"] and all(b["is_matched"] for b in result["brands"])
@@ -198,15 +214,13 @@ def _all_and_matched_brands(session: ReceivingSession, db: Session) -> tuple[set
 
 
 def _auto_advance_if_all_matched(session: ReceivingSession, db: Session):
-    """Бүх effective brand matched болсон бөгөөд одоогоор 'matching' төлөвт байвал 'price_review' рүү шилжүүлнэ."""
-    if session.status != "matching":
-        return
-    all_brands, matched_brands = _all_and_matched_brands(session, db)
-    if not all_brands:
-        return
-    if all_brands.issubset(matched_brands):
-        session.status = "price_review"
-        db.commit()
+    """
+    NO-OP — урьд нь бүх brand тулгагдсан үед автоматаар 'price_review'-руу
+    шилждэг байсан боловч 2026-05-12 хүсэлтээр TextUI button-ээр л шилждэг
+    болгосон тул энэ функцийг идэвхгүй болгов. Call site-уудаас аль хэдий нь
+    устгасан боловч import зам хэвээр үлдсэн тул сигнатур + no-op хадгална.
+    """
+    return
 
 
 def _revert_if_unmatched_brand_appears(session: ReceivingSession, db: Session):
@@ -516,7 +530,10 @@ def toggle_price_review(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor", "warehouse_clerk", "accountant")),
 ):
-    """price_review статусын үед хэрэглэгч мөрийг 'Хянасан/Хянагдаагүй' гэж toggle хийнэ."""
+    """Мөрийг 'Хянасан/Хянагдаагүй' гэж toggle хийнэ.
+    price_review болон received статусын хооронд ажиллана — өмнөх ба одоогийн
+    үнийн зөрүүтэй мөрийг 'received' status-д ч хяналт зохицуулах боломжтой
+    байх ёстой."""
     ln = db.query(ReceivingLine).filter(
         ReceivingLine.id == line_id,
         ReceivingLine.session_id == session_id,

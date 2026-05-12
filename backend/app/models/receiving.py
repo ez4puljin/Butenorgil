@@ -3,7 +3,7 @@
 орлого авах систем. PO-оос ангид — баримт тулгаж хийнэ.
 
 Статус flow:
-  matching (Тулгаж байна) → price_review (Үнэ хянагдаж байна) → received (Орлого авсан)
+  matching (Бараа хүлээн авч байна) → price_review (Падаан тулгаж байна) → received (Орлого авсан)
   * archived (Архив) — хэдийд ч шилжиж болно
 """
 from sqlalchemy import Integer, String, Float, Date, DateTime, ForeignKey, Boolean, UniqueConstraint, Column

@@ -20,12 +20,16 @@ type Session = {
   total_pcs: number;
   total_amount: number;
   brands: { brand: string; is_matched: boolean }[];
+  /** Үнэ зөрсөн нийт мөрийн тоо (өмнө+одоогийн үнэ хоёр зөрсөн) */
+  price_diff_line_count?: number;
+  /** Үнэ зөрсөн боловч хяналт нь хийгдээгүй мөрийн тоо — Орлого авсан session дээр гол үзүүлэлт */
+  price_diff_unreviewed_count?: number;
 };
 
 const STATUS_TABS = [
   { key: "", label: "Бүгд" },
-  { key: "matching", label: "Тулгаж байна" },
-  { key: "price_review", label: "Үнэ хянагдаж байна" },
+  { key: "matching", label: "Бараа хүлээн авч байна" },
+  { key: "price_review", label: "Падаан тулгаж байна" },
   { key: "received", label: "Орлого авсан" },
 ];
 
@@ -351,6 +355,16 @@ export default function ReceivingList() {
                       </div>
                     )}
 
+                    {/* Үнэ хяналт шаардсан мөрийн дохио (received статус дээр гол үзүүлэлт) */}
+                    {(r.price_diff_unreviewed_count ?? 0) > 0 && (
+                      <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200/70">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        </svg>
+                        {r.price_diff_unreviewed_count}{(r.price_diff_line_count ?? 0) > 0 && `/${r.price_diff_line_count}`} үнэ хянагдаагүй
+                      </div>
+                    )}
+
                     {r.notes && (
                       <p className="mt-2 line-clamp-2 text-[11px] italic text-gray-400">"{r.notes}"</p>
                     )}
@@ -415,7 +429,19 @@ export default function ReceivingList() {
                         </div>
                       </td>
                       <td className="px-5 py-3">
-                        <StatusChip status={r.status} label={r.status_label}/>
+                        <div className="flex flex-col items-start gap-1">
+                          <StatusChip status={r.status} label={r.status_label}/>
+                          {(r.price_diff_unreviewed_count ?? 0) > 0 && (
+                            <span title="Үнийн зөрүүтэй хянагдаагүй мөр"
+                              className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200/70">
+                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                              </svg>
+                              {r.price_diff_unreviewed_count}
+                              {(r.price_diff_line_count ?? 0) > 0 && <span className="font-normal opacity-70">/{r.price_diff_line_count}</span>}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-5 py-3 max-w-[240px]">
                         <BrandChips brands={r.brands} max={3}/>

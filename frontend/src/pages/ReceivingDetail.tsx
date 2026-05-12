@@ -531,8 +531,8 @@ export default function ReceivingDetail() {
     const prev = cur === "received" ? "price_review" : cur === "price_review" ? "matching" : null;
     if (!prev) return;
     const labelOf: Record<string, string> = {
-      matching: "Тулгаж байна",
-      price_review: "Үнэ хянагдаж байна",
+      matching: "Бараа хүлээн авч байна",
+      price_review: "Падаан тулгаж байна",
       received: "Орлого авсан",
     };
     if (!window.confirm(
@@ -627,8 +627,8 @@ export default function ReceivingDetail() {
                 className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200/80 hover:bg-amber-100"
                 title={
                   session.status === "received"
-                    ? "Үнэ хянах руу буцаах"
-                    : "Тулгаж байна руу буцаах"
+                    ? "Падаан тулгах руу буцаах"
+                    : "Бараа хүлээн авах руу буцаах"
                 }
               >
                 <Undo2 size={11}/>
@@ -693,7 +693,7 @@ export default function ReceivingDetail() {
             title={session.all_brands_matched ? "" : "Эхлээд бүх брэндийн баримт тулгана уу"}
           >
             <TrendingUp size={15}/>
-            Үнэ хянах руу шилжих
+            Падаан тулгах руу шилжих
           </button>
         )}
         {session.status === "price_review" && (
@@ -720,7 +720,7 @@ export default function ReceivingDetail() {
                 className="mt-1.5 flex h-9 w-full items-center justify-center gap-1.5 rounded-xl bg-amber-50 text-[12px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-200/80 hover:bg-amber-100"
               >
                 <Undo2 size={13}/>
-                Тулгаж байна руу буцаах
+                Бараа хүлээн авах руу буцаах
               </button>
             )}
           </>
@@ -731,7 +731,7 @@ export default function ReceivingDetail() {
             className="mt-3 flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-amber-50 text-[13px] font-bold text-amber-700 ring-1 ring-inset ring-amber-200/80 hover:bg-amber-100"
           >
             <Undo2 size={14}/>
-            Үнэ хянах руу буцаах
+            Падаан тулгах руу буцаах
           </button>
         )}
       </div>
@@ -1446,13 +1446,20 @@ export default function ReceivingDetail() {
                           <th className="px-3 py-2 font-medium text-right w-[150px]">Нэгж үнэ</th>
                           <th className="px-3 py-2 font-medium text-right w-[130px]">Дүн</th>
                           {canEdit && <th className="px-3 py-2 w-[48px]"></th>}
-                          {session.status === "price_review" && <th className="px-3 py-2 text-right w-[110px]">Хянасан</th>}
+                          {(session.status === "price_review" || session.status === "received") && <th className="px-3 py-2 text-right w-[110px]">Үнэ хянах</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-50">
                         {lns.map(l => {
                           const priceDiff = l.last_purchase_price > 0 && Math.abs(l.unit_price - l.last_purchase_price) > 0.01;
-                          const isPriceReview = session.status === "price_review";
+                          // Үнэ хяналт нь price_review + received хоёр статуст ажиллах ёстой.
+                          // Зөвхөн badge / column рамдаа л харагдаж байгаагаас гадна received-д
+                          // зөвхөн зөрүүтэй мөрд "Хянах" товч харагдана (доорх showReviewBtn-тэй хослуулна).
+                          const isPriceReview = session.status === "price_review" || session.status === "received";
+                          const isReceivedReview = session.status === "received";
+                          // received статуст: зөвхөн үнэ зөрсөн мөрд хянах боломж нээнэ.
+                          // price_review статуст: бүх мөрд (хуучин зан үйл хэвээр)
+                          const showReviewBtn = isPriceReview && (!isReceivedReview || priceDiff);
                           const rowBg = priceDiff && !l.price_reviewed && isPriceReview
                             ? "bg-red-50/40"
                             : l.price_reviewed && isPriceReview
@@ -1576,18 +1583,22 @@ export default function ReceivingDetail() {
                               )}
                               {isPriceReview && (
                                 <td className="px-3 py-2.5 align-top text-right">
-                                  <button
-                                    onClick={() => togglePriceReview(l.id, !l.price_reviewed)}
-                                    className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
-                                      l.price_reviewed
-                                        ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/60 hover:bg-emerald-100"
-                                        : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
-                                    }`}
-                                    title={l.price_reviewed ? "Хянагдсан тэмдэглэгээг авах" : "Хянасан гэж тэмдэглэх"}
-                                  >
-                                    <Check size={11} strokeWidth={2.6}/>
-                                    {l.price_reviewed ? "Хянасан" : "Хянах"}
-                                  </button>
+                                  {showReviewBtn ? (
+                                    <button
+                                      onClick={() => togglePriceReview(l.id, !l.price_reviewed)}
+                                      className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                                        l.price_reviewed
+                                          ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/60 hover:bg-emerald-100"
+                                          : "bg-[#0071E3]/10 text-[#0071E3] hover:bg-[#0071E3]/20"
+                                      }`}
+                                      title={l.price_reviewed ? "Хянагдсан тэмдэглэгээг авах" : "Хянасан гэж тэмдэглэх"}
+                                    >
+                                      <Check size={11} strokeWidth={2.6}/>
+                                      {l.price_reviewed ? "Хянасан" : "Хянах"}
+                                    </button>
+                                  ) : (
+                                    <span className="text-[10px] text-gray-300">—</span>
+                                  )}
                                 </td>
                               )}
                             </tr>
@@ -1601,7 +1612,11 @@ export default function ReceivingDetail() {
                   <div className="lg:hidden">
                     {lns.map(l => {
                       const priceDiff = l.last_purchase_price > 0 && Math.abs(l.unit_price - l.last_purchase_price) > 0.01;
-                      const isPriceReview = session.status === "price_review";
+                      // Desktop-той ижил утга: price_review + received хоёрт үнэ хяналт нээгдэнэ;
+                      // received-д зөвхөн зөрсөн мөрд "Хянах" товч харагдана.
+                      const isPriceReview = session.status === "price_review" || session.status === "received";
+                      const isReceivedReview = session.status === "received";
+                      const showReviewBtn = isPriceReview && (!isReceivedReview || priceDiff);
                       const rowBg = priceDiff && !l.price_reviewed && isPriceReview
                         ? "bg-red-50/40"
                         : l.price_reviewed && isPriceReview
@@ -1671,7 +1686,7 @@ export default function ReceivingDetail() {
                                 <Trash2 size={14}/>
                               </button>
                             )}
-                            {isPriceReview && (
+                            {showReviewBtn && (
                               <button
                                 onClick={() => togglePriceReview(l.id, !l.price_reviewed)}
                                 className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-2 text-[11px] font-bold transition active:scale-95 ${
