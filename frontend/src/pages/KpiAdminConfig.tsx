@@ -206,7 +206,7 @@ function TemplatePanel({
   templates, groups, configs, search, setSearch,
   fGroup, setFGroup, fCat, setFCat, fPeriod, setFPeriod, fActive, setFActive,
   highlightedTpl, setHighlightedTpl,
-  onCreate, onEdit, onDelete,
+  onCreate, onEdit, onDelete, onManageGroups,
 }: {
   templates: Template[]; groups: TaskGroup[]; configs: Config[];
   search: string; setSearch: (v: string) => void;
@@ -216,6 +216,7 @@ function TemplatePanel({
   fActive: string; setFActive: (v: string) => void;
   highlightedTpl: number | null; setHighlightedTpl: (v: number | null) => void;
   onCreate: () => void; onEdit: (t: Template) => void; onDelete: (t: Template) => void;
+  onManageGroups: () => void;
 }) {
   const hasFilters = !!(fGroup || fCat || fPeriod || fActive !== "all" || search);
   const filtered = templates.filter(t => {
@@ -252,8 +253,12 @@ function TemplatePanel({
         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500" style={{ fontVariantNumeric: "tabular-nums" }}>
           {hasFilters ? `${filtered.length}/${templates.length}` : templates.length}
         </span>
+        <button onClick={onManageGroups} title="Бүлэг нэмэх / засах / устгах"
+          className="ml-auto flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors">
+          <Layers size={12}/> Бүлэг
+        </button>
         <button onClick={onCreate}
-          className="ml-auto flex items-center gap-1 rounded-lg bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-600 transition-colors">
+          className="flex items-center gap-1 rounded-lg bg-[#0071E3] px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-600 transition-colors">
           <Plus size={13}/> Шинэ загвар
         </button>
       </div>
@@ -1372,6 +1377,7 @@ export default function KpiAdminConfig() {
           onCreate={() => { setEditTpl(null); setTplModal(true); }}
           onEdit={(t) => { setEditTpl(t); setTplModal(true); }}
           onDelete={(t) => setConfirmDel(t)}
+          onManageGroups={() => setGrpModal(true)}
         />
         <AssignmentPanel
           templates={templates} groups={groups} configs={configs} users={users}
