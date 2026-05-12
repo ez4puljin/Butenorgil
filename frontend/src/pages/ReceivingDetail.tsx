@@ -1134,17 +1134,30 @@ export default function ReceivingDetail() {
                           </span>
                         )}
                       </div>
-                      {/* Stats inline — М: x  Ш: y  ...  Дүн: z */}
-                      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-500 lg:mt-1.5 lg:text-[10.5px]">
-                        <span className="tabular-nums lg:hidden">{b.line_count} мөр</span>
-                        <span className="tabular-nums lg:hidden">{b.total_pcs.toFixed(0)} ш</span>
-                        {/* Desktop: М: 9  Ш: 1,840 формат */}
-                        <span className="hidden lg:inline tabular-nums"><span className="opacity-70">М:</span> <span className="font-semibold text-gray-800">{b.line_count}</span></span>
-                        <span className="hidden lg:inline tabular-nums"><span className="opacity-70">Ш:</span> <span className="font-semibold text-gray-800">{b.total_pcs.toFixed(0)}</span></span>
-                        <span className="ml-auto font-medium tabular-nums text-gray-700 lg:font-bold lg:text-gray-800">
-                          <span className="hidden lg:inline opacity-70 font-normal">Дүн: </span>
-                          <span className="lg:hidden">{b.total_amount.toLocaleString("mn-MN")}₮</span>
-                          <span className="hidden lg:inline">{fmtMnt(b.total_amount)}₮</span>
+                      {/* Stats — бүтэн label, бүтэн тоо. Sidebar нарийн тул 2 мөрөөр уралдана:
+                          1-р мөр: Бараа: 4   ·   Нийт ширхэг: 330
+                          2-р мөр: Дүн: 1,330,000₮
+                          Хэт нарийн (mobile) дээр compact: 4 бараа · 330ш · 1.3сая₮ */}
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-500 lg:mt-1.5 lg:text-[10.5px]">
+                        {/* Mobile compact */}
+                        <span className="tabular-nums lg:hidden">{b.line_count} бараа</span>
+                        <span className="tabular-nums lg:hidden">· {b.total_pcs.toFixed(0)}ш</span>
+                        <span className="ml-auto font-medium tabular-nums text-gray-700 lg:hidden">
+                          {fmtMnt(b.total_amount)}
+                        </span>
+                        {/* Desktop sidebar: full labels, no abbreviation */}
+                        <span className="hidden lg:inline tabular-nums">
+                          <span className="opacity-70">Бараа:</span>{" "}
+                          <span className="font-semibold text-gray-800">{b.line_count}</span>
+                        </span>
+                        <span className="hidden lg:inline tabular-nums">
+                          <span className="opacity-70">·</span>{" "}
+                          <span className="opacity-70">Нийт ширхэг:</span>{" "}
+                          <span className="font-semibold text-gray-800">{b.total_pcs.toLocaleString("mn-MN")}</span>
+                        </span>
+                        <span className="hidden lg:inline w-full tabular-nums">
+                          <span className="opacity-70">Дүн:</span>{" "}
+                          <span className="font-bold text-gray-800">{b.total_amount.toLocaleString("mn-MN")}₮</span>
                         </span>
                       </div>
                     </div>
