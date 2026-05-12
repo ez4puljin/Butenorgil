@@ -175,7 +175,7 @@ def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = T
     # Price-diff counters: барааны өмнөх (last_purchase_price) ба одоо орлого
     # авч буй (unit_price) хоёр зөрсөн тул хянагдах ёстой line-уудын тоо
     price_diff_total = 0
-    price_diff_unreviewed = 0
+    price_diff_reviewed = 0
     for l in lines:
         p = products.get(l.product_id)
         if not p:
@@ -184,10 +184,12 @@ def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = T
         up = float(l.unit_price or 0)
         if lpp > 0 and up > 0 and abs(up - lpp) > 0.01:
             price_diff_total += 1
-            if not bool(getattr(l, "price_reviewed", False)):
-                price_diff_unreviewed += 1
+            if bool(getattr(l, "price_reviewed", False)):
+                price_diff_reviewed += 1
     result["price_diff_line_count"] = price_diff_total
-    result["price_diff_unreviewed_count"] = price_diff_unreviewed
+    result["price_diff_reviewed_count"] = price_diff_reviewed
+    # backward-compat (хэрэв client-ууд хуучин key-ийг хүсэж байвал)
+    result["price_diff_unreviewed_count"] = price_diff_total - price_diff_reviewed
     # Brand info
     result["brands"] = _brand_aggregate(s.id, db)
     all_brands_matched = result["brands"] and all(b["is_matched"] for b in result["brands"])

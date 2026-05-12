@@ -22,9 +22,42 @@ type Session = {
   brands: { brand: string; is_matched: boolean }[];
   /** Үнэ зөрсөн нийт мөрийн тоо (өмнө+одоогийн үнэ хоёр зөрсөн) */
   price_diff_line_count?: number;
-  /** Үнэ зөрсөн боловч хяналт нь хийгдээгүй мөрийн тоо — Орлого авсан session дээр гол үзүүлэлт */
+  /** Үнэ зөрсөн мөрөөс хянагдсан тоо */
+  price_diff_reviewed_count?: number;
+  /** @deprecated — backward compat. price_diff_line_count - price_diff_reviewed_count = унагалт */
   price_diff_unreviewed_count?: number;
 };
+
+/**
+ * Үнэ хяналтын товч badge. Зөрөөтэй мөр байх үед ВСЕГДА харагдана —
+ * бүгд хянагдсан байсан ч (5/5) сэрэмжлүүлэх биш баталгаажуулах
+ * үзүүлэлт болгож өнгөөр илэрхийлнэ:
+ *   - none-reviewed (0/N)   → улаан (анхаарал)
+ *   - partial      (k/N)    → шар (хагас хийсэн)
+ *   - all-reviewed (N/N)    → ногоон (бүрэн хянасан)
+ * Зөрөөгүй (N = 0) session-д юу ч харуулахгүй.
+ */
+function PriceReviewBadge({ reviewed, total, compact = false }: { reviewed: number; total: number; compact?: boolean }) {
+  if (total <= 0) return null;
+  const done = reviewed >= total;
+  const partial = reviewed > 0 && reviewed < total;
+  const cls = done
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200/70"
+    : partial
+      ? "bg-amber-50 text-amber-800 ring-amber-200/70"
+      : "bg-red-50 text-red-700 ring-red-200/70";
+  const icon = done
+    ? <svg width={compact ? 9 : 11} height={compact ? 9 : 11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+    : <svg width={compact ? 9 : 11} height={compact ? 9 : 11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>;
+  return (
+    <span title={done ? "Бүх үнэ зөрөөтэй мөр хянагдсан" : `${total - reviewed} мөр үнэ хянагдаагүй`}
+      className={`inline-flex items-center gap-1 rounded-md ${compact ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-1 text-[11px]"} font-semibold ring-1 ring-inset ${cls}`}>
+      {icon}
+      <span className="tabular-nums"><span className="font-bold">{reviewed}</span><span className="opacity-60">/{total}</span></span>
+      <span className={compact ? "opacity-80" : ""}>үнэ хянасан</span>
+    </span>
+  );
+}
 
 const STATUS_TABS = [
   { key: "", label: "Бүгд" },
@@ -355,13 +388,13 @@ export default function ReceivingList() {
                       </div>
                     )}
 
-                    {/* Үнэ хяналт шаардсан мөрийн дохио (received статус дээр гол үзүүлэлт) */}
-                    {(r.price_diff_unreviewed_count ?? 0) > 0 && (
-                      <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200/70">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                        </svg>
-                        {r.price_diff_unreviewed_count}{(r.price_diff_line_count ?? 0) > 0 && `/${r.price_diff_line_count}`} үнэ хянагдаагүй
+                    {/* Үнэ хяналтын прогресс — зөрөөтэй мөр байх үед үргэлж харагдана */}
+                    {(r.price_diff_line_count ?? 0) > 0 && (
+                      <div className="mt-2">
+                        <PriceReviewBadge
+                          reviewed={r.price_diff_reviewed_count ?? Math.max(0, (r.price_diff_line_count ?? 0) - (r.price_diff_unreviewed_count ?? 0))}
+                          total={r.price_diff_line_count ?? 0}
+                        />
                       </div>
                     )}
 
@@ -431,15 +464,12 @@ export default function ReceivingList() {
                       <td className="px-5 py-3">
                         <div className="flex flex-col items-start gap-1">
                           <StatusChip status={r.status} label={r.status_label}/>
-                          {(r.price_diff_unreviewed_count ?? 0) > 0 && (
-                            <span title="Үнийн зөрүүтэй хянагдаагүй мөр"
-                              className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200/70">
-                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                              </svg>
-                              {r.price_diff_unreviewed_count}
-                              {(r.price_diff_line_count ?? 0) > 0 && <span className="font-normal opacity-70">/{r.price_diff_line_count}</span>}
-                            </span>
+                          {(r.price_diff_line_count ?? 0) > 0 && (
+                            <PriceReviewBadge
+                              reviewed={r.price_diff_reviewed_count ?? Math.max(0, (r.price_diff_line_count ?? 0) - (r.price_diff_unreviewed_count ?? 0))}
+                              total={r.price_diff_line_count ?? 0}
+                              compact
+                            />
                           )}
                         </div>
                       </td>
