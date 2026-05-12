@@ -48,20 +48,26 @@ const COLOR_OPTIONS = [
 ];
 
 const PAGE_KEYS = [
-  { key: "dashboard",           label: "Хянах самбар" },
-  { key: "imports",             label: "Файл оруулалт" },
-  { key: "reports",             label: "Тайлан" },
-  { key: "accounts_receivable", label: "Авлага тайлан" },
+  // Үндсэн ажлын модулиуд
   { key: "order",               label: "Захиалга" },
+  // 'order' permission нь /receivings-ыг бас хамгаална (Shell.tsx-д)
+  { key: "kpi_checklist",       label: "Өдрийн даалгавар" },
+  { key: "dashboard",           label: "Хянах самбар" },
+  { key: "kpi_approvals",       label: "KPI зөвшөөрөл" },
+  { key: "reports",             label: "Тайлан" },
+  { key: "imports",             label: "Файл оруулалт" },
+  { key: "accounts_receivable", label: "Авлага тайлан" },
   { key: "suppliers",           label: "Нийлүүлэгч" },
   { key: "logistics",           label: "Логистик" },
   { key: "calendar",            label: "Календар" },
+  // Зөвхөн админ/нягтлан
   { key: "admin_panel",         label: "Удирдлага" },
-  { key: "kpi_checklist",       label: "Өдрийн даалгавар" },
-  { key: "kpi_approvals",       label: "KPI зөвшөөрөл" },
   { key: "kpi_admin",           label: "KPI тохиргоо" },
   { key: "new_product",         label: "Шинэ бараа" },
   { key: "sales_report",        label: "Борлуулалтын тайлан" },
+  { key: "inventory_count",     label: "Тооллогоны тайлан" },
+  { key: "erkhet_auto",         label: "Erkhet автомат" },
+  { key: "bank_statements",     label: "Тооцоо хаах" },
 ];
 
 const parseTagIds = (raw: string): number[] =>
@@ -667,7 +673,7 @@ export default function Admin() {
               className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-200 py-2.5 text-sm text-gray-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
             >
               <Plus size={15} />
-              Шинэ тушаал нэмэх
+              Шинэ албан тушаал нэмэх
             </button>
           </div>
         </AccordionSection>
@@ -758,7 +764,7 @@ export default function Admin() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-100"><Briefcase size={16} className="text-indigo-600" /></div>
-                  <h2 className="text-base font-bold text-gray-900">Шинэ тушаал нэмэх</h2>
+                  <h2 className="text-base font-bold text-gray-900">Шинэ албан тушаал нэмэх</h2>
                 </div>
                 <button onClick={() => setShowRoleCreate(false)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 transition-colors"><X size={18} /></button>
               </div>
@@ -779,7 +785,7 @@ export default function Admin() {
                   <select className={inp} value={roleForm.base_role} onChange={(e) => setRoleForm({ ...roleForm, base_role: e.target.value })}>
                     {BASE_ROLES.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
                   </select>
-                  <p className="mt-1 text-xs text-gray-400">Энэ тушаал ямар хандалтын эрхтэй байхыг тодорхойлно</p>
+                  <p className="mt-1 text-xs text-gray-400">Энэ албан тушаал ямар хандалтын эрхтэй байхыг тодорхойлно</p>
                 </div>
                 <div>
                   <label className="mb-1.5 block text-xs font-medium text-gray-600">Өнгө</label>
@@ -834,7 +840,7 @@ export default function Admin() {
                 <div className="flex items-center gap-3">
                   <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-100"><Pencil size={15} className="text-indigo-600" /></div>
                   <div>
-                    <h2 className="text-base font-bold text-gray-900">Тушаал засах</h2>
+                    <h2 className="text-base font-bold text-gray-900">Албан тушаал засах</h2>
                     <p className="text-xs text-gray-400">@{editRoleTarget.value}</p>
                   </div>
                 </div>
@@ -905,12 +911,12 @@ export default function Admin() {
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-100"><Trash2 size={18} className="text-red-600" /></div>
                 <div>
-                  <h2 className="text-base font-bold text-gray-900">Тушаал устгах</h2>
-                  <p className="text-xs text-gray-400">Энэ тушаалтай хэрэглэгч байхгүй байх ёстой</p>
+                  <h2 className="text-base font-bold text-gray-900">Албан тушаал устгах</h2>
+                  <p className="text-xs text-gray-400">Энэ албан тушаалтай хэрэглэгч байхгүй байх ёстой</p>
                 </div>
               </div>
               <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-gray-700">
-                <span className="font-bold text-red-600">{deleteRoleTarget.label}</span> тушаалыг устгах уу?
+                <span className="font-bold text-red-600">{deleteRoleTarget.label}</span> албан тушаалыг устгах уу?
               </p>
               {deleteRoleMsg && <div className="mt-3"><StatusMsg msg={deleteRoleMsg} /></div>}
               <div className="mt-5 flex justify-end gap-2">
