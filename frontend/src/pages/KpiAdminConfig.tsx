@@ -61,14 +61,25 @@ interface UserOption {
   role: string;
 }
 
-const ROLE_LABEL: Record<string, string> = {
+interface RoleOption {
+  value: string;
+  label: string;
+  base_role: string;
+  is_system?: boolean;
+}
+
+// Fallback (хэрэв /admin/roles ачааллахгүй бол)
+const FALLBACK_LABELS: Record<string, string> = {
   admin: "Админ",
   supervisor: "Хянагч",
   manager: "Менежер",
   warehouse_clerk: "Агуулахын нярав",
   accountant: "Нягтлан",
 };
-const ROLE_ORDER = ["manager", "supervisor", "warehouse_clerk", "accountant"];
+// base_role-ын дарааллын приоритет (admin биш бүх албан тушаалд)
+const BASE_PRIORITY: Record<string, number> = {
+  manager: 0, supervisor: 1, warehouse_clerk: 2, accountant: 3,
+};
 
 const MON_FULL = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"];
 
@@ -329,12 +340,16 @@ function TemplatePanel({
 type View = "matrix" | "employee" | "role";
 
 function AssignmentPanel({
-  templates, groups, configs, users, view, setView,
+  templates, groups, configs, users, visibleRoles, roleLabel, roleSortIndex,
+  view, setView,
   roleFilter, setRoleFilter, search, setSearch,
   highlightedTpl, setHighlightedTpl, highlightedEmp, setHighlightedEmp,
   onToggle, onRemove, onBulkAssignRole, onBulkRemoveRole, onChangeApprover,
 }: {
   templates: Template[]; groups: TaskGroup[]; configs: Config[]; users: UserOption[];
+  visibleRoles: RoleOption[];
+  roleLabel: (v: string) => string;
+  roleSortIndex: Map<string, number>;
   view: View; setView: (v: View) => void;
   roleFilter: string; setRoleFilter: (v: string) => void;
   search: string; setSearch: (v: string) => void;
@@ -373,7 +388,7 @@ function AssignmentPanel({
         <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)}
           className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 focus:border-[#0071E3] focus:outline-none focus:ring-2 focus:ring-[#0071E3]/15">
           <option value="all">Бүх тушаал</option>
-          {ROLE_ORDER.map(r => <option key={r} value={r}>{ROLE_LABEL[r] ?? r}</option>)}
+          {visibleRoles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
         </select>
         <div className="relative flex-1 max-w-[280px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
@@ -397,6 +412,7 @@ function AssignmentPanel({
       <div className="flex-1 overflow-hidden">
         {view === "matrix" && (
           <MatrixView templates={templates} groups={groups} configs={configs} users={users}
+            roleLabel={roleLabel} roleSortIndex={roleSortIndex}
             roleFilter={roleFilter} search={search}
             highlightedTpl={highlightedTpl} setHighlightedTpl={setHighlightedTpl}
             highlightedEmp={highlightedEmp} setHighlightedEmp={setHighlightedEmp}
@@ -404,12 +420,14 @@ function AssignmentPanel({
         )}
         {view === "employee" && (
           <EmployeeView templates={templates} groups={groups} configs={configs} users={users}
+            roleLabel={roleLabel} roleSortIndex={roleSortIndex}
             roleFilter={roleFilter} search={search}
             highlightedEmp={highlightedEmp} setHighlightedEmp={setHighlightedEmp}
             onToggle={onToggle} onRemove={onRemove} onChangeApprover={onChangeApprover}/>
         )}
         {view === "role" && (
           <RoleView templates={templates} groups={groups} configs={configs} users={users}
+            visibleRoles={visibleRoles}
             roleFilter={roleFilter} setRoleFilter={setRoleFilter} search={search}
             onBulkAssign={onBulkAssignRole} onBulkRemove={onBulkRemoveRole}/>
         )}
@@ -420,11 +438,13 @@ function AssignmentPanel({
 
 // ── Matrix view ─────────────────────────────────────────────────────────
 function MatrixView({
-  templates, groups, configs, users, roleFilter, search,
+  templates, groups, configs, users, roleLabel, roleSortIndex, roleFilter, search,
   highlightedTpl, setHighlightedTpl, highlightedEmp, setHighlightedEmp,
   onToggle,
 }: {
   templates: Template[]; groups: TaskGroup[]; configs: Config[]; users: UserOption[];
+  roleLabel: (v: string) => string;
+  roleSortIndex: Map<string, number>;
   roleFilter: string; search: string;
   highlightedTpl: number | null; setHighlightedTpl: (v: number | null) => void;
   highlightedEmp: number | null; setHighlightedEmp: (v: number | null) => void;
@@ -434,8 +454,9 @@ function MatrixView({
     .filter(u => roleFilter === "all" || u.role === roleFilter)
     .filter(u => !search || dispName(u).toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
-      const ra = ROLE_ORDER.indexOf(a.role); const rb = ROLE_ORDER.indexOf(b.role);
-      if (ra !== rb) return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb);
+      const ra = roleSortIndex.get(a.role) ?? 99;
+      const rb = roleSortIndex.get(b.role) ?? 99;
+      if (ra !== rb) return ra - rb;
       return dispName(a).localeCompare(dispName(b));
     });
 
@@ -470,7 +491,7 @@ function MatrixView({
       rows.push(
         <tr key={`r-${u.role}`}>
           <td className="sticky left-0 z-10 bg-gray-50 border-b border-r border-gray-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">
-            {ROLE_LABEL[u.role] ?? u.role} <span className="ml-1 text-gray-400">· {employees.filter(e => e.role === u.role).length}</span>
+            {roleLabel(u.role)} <span className="ml-1 text-gray-400">· {employees.filter(e => e.role === u.role).length}</span>
           </td>
           <td colSpan={tplOrdered.length + 1} className="bg-gray-50 border-b border-gray-100"/>
         </tr>
@@ -588,10 +609,12 @@ function MatrixView({
 
 // ── Employee view ───────────────────────────────────────────────────────
 function EmployeeView({
-  templates, groups, configs, users, roleFilter, search,
+  templates, groups, configs, users, roleLabel, roleSortIndex, roleFilter, search,
   highlightedEmp, setHighlightedEmp, onToggle, onRemove, onChangeApprover,
 }: {
   templates: Template[]; groups: TaskGroup[]; configs: Config[]; users: UserOption[];
+  roleLabel: (v: string) => string;
+  roleSortIndex: Map<string, number>;
   roleFilter: string; search: string;
   highlightedEmp: number | null; setHighlightedEmp: (v: number | null) => void;
   onToggle: (empId: number, tplId: number) => Promise<void>;
@@ -602,8 +625,9 @@ function EmployeeView({
     .filter(u => roleFilter === "all" || u.role === roleFilter)
     .filter(u => !search || dispName(u).toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
-      const ra = ROLE_ORDER.indexOf(a.role); const rb = ROLE_ORDER.indexOf(b.role);
-      if (ra !== rb) return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb);
+      const ra = roleSortIndex.get(a.role) ?? 99;
+      const rb = roleSortIndex.get(b.role) ?? 99;
+      if (ra !== rb) return ra - rb;
       return dispName(a).localeCompare(dispName(b));
     });
   const sel = employees.find(u => u.id === highlightedEmp) || employees[0];
@@ -631,7 +655,7 @@ function EmployeeView({
     if (u.role !== lastRole) {
       empListItems.push(
         <div key={`r-${u.role}`} className="sticky top-0 z-10 bg-gray-50/95 backdrop-blur px-4 py-1.5 border-b border-gray-100">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">{ROLE_LABEL[u.role] ?? u.role}</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">{roleLabel(u.role)}</span>
         </div>
       );
       lastRole = u.role;
@@ -673,7 +697,7 @@ function EmployeeView({
             <Avatar user={sel} size={40}/>
             <div className="min-w-0 flex-1">
               <p className="text-[15px] font-semibold text-gray-900 truncate">{dispName(sel)}</p>
-              <p className="text-xs text-gray-500">{ROLE_LABEL[sel.role] ?? sel.role} · @{sel.username}</p>
+              <p className="text-xs text-gray-500">{roleLabel(sel.role)} · @{sel.username}</p>
             </div>
             <div className="flex items-center gap-3 text-[11px]">
               <div className="text-right">
@@ -790,15 +814,19 @@ function EmployeeView({
 
 // ── Role view ───────────────────────────────────────────────────────────
 function RoleView({
-  templates, groups, configs, users, roleFilter, setRoleFilter, search,
+  templates, groups, configs, users, visibleRoles, roleFilter, setRoleFilter, search,
   onBulkAssign, onBulkRemove,
 }: {
   templates: Template[]; groups: TaskGroup[]; configs: Config[]; users: UserOption[];
+  visibleRoles: RoleOption[];
   roleFilter: string; setRoleFilter: (v: string) => void; search: string;
   onBulkAssign: (tplId: number, role: string) => Promise<void>;
   onBulkRemove: (tplId: number, role: string) => Promise<void>;
 }) {
-  const effectiveRole = roleFilter === "all" ? "manager" : roleFilter;
+  // "all" эсвэл байхгүй тушаал бол эхний жинхэнэ тушаал руу унах
+  const effectiveRole = (roleFilter !== "all" && visibleRoles.some(r => r.value === roleFilter))
+    ? roleFilter
+    : (visibleRoles[0]?.value ?? "");
   const targets = users.filter(u => u.role === effectiveRole);
   const filtered = templates.filter(t => t.is_active && (!search || t.name.toLowerCase().includes(search.toLowerCase())));
   const grouped = groups.map(g => ({ name: g.name, items: filtered.filter(t => t.group_id === g.id) })).filter(g => g.items.length);
@@ -810,13 +838,13 @@ function RoleView({
       {/* Role chip strip */}
       <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-gray-100 px-5 py-3 flex flex-wrap items-center gap-2">
         <span className="text-[11px] font-semibold text-gray-500">Тушаал:</span>
-        {ROLE_ORDER.map(r => {
-          const active = effectiveRole === r;
-          const cnt = users.filter(u => u.role === r).length;
+        {visibleRoles.map(r => {
+          const active = effectiveRole === r.value;
+          const cnt = users.filter(u => u.role === r.value).length;
           return (
-            <button key={r} onClick={() => setRoleFilter(r)}
+            <button key={r.value} onClick={() => setRoleFilter(r.value)}
               className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${active ? "bg-[#0071E3] text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
-              {ROLE_LABEL[r] ?? r} <span className={active ? "text-white/70" : "text-gray-400"}>· {cnt}</span>
+              {r.label} <span className={active ? "text-white/70" : "text-gray-400"}>· {cnt}</span>
             </button>
           );
         })}
@@ -1108,6 +1136,7 @@ export default function KpiAdminConfig() {
   const [groups, setGroups] = useState<TaskGroup[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
   const [configs, setConfigs] = useState<Config[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>([]);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   // Template editor
@@ -1141,21 +1170,46 @@ export default function KpiAdminConfig() {
 
   async function loadAll() {
     try {
-      const [tplRes, grpRes, userRes, cfgRes] = await Promise.all([
+      const [tplRes, grpRes, userRes, cfgRes, roleRes] = await Promise.all([
         api.get("/kpi/templates"),
         api.get("/kpi/groups"),
         api.get("/admin/users"),
         api.get("/kpi/configs/all"),
+        api.get("/admin/roles"),
       ]);
       setTemplates(tplRes.data);
       setGroups(grpRes.data);
       setUsers(userRes.data);
       setConfigs(cfgRes.data);
+      setRoles(roleRes.data || []);
     } catch (e: any) {
       notify(e?.response?.data?.detail ?? "Ачааллахад алдаа гарлаа", false);
     }
   }
   useEffect(() => { loadAll(); }, []);
+
+  // Динамик role label + order — custom role-уудыг (cashier, hudaldagch гэх мэт) автоматаар хамруулна
+  // admin-ийг бүх дропдаунаас хасна
+  const visibleRoles = useMemo(() => {
+    const r = roles.filter(r => r.value !== "admin" && r.base_role !== "admin");
+    return r.sort((a, b) => {
+      const pa = BASE_PRIORITY[a.base_role] ?? 99;
+      const pb = BASE_PRIORITY[b.base_role] ?? 99;
+      if (pa !== pb) return pa - pb;
+      return a.label.localeCompare(b.label, "mn");
+    });
+  }, [roles]);
+  const roleLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    roles.forEach(r => m.set(r.value, r.label));
+    return (v: string) => m.get(v) ?? FALLBACK_LABELS[v] ?? v;
+  }, [roles]);
+  // Хэрэглэгчдийг тушаалаар эрэмбэлэх индекс (matrix/employee view-ийн дотоод эрэмбэлэлтэд)
+  const roleSortIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    visibleRoles.forEach((r, i) => m.set(r.value, i));
+    return m;
+  }, [visibleRoles]);
 
   // ── Operations ────────────────────────────────────────────────────────
   async function toggleAssignment(empId: number, tplId: number) {
@@ -1276,6 +1330,7 @@ export default function KpiAdminConfig() {
         />
         <AssignmentPanel
           templates={templates} groups={groups} configs={configs} users={users}
+          visibleRoles={visibleRoles} roleLabel={roleLabel} roleSortIndex={roleSortIndex}
           view={view} setView={setView}
           roleFilter={roleFilter} setRoleFilter={setRoleFilter}
           search={aSearch} setSearch={setASearch}
