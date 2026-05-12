@@ -6,6 +6,7 @@ import {
   Settings2, BarChart3, ListPlus, CalendarDays, TrendingUp, Layers,
 } from "lucide-react";
 import { api } from "../lib/api";
+import KpiAdminConfig from "./KpiAdminConfig";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -293,7 +294,7 @@ export default function KpiAdmin() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.15 }}
       >
-        {tab === "config"   ? <ConfigTab />
+        {tab === "config"   ? <KpiAdminConfig />
           : tab === "plan"   ? <PlanTab />
           : tab === "report" ? <ReportTab />
           : tab === "extra"  ? <ExtraDailyTaskPanel />
