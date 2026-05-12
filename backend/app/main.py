@@ -660,6 +660,15 @@ if _DIST_DIR.exists() and (_DIST_DIR / "index.html").exists():
     if (_DIST_DIR / "assets").exists():
         app.mount("/assets", StaticFiles(directory=str(_DIST_DIR / "assets")), name="assets")
 
+    # Hash-гүй файлуудад (index.html, sw.js, manifest.json) хатуу cache хийхгүй —
+    # шинэ build-ыг хэрэглэгч заавал татаж авахын тулд.
+    _NO_CACHE_FILES = {"index.html", "sw.js", "manifest.json"}
+    _NO_CACHE_HEADERS = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
     # SPA catch-all: any unmatched GET (e.g. /dashboard, /receivings/123) returns index.html
     # so React Router can take over client-side. This MUST come AFTER all API routers.
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -669,11 +678,12 @@ if _DIST_DIR.exists() and (_DIST_DIR / "index.html").exists():
             candidate = _DIST_DIR / full_path
             try:
                 if candidate.is_file() and candidate.resolve().is_relative_to(_DIST_DIR.resolve()):
-                    return FileResponse(str(candidate))
+                    headers = _NO_CACHE_HEADERS if candidate.name in _NO_CACHE_FILES else None
+                    return FileResponse(str(candidate), headers=headers)
             except Exception:
                 pass
-        # Anything else → index.html (SPA route)
-        return FileResponse(str(_DIST_DIR / "index.html"))
+        # Anything else → index.html (SPA route) — never cache
+        return FileResponse(str(_DIST_DIR / "index.html"), headers=_NO_CACHE_HEADERS)
 
     print(f"[startup] Serving frontend from: {_DIST_DIR}")
 else:
