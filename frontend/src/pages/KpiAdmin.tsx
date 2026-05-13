@@ -1586,6 +1586,8 @@ function PlanTab() {
   const [search, setSearch]       = useState("");                            // 2026-05: ажилтны нэрээр шүүх
   const [statusFilter, setStatusFilter] = useState<"all" | "set" | "unset">("all"); // 2026-05: тохируулга бүрэн эсэх
   const [plans, setPlans]         = useState<Record<number, EmployeePlan>>({});  // keyed by employee_id
+  // 2026-05: Тухайн сарын хуваарьт/ажилласан өдрийн тоо (per employee)
+  const [daysMap, setDaysMap]     = useState<Record<number, { scheduled: number; worked: number }>>({});
   const [saving, setSaving]       = useState(false);
   const [toast, setToast]         = useState<{ msg: string; ok: boolean } | null>(null);
 
@@ -1595,10 +1597,12 @@ function PlanTab() {
 
   async function loadData() {
     try {
-      const [uRes, pRes, rRes] = await Promise.all([
+      const [uRes, pRes, rRes, sRes] = await Promise.all([
         api.get("/admin/users"),
         api.get("/kpi/employee-plans", { params: { year: planYear, month: planMonth } }),
         api.get("/admin/roles"),
+        // 2026-05: Тухайн сарын ажилласан/хуваарьт өдрийн мэдээлэл
+        api.get("/kpi/salary-report", { params: { year: planYear, month: planMonth } }).catch(() => ({ data: [] })),
       ]);
       setUsers(uRes.data);
       setRoles(rRes.data);
@@ -1612,6 +1616,12 @@ function PlanTab() {
         planMap[p.employee_id] = p;
       }
       setPlans(planMap);
+      // Build days map from salary-report
+      const dm: Record<number, { scheduled: number; worked: number }> = {};
+      for (const r of (sRes.data as SalaryRow[] | undefined) ?? []) {
+        dm[r.employee_id] = { scheduled: r.scheduled_days || 0, worked: r.worked_days || 0 };
+      }
+      setDaysMap(dm);
     } catch {
       notify("Ачааллахад алдаа гарлаа", false);
     }
@@ -1808,15 +1818,53 @@ function PlanTab() {
                   isFullyConfigured ? "hover:bg-blue-50/20" : isPartial ? "bg-amber-50/30 hover:bg-amber-50/50" : "hover:bg-gray-50/60"
                 }`}
               >
-                {/* Name */}
-                <div className="flex items-center gap-2 min-w-0">
+                {/* Name + ажилласан өдөр */}
+                <div className="flex items-center gap-3 min-w-0">
                   {/* Status dot — 3 төлөв: бүрэн / хагас / хоосон */}
                   <div className={`h-2 w-2 shrink-0 rounded-full ${
                     isFullyConfigured ? "bg-emerald-400" : isPartial ? "bg-amber-400" : "bg-gray-200"
                   }`} />
-                  <div className="min-w-0">
+                  <div className="min-w-0 shrink-0">
                     <p className="text-sm font-semibold text-gray-900 leading-tight truncate">{dispName(u)}</p>
                   </div>
+                  {/* 2026-05: Хуваарьт/ажилласан өдөр */}
+                  {(() => {
+                    const d = daysMap[u.id];
+                    const scheduled = d?.scheduled ?? 0;
+                    const worked = d?.worked ?? 0;
+                    const absent = Math.max(0, scheduled - worked);
+                    if (!d && scheduled === 0) {
+                      return (
+                        <span className="ml-2 hidden md:inline-flex items-center gap-1 rounded-full bg-gray-50 border border-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-400">
+                          <Calendar size={10} /> Хуваарь алга
+                        </span>
+                      );
+                    }
+                    const pct = scheduled > 0 ? Math.round((worked / scheduled) * 100) : 0;
+                    return (
+                      <div className="ml-2 hidden md:flex items-center gap-2 min-w-0 text-xs">
+                        <span className="flex items-center gap-1 tabular-nums">
+                          <Calendar size={11} className="text-gray-400 shrink-0" />
+                          <span className="text-gray-700 font-semibold">{worked}</span>
+                          <span className="text-gray-300">/</span>
+                          <span className="text-gray-500">{scheduled}</span>
+                          <span className="text-[10px] text-gray-400">өдөр</span>
+                        </span>
+                        {scheduled > 0 && (
+                          <div className="h-1.5 w-20 rounded-full bg-gray-100 overflow-hidden">
+                            <div className={`h-full rounded-full transition-all ${
+                              pct >= 100 ? "bg-emerald-400" : pct >= 80 ? "bg-blue-400" : pct >= 50 ? "bg-amber-400" : "bg-red-400"
+                            }`} style={{ width: `${Math.min(pct, 100)}%` }} />
+                          </div>
+                        )}
+                        {absent > 0 && (
+                          <span className="rounded-full bg-red-50 border border-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-600 tabular-nums">
+                            −{absent}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
                 {/* Role badge */}
                 <span className="w-24 truncate rounded-full bg-gray-100 px-2 py-0.5 text-center text-[10px] font-medium text-gray-500">
