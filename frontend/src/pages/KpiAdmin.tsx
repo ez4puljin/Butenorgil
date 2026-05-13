@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus, Pencil, Trash2, X, ChevronDown, ChevronUp, Check, CheckCircle, AlertCircle,
   Calendar, Shield, ChevronLeft, ChevronRight, UserCheck, UserX,
-  Settings2, BarChart3, ListPlus, CalendarDays, TrendingUp, Layers,
+  Settings2, BarChart3, ListPlus, CalendarDays, TrendingUp, Layers, Search,
 } from "lucide-react";
 import { api } from "../lib/api";
 import KpiAdminConfig from "./KpiAdminConfig";
@@ -1583,6 +1583,8 @@ function PlanTab() {
   const [users, setUsers]         = useState<UserOption[]>([]);
   const [roles, setRoles]         = useState<RoleOption[]>([]);
   const [filterRole, setFilterRole] = useState("");
+  const [search, setSearch]       = useState("");                            // 2026-05: ажилтны нэрээр шүүх
+  const [statusFilter, setStatusFilter] = useState<"all" | "set" | "unset">("all"); // 2026-05: тохируулга бүрэн эсэх
   const [plans, setPlans]         = useState<Record<number, EmployeePlan>>({});  // keyed by employee_id
   const [saving, setSaving]       = useState(false);
   const [toast, setToast]         = useState<{ msg: string; ok: boolean } | null>(null);
@@ -1658,7 +1660,26 @@ function PlanTab() {
     }
   }
 
-  const configuredCount = Object.values(plans).filter(p => (p.daily_kpi_cap || 0) > 0 || (p.monthly_inventory_budget || 0) > 0).length;
+  // 2026-05: Ажилтан "тохируулагдсан" гэж тоологдох — KPI даалгавар БА Тооллогын төсөв 2уулаа > 0
+  const isUserConfigured = (uid: number) => {
+    const p = plans[uid];
+    return !!p && (p.daily_kpi_cap || 0) > 0 && (p.monthly_inventory_budget || 0) > 0;
+  };
+  const configuredCount = users.filter(u => isUserConfigured(u.id)).length;
+
+  // 2026-05: Шүүлтүүр (тушаал + нэр + тохируулга төлөв)
+  const visibleUsers = users.filter(u => {
+    if (filterRole && u.role !== filterRole) return false;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      const name = (u.nickname || u.username || "").toLowerCase();
+      const uname = (u.username || "").toLowerCase();
+      if (!name.includes(q) && !uname.includes(q)) return false;
+    }
+    if (statusFilter === "set"   && !isUserConfigured(u.id)) return false;
+    if (statusFilter === "unset" &&  isUserConfigured(u.id)) return false;
+    return true;
+  });
 
   return (
     <div className="space-y-4">
@@ -1667,7 +1688,7 @@ function PlanTab() {
       {/* Header card — sticky */}
       <div className="sticky top-0 z-20 rounded-2xl bg-white shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Month selectors */}
             <div className="flex items-center gap-1.5">
               <select value={planYear} onChange={e => setPlanYear(Number(e.target.value))}
@@ -1682,6 +1703,23 @@ function PlanTab() {
                 {MONTH_NAMES.map((m, i) => <option key={i+1} value={i+1}>{m}</option>)}
               </select>
             </div>
+            {/* Name search */}
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"/>
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Ажилтан хайх..."
+                className="w-48 rounded-xl border border-gray-200 bg-gray-50 pl-8 pr-7 py-2 text-sm font-medium placeholder:text-gray-400 focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0071E3]/20 transition-all"
+              />
+              {search && (
+                <button onClick={() => setSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600">
+                  <X size={11}/>
+                </button>
+              )}
+            </div>
             {/* Role filter */}
             <select
               value={filterRole}
@@ -1690,6 +1728,22 @@ function PlanTab() {
             >
               <option value="">Бүх тушаал</option>
               {roles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
+            {/* Configuration-status filter */}
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value as "all" | "set" | "unset")}
+              className={`rounded-xl border px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 transition-all ${
+                statusFilter === "set"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800 focus:ring-emerald-300"
+                  : statusFilter === "unset"
+                  ? "border-amber-200 bg-amber-50 text-amber-800 focus:ring-amber-300"
+                  : "border-gray-200 bg-gray-50 text-gray-700 focus:border-[#0071E3] focus:bg-white focus:ring-[#0071E3]/20"
+              }`}
+            >
+              <option value="all">Бүх төлөв</option>
+              <option value="set">Тохируулагдсан</option>
+              <option value="unset">Тохируулагдаагүй</option>
             </select>
             {/* Status pill */}
             <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
@@ -1732,24 +1786,33 @@ function PlanTab() {
           <span className="text-[11px] font-bold uppercase tracking-widest text-emerald-600 text-right">Нийт max ₮</span>
         </div>
         <div className="divide-y divide-gray-50">
-          {users.filter(u => !filterRole || u.role === filterRole).map(u => {
+          {visibleUsers.length === 0 && (
+            <div className="px-5 py-10 text-center text-sm text-gray-400">
+              {search || filterRole || statusFilter !== "all"
+                ? "Шүүлтүүрт тохирох ажилтан олдсонгүй"
+                : "Ажилтан байхгүй"}
+            </div>
+          )}
+          {visibleUsers.map(u => {
             const p = plans[u.id] ?? { daily_kpi_cap: 0, monthly_max_kpi: 0, monthly_inventory_budget: 0 };
             const invBudget = p.monthly_inventory_budget ?? 0;
+            const dailyCap = p.daily_kpi_cap || 0;
             // 2026-05: Нийт max нь ҮРГЭЛЖ авто-нийлбэр (read-only)
-            const autoMax = (p.daily_kpi_cap || 0) + invBudget;
-            const hasData = p.daily_kpi_cap > 0 || invBudget > 0;
+            const autoMax = dailyCap + invBudget;
+            const isFullyConfigured = dailyCap > 0 && invBudget > 0;
+            const isPartial = !isFullyConfigured && (dailyCap > 0 || invBudget > 0);
             const isInconsistent = false; // өмнө: cap > max байх. Одоо max = cap + inv тул хэзээ ч үгүй.
             return (
               <div key={u.id}
                 className={`grid grid-cols-[1fr_auto_140px_140px_140px] items-center gap-3 px-5 py-3 transition-colors ${
-                  isInconsistent ? "bg-red-50/40" : hasData ? "hover:bg-blue-50/20" : "hover:bg-gray-50/60"
+                  isFullyConfigured ? "hover:bg-blue-50/20" : isPartial ? "bg-amber-50/30 hover:bg-amber-50/50" : "hover:bg-gray-50/60"
                 }`}
               >
                 {/* Name */}
                 <div className="flex items-center gap-2 min-w-0">
-                  {/* Status dot */}
+                  {/* Status dot — 3 төлөв: бүрэн / хагас / хоосон */}
                   <div className={`h-2 w-2 shrink-0 rounded-full ${
-                    isInconsistent ? "bg-red-400" : hasData ? "bg-emerald-400" : "bg-gray-200"
+                    isFullyConfigured ? "bg-emerald-400" : isPartial ? "bg-amber-400" : "bg-gray-200"
                   }`} />
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-gray-900 leading-tight truncate">{dispName(u)}</p>
