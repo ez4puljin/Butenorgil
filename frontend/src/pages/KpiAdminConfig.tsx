@@ -1188,6 +1188,10 @@ export default function KpiAdminConfig() {
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
+  // 2026-05: Анхдагч тооллогын оноо (KPI settings)
+  const [invDefaultPts, setInvDefaultPts] = useState<string>("5");
+  const [savingInvDefault, setSavingInvDefault] = useState(false);
+
   // Template editor
   const [tplModal, setTplModal] = useState(false);
   const [editTpl, setEditTpl] = useState<Template | null>(null);
@@ -1220,23 +1224,40 @@ export default function KpiAdminConfig() {
 
   async function loadAll() {
     try {
-      const [tplRes, grpRes, userRes, cfgRes, roleRes] = await Promise.all([
+      const [tplRes, grpRes, userRes, cfgRes, roleRes, setRes] = await Promise.all([
         api.get("/kpi/templates"),
         api.get("/kpi/groups"),
         api.get("/admin/users"),
         api.get("/kpi/configs/all"),
         api.get("/admin/roles"),
+        api.get("/kpi/settings").catch(() => ({ data: { inventory_default_points: 5 } })),
       ]);
       setTemplates(tplRes.data);
       setGroups(grpRes.data);
       setUsers(userRes.data);
       setConfigs(cfgRes.data);
       setRoles(roleRes.data || []);
+      setInvDefaultPts(String(setRes.data?.inventory_default_points ?? 5));
     } catch (e: any) {
       notify(e?.response?.data?.detail ?? "Ачааллахад алдаа гарлаа", false);
     }
   }
   useEffect(() => { loadAll(); }, []);
+
+  async function saveInvDefault() {
+    const v = parseFloat(invDefaultPts);
+    if (isNaN(v) || v < 0) { notify("Оноо 0-ээс их байх ёстой", false); return; }
+    setSavingInvDefault(true);
+    try {
+      const res = await api.put("/kpi/settings", { inventory_default_points: v });
+      setInvDefaultPts(String(res.data?.inventory_default_points ?? v));
+      notify("Анхдагч оноо хадгалагдлаа ✓");
+    } catch (e: any) {
+      notify(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
+    } finally {
+      setSavingInvDefault(false);
+    }
+  }
 
   // Динамик role label + order — custom role-уудыг (cashier, hudaldagch гэх мэт) автоматаар хамруулна
   // admin-ийг бүх дропдаунаас хасна
@@ -1364,6 +1385,37 @@ export default function KpiAdminConfig() {
       <Toast toast={toast}/>
       <StatsRow templates={templates} groups={groups} users={users} configs={configs}
         onManageGroups={() => setGrpModal(true)}/>
+
+      {/* 2026-05: Тооллогын анхдагч оноо тохиргоо */}
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl bg-amber-50/40 border border-amber-100 px-4 py-3">
+        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+          <Layers size={15}/>
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-medium text-amber-700/80 uppercase tracking-wider">Тооллогын анхдагч оноо</p>
+          <p className="text-xs text-gray-600 leading-snug">
+            Шинэ тооллого үүсгэхэд оролцогч ажилтан бүрд автоматаар нэмэгдэх KPI entry-ийн анхдагч оноо.
+            Тооллого тус бүрд UI-аас засаж болно.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="relative">
+            <input
+              type="number" min={0} step={1}
+              value={invDefaultPts}
+              onChange={e => setInvDefaultPts(e.target.value)}
+              onBlur={() => { if (!savingInvDefault) saveInvDefault(); }}
+              onWheel={e => e.currentTarget.blur()}
+              disabled={savingInvDefault}
+              className="w-24 rounded-xl border border-amber-200 bg-white py-1.5 pl-3 pr-10 text-right text-sm font-semibold text-amber-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-400 transition-all disabled:opacity-50"
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-amber-700/70 pointer-events-none">оноо</span>
+          </div>
+          {savingInvDefault && (
+            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-amber-300 border-t-amber-600" />
+          )}
+        </div>
+      </div>
 
       <div className="grid gap-4" style={{ gridTemplateColumns: "420px 1fr" }}>
         <TemplatePanel

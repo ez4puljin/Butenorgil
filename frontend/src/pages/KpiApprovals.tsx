@@ -4,6 +4,7 @@ import {
   Check, X, ChevronDown, ChevronUp, CheckCircle, AlertCircle,
   CheckSquare, History, Clock, Search, TrendingUp, TrendingDown,
   UserCheck, UserX, ArrowLeftRight,
+  Warehouse, AlertTriangle, Package, Calendar as CalendarIcon, Loader2,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -107,7 +108,7 @@ function removeEntry(groups: Group[], entryId: number): Group[] {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function KpiApprovals() {
-  const [tab, setTab] = useState<"attendance" | "pending" | "history">("attendance");
+  const [tab, setTab] = useState<"attendance" | "pending" | "inventory" | "history">("attendance");
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   function notify(msg: string, ok = true) {
@@ -147,6 +148,15 @@ export default function KpiApprovals() {
             Ажил батлах
           </button>
           <button
+            onClick={() => setTab("inventory")}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-all ${
+              tab === "inventory" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <Warehouse size={14} />
+            Тооллогын батлал
+          </button>
+          <button
             onClick={() => setTab("history")}
             className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-all ${
               tab === "history" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
@@ -168,6 +178,8 @@ export default function KpiApprovals() {
           ? <AttendanceTab notify={notify} />
           : tab === "pending"
           ? <PendingTab notify={notify} />
+          : tab === "inventory"
+          ? <InventoryBulkTab notify={notify} />
           : <HistoryTab notify={notify} />
         }
       </motion.div>
@@ -681,6 +693,389 @@ function PendingTab({ notify }: { notify: (msg: string, ok?: boolean) => void })
           </motion.div>
         );
       })}
+    </div>
+  );
+}
+
+// ── Inventory Bulk Approve Tab ────────────────────────────────────────────────
+
+// ISO week helpers (Mon=1 … Sun=7)
+function getISOWeek(date: Date): number {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+}
+
+// Compute the date of a given (year, isoWeek, isoDayOfWeek 1=Mon..7=Sun) — UTC-safe
+function isoWeekToDate(year: number, week: number, day: number): Date {
+  const simple = new Date(Date.UTC(year, 0, 1 + (week - 1) * 7));
+  const dow = simple.getUTCDay() || 7;
+  const mon = new Date(simple);
+  mon.setUTCDate(simple.getUTCDate() - dow + 1);
+  const target = new Date(mon);
+  target.setUTCDate(mon.getUTCDate() + (day - 1));
+  return target;
+}
+
+function isoWeeksInMonth(year: number, month: number): { week: number; label: string }[] {
+  const firstDay = new Date(year, month - 1, 1);
+  const lastDay = new Date(year, month, 0);
+  const weeks = new Map<number, { mon: Date; sun: Date }>();
+  for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
+    const wk = getISOWeek(new Date(d));
+    if (!weeks.has(wk)) {
+      const mon = isoWeekToDate(year, wk, 1);
+      const sun = isoWeekToDate(year, wk, 7);
+      weeks.set(wk, { mon, sun });
+    }
+  }
+  return Array.from(weeks.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([w, { mon, sun }]) => ({
+      week: w,
+      label: `${w}-р долоо хоног (${mon.getUTCMonth() + 1}/${mon.getUTCDate()}–${sun.getUTCMonth() + 1}/${sun.getUTCDate()})`,
+    }));
+}
+
+const MN_MONTHS = [
+  "1-р сар", "2-р сар", "3-р сар", "4-р сар", "5-р сар", "6-р сар",
+  "7-р сар", "8-р сар", "9-р сар", "10-р сар", "11-р сар", "12-р сар",
+];
+
+interface InventorySummary {
+  pending_count: number;
+  approved_count: number;
+  rejected_count: number;
+  total_count: number;
+  pending_value: number;
+}
+
+function InventoryBulkTab({ notify }: { notify: (msg: string, ok?: boolean) => void }) {
+  const today = new Date();
+  const [year, setYear] = useState<number>(today.getFullYear());
+  const [month, setMonth] = useState<number>(today.getMonth() + 1);
+  const [scope, setScope] = useState<"month" | "week">("month");
+  const [weekIso, setWeekIso] = useState<number | "">("");
+  const [includeRejected, setIncludeRejected] = useState(false);
+
+  const [summary, setSummary] = useState<InventorySummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const isSaturday = today.getDay() === 6;
+  const weeks = isoWeeksInMonth(year, month);
+
+  // Initialise week selector to first week of month when switching to week scope
+  useEffect(() => {
+    if (scope === "week" && weekIso === "" && weeks.length > 0) {
+      setWeekIso(weeks[0].week);
+    }
+    if (scope === "month") setWeekIso("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, year, month]);
+
+  async function loadSummary() {
+    setLoading(true);
+    try {
+      const params: Record<string, any> = { year, month };
+      if (scope === "week" && typeof weekIso === "number") params.week_iso = weekIso;
+      const res = await api.get("/kpi/inventory/pending-summary", { params });
+      setSummary(res.data);
+    } catch (e: any) {
+      notify(e?.response?.data?.detail ?? "Ачааллахад алдаа гарлаа", false);
+      setSummary(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadSummary(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [year, month, scope, weekIso]);
+
+  async function doBulkApprove() {
+    setSubmitting(true);
+    try {
+      const body: Record<string, any> = { year, month, include_rejected: includeRejected };
+      if (scope === "week" && typeof weekIso === "number") body.week_iso = weekIso;
+      const res = await api.post("/kpi/inventory/bulk-approve", body);
+      const n = res.data?.approved ?? 0;
+      notify(`${n} тооллогын KPI batlagdlaa ✓`);
+      setConfirmOpen(false);
+      await loadSummary();
+    } catch (e: any) {
+      notify(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const targetCount = includeRejected
+    ? (summary?.pending_count ?? 0) + (summary?.rejected_count ?? 0)
+    : (summary?.pending_count ?? 0);
+
+  const scopeLabel = scope === "week" && typeof weekIso === "number"
+    ? `${year} он · ${MN_MONTHS[month - 1]} · ${weekIso}-р долоо хоног`
+    : `${year} он · ${MN_MONTHS[month - 1]} (бүтэн сар)`;
+
+  return (
+    <div className="space-y-4">
+      {/* Saturday warning (or info if today is Saturday) */}
+      {!isSaturday ? (
+        <div className="flex items-start gap-3 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3">
+          <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-semibold text-amber-800">Өнөөдөр Бямба биш байна</p>
+            <p className="mt-0.5 text-amber-700">
+              Тооллогын батлалыг Бямба гарагт хийхийг зөвлөв.
+              Үргэлжлүүлэхдээ хүсэлт нь нэгэн audit-д тэмдэглэгдэнэ.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 rounded-2xl bg-emerald-50 border border-emerald-100 px-4 py-2.5">
+          <CalendarIcon size={14} className="text-emerald-600" />
+          <span className="text-sm font-medium text-emerald-700">Өнөөдөр Бямба — тооллогын батлал хийх зөв өдөр</span>
+        </div>
+      )}
+
+      {/* Filter card */}
+      <div className="rounded-2xl bg-white p-4 shadow-sm border border-gray-100 space-y-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500">Жил</label>
+            <input
+              type="number" min={2020} max={2099}
+              value={year}
+              onChange={e => setYear(parseInt(e.target.value || String(today.getFullYear()), 10))}
+              onWheel={e => e.currentTarget.blur()}
+              className="w-24 rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#0071E3] tabular-nums"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500">Сар</label>
+            <select
+              value={month}
+              onChange={e => setMonth(parseInt(e.target.value, 10))}
+              className="rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+            >
+              {MN_MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500">Хамрах хүрээ</label>
+            <div className="flex gap-1 rounded-xl bg-gray-100 p-1">
+              <button
+                onClick={() => setScope("month")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                  scope === "month" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                Бүтэн сар
+              </button>
+              <button
+                onClick={() => setScope("week")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                  scope === "week" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                Долоо хоног
+              </button>
+            </div>
+          </div>
+          {scope === "week" && (
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-gray-500">Долоо хоног</label>
+              <select
+                value={weekIso === "" ? "" : weekIso}
+                onChange={e => setWeekIso(e.target.value === "" ? "" : parseInt(e.target.value, 10))}
+                className="rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+              >
+                {weeks.map(w => <option key={w.week} value={w.week}>{w.label}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
+
+        {/* Include rejected toggle */}
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeRejected}
+            onChange={e => setIncludeRejected(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300 text-[#0071E3] focus:ring-[#0071E3]"
+          />
+          <span className="text-sm text-gray-700">Татгалзсан entries-ийг ч багтаах</span>
+          <span className="text-xs text-gray-400">(анхдагч: зөвхөн pending)</span>
+        </label>
+      </div>
+
+      {/* Loading state */}
+      {loading && !summary && (
+        <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-400">
+          <Loader2 size={14} className="animate-spin" />
+          Ачааллаж байна...
+        </div>
+      )}
+
+      {/* Stats grid */}
+      {summary && (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              { label: "Нийт",         value: summary.total_count,    sub: "entries",     icon: <Package size={16} />,     bg: "bg-blue-50",    color: "text-blue-700",    iconBg: "bg-blue-100" },
+              { label: "Хүлээгдэж",    value: summary.pending_count,  sub: `${summary.pending_value.toLocaleString()} оноо`, icon: <Clock size={16} />,       bg: "bg-amber-50",   color: "text-amber-700",   iconBg: "bg-amber-100" },
+              { label: "Батлагдсан",   value: summary.approved_count, sub: "entries",     icon: <CheckCircle size={16} />, bg: "bg-emerald-50", color: "text-emerald-700", iconBg: "bg-emerald-100" },
+              { label: "Татгалзсан",   value: summary.rejected_count, sub: "entries",     icon: <X size={16} />,           bg: "bg-red-50",     color: "text-red-600",     iconBg: "bg-red-100" },
+            ].map(s => (
+              <div key={s.label} className={`flex items-center gap-3 rounded-2xl ${s.bg} border border-white/80 px-4 py-3`}>
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${s.iconBg} ${s.color}`}>
+                  {s.icon}
+                </div>
+                <div className="min-w-0">
+                  <div className={`text-lg font-bold ${s.color}`}>{s.value}</div>
+                  <div className="text-xs text-gray-500 truncate">{s.label} · {s.sub}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Main CTA card */}
+          <div className="rounded-2xl bg-white p-5 shadow-sm border border-gray-100">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm text-gray-500">
+                  <CalendarIcon size={14} />
+                  {scopeLabel}
+                </div>
+                <div className="mt-1 text-2xl font-bold text-gray-900 tabular-nums">
+                  {targetCount}
+                  <span className="ml-2 text-sm font-medium text-gray-500">
+                    entry батлагдана
+                  </span>
+                </div>
+                {includeRejected && summary.rejected_count > 0 && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    ⚠ Татгалзсан {summary.rejected_count} entry-ийг дахин батална
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setConfirmOpen(true)}
+                disabled={targetCount === 0 || loading}
+                className="flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 disabled:bg-gray-200 disabled:text-gray-400 transition-all shadow-sm"
+              >
+                <CheckSquare size={16} />
+                Бүгдийг батлах
+              </button>
+            </div>
+            {targetCount === 0 && summary.total_count > 0 && (
+              <p className="mt-3 text-xs text-gray-500">
+                Сонгосон хамрах хүрээнд батлах хүлээгдэж буй entry байхгүй.
+              </p>
+            )}
+            {summary.total_count === 0 && (
+              <p className="mt-3 text-xs text-gray-500">
+                Сонгосон хугацаанд тооллогын KPI entry бүртгэгдээгүй байна.
+              </p>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Confirm modal */}
+      <AnimatePresence>
+        {confirmOpen && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => !submitting && setConfirmOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.96 }}
+              transition={{ duration: 0.18 }}
+              onClick={e => e.stopPropagation()}
+              className="w-full max-w-md rounded-2xl bg-white shadow-xl overflow-hidden"
+            >
+              {/* Modal header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-100">
+                    <Warehouse size={16} className="text-emerald-600" />
+                  </div>
+                  <h3 className="text-base font-semibold text-gray-900">Тооллогын батлал</h3>
+                </div>
+                {!submitting && (
+                  <button onClick={() => setConfirmOpen(false)} className="text-gray-400 hover:text-gray-600">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+
+              {/* Modal body */}
+              <div className="px-5 py-4 space-y-3">
+                {!isSaturday && (
+                  <div className="flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5">
+                    <AlertTriangle size={14} className="text-amber-600 shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-800">
+                      Өнөөдөр <span className="font-semibold">Бямба биш</span>. Тооллогын батлалыг Бямба гарагт хийхийг зөвлөв.
+                    </p>
+                  </div>
+                )}
+
+                <div className="rounded-xl bg-gray-50 p-3 text-sm">
+                  <div className="flex items-center justify-between py-1">
+                    <span className="text-gray-500">Хамрах хүрээ:</span>
+                    <span className="font-medium text-gray-900">{scopeLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-1 border-t border-gray-200 mt-1 pt-2">
+                    <span className="text-gray-500">Хүлээгдэж буй:</span>
+                    <span className="font-semibold text-amber-700 tabular-nums">{summary?.pending_count ?? 0}</span>
+                  </div>
+                  {includeRejected && (
+                    <div className="flex items-center justify-between py-1">
+                      <span className="text-gray-500">Татгалзсан (дахин):</span>
+                      <span className="font-semibold text-red-600 tabular-nums">{summary?.rejected_count ?? 0}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between py-1 border-t border-gray-200 mt-1 pt-2">
+                    <span className="text-gray-500">Нийт батлагдана:</span>
+                    <span className="font-bold text-emerald-700 tabular-nums">{targetCount} entry</span>
+                  </div>
+                </div>
+
+                <p className="text-xs text-gray-500">
+                  Энэхүү үйлдэл нь сонгосон хүрээ доторх бүх ажилтны тооллогын KPI оноог
+                  бүрэн (max монетарын дүнгээр) баталгаажуулна. Үйлдэл буцах боломжтой
+                  ч тус бүр гар аар сэргээх шаардлагатай.
+                </p>
+              </div>
+
+              {/* Modal footer */}
+              <div className="flex items-center justify-end gap-2 px-5 py-3 bg-gray-50 border-t border-gray-100">
+                <button
+                  onClick={() => setConfirmOpen(false)}
+                  disabled={submitting}
+                  className="rounded-xl px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+                >
+                  Болих
+                </button>
+                <button
+                  onClick={doBulkApprove}
+                  disabled={submitting || targetCount === 0}
+                  className="flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:bg-gray-300 transition-colors"
+                >
+                  {submitting ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                  {submitting ? "Баталж байна..." : `${targetCount} entry-г батлах`}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

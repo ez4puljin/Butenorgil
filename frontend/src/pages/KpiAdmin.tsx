@@ -40,6 +40,8 @@ interface EmployeePlan {
   month: number;
   daily_kpi_cap: number;
   monthly_max_kpi: number;
+  monthly_inventory_budget?: number;   // 2026-05: Тооллогын төсөв (хоосон бол implicit fallback)
+  inventory_shortage?: number;         // 2026-05: Тооллогын дутагдал (manual)
 }
 
 const MON_DAYS      = ["Да", "Мя", "Лх", "Пү", "Ба", "Бя", "Ня"]; // 0=Mon short
@@ -92,7 +94,16 @@ interface SalaryRow {
   daily_kpi_cap: number;
   monthly_max_kpi: number;
   plan_exists: boolean;
-  // Дэлгэрэнгүй оноо
+  // 2026-05: Тооллогын шинэ багана
+  monthly_inventory_budget: number;
+  inventory_shortage: number;
+  final_payout: number;
+  // 2026-05: Шинэ оноо багана
+  daily_pts_max: number;
+  daily_pts_got: number;
+  inv_pts_max: number;
+  inv_pts_got: number;
+  // Дэлгэрэнгүй оноо (legacy)
   total_possible_pts: number;
   total_approved_pts: number;
   total_rejected_pts: number;
@@ -1592,7 +1603,7 @@ function PlanTab() {
       const planMap: Record<number, EmployeePlan> = {};
       // Initialize all users with 0 caps
       for (const u of uRes.data) {
-        planMap[u.id] = { employee_id: u.id, year: planYear, month: planMonth, daily_kpi_cap: 0, monthly_max_kpi: 0 };
+        planMap[u.id] = { employee_id: u.id, year: planYear, month: planMonth, daily_kpi_cap: 0, monthly_max_kpi: 0, monthly_inventory_budget: 0 };
       }
       // Override with saved plans
       for (const p of pRes.data) {
@@ -1606,7 +1617,7 @@ function PlanTab() {
 
   useEffect(() => { loadData(); }, [planYear, planMonth]);
 
-  function updatePlan(empId: number, field: "daily_kpi_cap" | "monthly_max_kpi", val: string) {
+  function updatePlan(empId: number, field: "daily_kpi_cap" | "monthly_max_kpi" | "monthly_inventory_budget", val: string) {
     setPlans(prev => ({
       ...prev,
       [empId]: { ...prev[empId], [field]: parseFloat(val) || 0 }
@@ -1619,6 +1630,7 @@ function PlanTab() {
       const payload = Object.values(plans).map(p => ({
         employee_id: p.employee_id, year: planYear, month: planMonth,
         daily_kpi_cap: p.daily_kpi_cap, monthly_max_kpi: p.monthly_max_kpi,
+        monthly_inventory_budget: p.monthly_inventory_budget ?? 0,
       }));
       await api.post("/kpi/employee-plans/bulk", payload);
       notify("Хадгалагдлаа ✓");
@@ -1685,9 +1697,9 @@ function PlanTab() {
         <div className="flex items-start gap-3 bg-blue-50/60 px-5 py-3 border-b border-blue-100/60">
           <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-200 text-blue-700 text-[9px] font-bold">i</div>
           <p className="text-xs text-blue-700 leading-relaxed">
-            <strong>Өдрийн KPI cap</strong> — өдөр тутмын ажлын оноогоор авах дээд мөнгөн дүн. &nbsp;
-            <strong>Нийт max KPI</strong> — Өдрийн + тооллого хэзээ ч давж болохгүй хязгаар.
-            &nbsp;<span className="text-blue-500">Жишээ: cap=500К, max=600К → тооллогоос хамгийн ихдээ 100К авна.</span>
+            <strong>Өдрийн cap</strong> — өдөр тутмын ажлын мөнгөн дээд хэмжээ.
+            &nbsp;<strong>Нийт max</strong> — Өдрийн + тооллого хэзээ ч давж болохгүй ерөнхий хязгаар.
+            &nbsp;<strong>Тооллогын төсөв</strong> — max оноотойгоор тооллогоос авах мөнгөн дүн (хоосон бол `max − cap`).
           </p>
         </div>
       </div>
@@ -1695,20 +1707,22 @@ function PlanTab() {
       {/* Employee table */}
       <div className="rounded-2xl bg-white shadow-sm border border-gray-100 overflow-hidden">
         {/* Table header */}
-        <div className="grid grid-cols-[1fr_auto_160px_160px] items-center border-b border-gray-100 bg-gray-50/80 px-5 py-2.5 gap-3">
+        <div className="grid grid-cols-[1fr_auto_140px_140px_140px] items-center border-b border-gray-100 bg-gray-50/80 px-5 py-2.5 gap-3">
           <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Ажилтан</span>
           <span className="w-24 text-[11px] font-bold uppercase tracking-widest text-gray-400">Тушаал</span>
           <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 text-right">Өдрийн cap ₮</span>
           <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 text-right">Нийт max ₮</span>
+          <span className="text-[11px] font-bold uppercase tracking-widest text-amber-500 text-right">Тооллогын төсөв ₮</span>
         </div>
         <div className="divide-y divide-gray-50">
           {users.filter(u => !filterRole || u.role === filterRole).map(u => {
-            const p = plans[u.id] ?? { daily_kpi_cap: 0, monthly_max_kpi: 0 };
-            const hasData = p.daily_kpi_cap > 0 || p.monthly_max_kpi > 0;
+            const p = plans[u.id] ?? { daily_kpi_cap: 0, monthly_max_kpi: 0, monthly_inventory_budget: 0 };
+            const invBudget = p.monthly_inventory_budget ?? 0;
+            const hasData = p.daily_kpi_cap > 0 || p.monthly_max_kpi > 0 || invBudget > 0;
             const isInconsistent = p.daily_kpi_cap > 0 && p.monthly_max_kpi > 0 && p.daily_kpi_cap > p.monthly_max_kpi;
             return (
               <div key={u.id}
-                className={`grid grid-cols-[1fr_auto_160px_160px] items-center gap-3 px-5 py-3 transition-colors ${
+                className={`grid grid-cols-[1fr_auto_140px_140px_140px] items-center gap-3 px-5 py-3 transition-colors ${
                   isInconsistent ? "bg-red-50/40" : hasData ? "hover:bg-blue-50/20" : "hover:bg-gray-50/60"
                 }`}
               >
@@ -1728,7 +1742,7 @@ function PlanTab() {
                 </span>
                 {/* Daily cap input */}
                 <div className="flex justify-end">
-                  <div className="relative w-36">
+                  <div className="relative w-32">
                     <input type="number" min={0}
                       value={p.daily_kpi_cap || ""}
                       onChange={e => updatePlan(u.id, "daily_kpi_cap", e.target.value)}
@@ -1744,7 +1758,7 @@ function PlanTab() {
                 </div>
                 {/* Monthly max input */}
                 <div className="flex justify-end">
-                  <div className="relative w-36">
+                  <div className="relative w-32">
                     <input type="number" min={0}
                       value={p.monthly_max_kpi || ""}
                       onChange={e => updatePlan(u.id, "monthly_max_kpi", e.target.value)}
@@ -1760,19 +1774,40 @@ function PlanTab() {
                     <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">₮</span>
                   </div>
                 </div>
+                {/* Inventory budget input */}
+                <div className="flex justify-end">
+                  <div className="relative w-32">
+                    <input type="number" min={0}
+                      value={invBudget || ""}
+                      onChange={e => updatePlan(u.id, "monthly_inventory_budget", e.target.value)}
+                      onWheel={e => e.currentTarget.blur()}
+                      className={`w-full rounded-xl border py-2 pl-3 pr-7 text-right text-sm font-medium focus:outline-none focus:ring-2 transition-all ${
+                        invBudget > 0
+                          ? "border-amber-200 bg-amber-50/60 text-amber-800 focus:ring-amber-300/50 focus:border-amber-400"
+                          : "border-gray-200 bg-gray-50 text-gray-600 focus:ring-[#0071E3]/20 focus:border-[#0071E3]"
+                      }`}
+                      placeholder="0" />
+                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">₮</span>
+                  </div>
+                </div>
               </div>
             );
           })}
         </div>
         {/* Table footer summary */}
         {users.length > 0 && (
-          <div className="flex items-center justify-between border-t border-gray-100 bg-gray-50/60 px-5 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 bg-gray-50/60 px-5 py-2.5">
             <span className="text-xs text-gray-400">
               {users.length} ажилтан · {configuredCount} тохируулагдсан
             </span>
-            <span className="text-xs font-semibold text-gray-600">
-              Нийт max: {Object.values(plans).reduce((s, p) => s + (p.monthly_max_kpi || 0), 0).toLocaleString()}₮
-            </span>
+            <div className="flex gap-4 text-xs font-semibold">
+              <span className="text-amber-600">
+                Тооллогын төсөв: {Object.values(plans).reduce((s, p) => s + (p.monthly_inventory_budget || 0), 0).toLocaleString()}₮
+              </span>
+              <span className="text-gray-600">
+                Нийт max: {Object.values(plans).reduce((s, p) => s + (p.monthly_max_kpi || 0), 0).toLocaleString()}₮
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -1794,6 +1829,9 @@ function ReportTab() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [expandedDetail, setExpandedDetail] = useState<Set<number>>(new Set());
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  // 2026-05: Тооллогын дутагдал inline input state (per row)
+  const [shortageInput, setShortageInput] = useState<Record<number, string>>({});
+  const [savingShortage, setSavingShortage] = useState<Set<number>>(new Set());
 
   function notify(msg: string, ok = true) {
     setToast({ msg, ok }); setTimeout(() => setToast(null), 3000);
@@ -1810,11 +1848,43 @@ function ReportTab() {
     try {
       const res = await api.get("/kpi/salary-report", { params: { year: reportYear, month: reportMonth } });
       setRows(res.data);
+      // hydrate shortage inputs
+      const inputs: Record<number, string> = {};
+      (res.data as SalaryRow[]).forEach(r => { inputs[r.employee_id] = String(r.inventory_shortage || 0); });
+      setShortageInput(inputs);
       setDetail(null);
     } catch {
       notify("Ачааллахад алдаа гарлаа", false);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function saveShortage(row: SalaryRow, newVal: number) {
+    const current = row.inventory_shortage || 0;
+    if (newVal === current) return; // no change
+    setSavingShortage(prev => { const s = new Set(prev); s.add(row.employee_id); return s; });
+    try {
+      await api.post("/kpi/employee-plans", {
+        employee_id: row.employee_id,
+        year: reportYear, month: reportMonth,
+        daily_kpi_cap: row.daily_kpi_cap,
+        monthly_max_kpi: row.monthly_max_kpi,
+        inventory_shortage: newVal,
+      });
+      // Update row locally for instant final_payout recalc
+      setRows(prev => prev.map(r =>
+        r.employee_id === row.employee_id
+          ? { ...r, inventory_shortage: newVal, final_payout: Math.round(r.total_kpi - newVal) }
+          : r
+      ));
+      notify("Хадгалагдлаа ✓");
+    } catch (e: any) {
+      notify(e?.response?.data?.detail ?? "Хадгалахад алдаа гарлаа", false);
+      // Revert input on error
+      setShortageInput(prev => ({ ...prev, [row.employee_id]: String(current) }));
+    } finally {
+      setSavingShortage(prev => { const s = new Set(prev); s.delete(row.employee_id); return s; });
     }
   }
 
@@ -1837,6 +1907,8 @@ function ReportTab() {
   const grandTotal    = rows.reduce((s, r) => s + r.total_kpi, 0);
   const grandMaxTotal = rows.reduce((s, r) => s + (r.monthly_max_kpi || 0), 0);
   const grandDeducted = rows.reduce((s, r) => s + (r.daily_deducted || 0), 0);
+  const grandShortage = rows.reduce((s, r) => s + (r.inventory_shortage || 0), 0);
+  const grandFinal    = rows.reduce((s, r) => s + (r.final_payout || (r.total_kpi - (r.inventory_shortage || 0))), 0);
   const capFillPct    = grandMaxTotal > 0 ? Math.min(grandTotal / grandMaxTotal * 100, 100) : 0;
 
   return (
@@ -1879,8 +1951,13 @@ function ReportTab() {
             <div className="bg-[#0071E3] px-5 py-4">
               <div className="flex items-start justify-between">
                 <div>
-                  <div className="text-xs text-white/70 font-medium mb-1">{reportYear} оны {MONTH_NAMES[reportMonth-1]} · Нийт KPI</div>
-                  <div className="text-3xl font-bold text-white">{grandTotal.toLocaleString()}₮</div>
+                  <div className="text-xs text-white/70 font-medium mb-1">{reportYear} оны {MONTH_NAMES[reportMonth-1]} · Эцсийн олгох (KPI − тооллогын дутагдал)</div>
+                  <div className="text-3xl font-bold text-white">{grandFinal.toLocaleString()}₮</div>
+                  {grandShortage > 0 && (
+                    <div className="mt-1 text-xs text-white/70">
+                      KPI: {grandTotal.toLocaleString()}₮ − дутагдал: {grandShortage.toLocaleString()}₮
+                    </div>
+                  )}
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-white/60 mb-0.5">Max budget</div>
@@ -1898,21 +1975,25 @@ function ReportTab() {
               )}
             </div>
             {/* Mini stats row */}
-            <div className="grid grid-cols-4 divide-x divide-gray-100 bg-white">
-              <div className="px-4 py-2.5">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Өдрийн нийт</div>
+            <div className="grid grid-cols-5 divide-x divide-gray-100 bg-white">
+              <div className="px-3 py-2.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Өдрийн</div>
                 <div className="text-sm font-bold text-blue-600">{rows.reduce((s,r)=>s+r.daily_payout,0).toLocaleString()}₮</div>
               </div>
-              <div className="px-4 py-2.5">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Нэмэлт ажил</div>
+              <div className="px-3 py-2.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Тооллого</div>
                 <div className="text-sm font-bold text-amber-600">{rows.reduce((s,r)=>s+r.inventory_payout,0).toLocaleString()}₮</div>
               </div>
-              <div className="px-4 py-2.5">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-red-400">Нийт хасалт</div>
+              <div className="px-3 py-2.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-red-400">Тоол. дутагдал</div>
+                <div className="text-sm font-bold text-red-500">-{grandShortage.toLocaleString()}₮</div>
+              </div>
+              <div className="px-3 py-2.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-red-400">Өдрийн хасалт</div>
                 <div className="text-sm font-bold text-red-500">-{grandDeducted.toLocaleString()}₮</div>
               </div>
-              <div className="px-4 py-2.5">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Дундаж score</div>
+              <div className="px-3 py-2.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Дундаж</div>
                 <div className="text-sm font-bold text-emerald-600">
                   {rows.length > 0 ? (rows.reduce((s,r)=>s+r.daily_score_pct,0)/rows.length).toFixed(1) : 0}%
                 </div>
@@ -1923,14 +2004,14 @@ function ReportTab() {
           {/* ── Employee table ───────────────────────────────────────────── */}
           <div className="rounded-2xl bg-white shadow-sm border border-gray-100 overflow-hidden">
             {/* Table header */}
-            <div className="grid grid-cols-[1fr_70px_90px_100px_80px_110px_100px_30px] gap-1 items-center px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+            <div className="grid grid-cols-[1fr_72px_88px_72px_88px_100px_110px_30px] gap-1 items-center px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
               <span>Ажилтан</span>
-              <span className="text-center">Ажлын өдөр</span>
-              <span className="text-center">Оноо</span>
-              <span className="text-center">Тооцоолол</span>
-              <span className="text-center text-amber-500">Нэмэлт</span>
-              <span className="text-right">Авах дүн</span>
-              <span className="text-right text-red-400">Хасалт</span>
+              <span className="text-center">Өдрийн оноо</span>
+              <span className="text-right text-blue-500">Өдрийн ₮</span>
+              <span className="text-center text-amber-500">Тооллогын оноо</span>
+              <span className="text-right text-amber-500">Тооллогын ₮</span>
+              <span className="text-right text-red-400">Тоол. дутагдал ₮</span>
+              <span className="text-right">Эцсийн ₮</span>
               <span />
             </div>
 
@@ -1938,13 +2019,20 @@ function ReportTab() {
             <div className="divide-y divide-gray-50">
               {rows.map(row => {
                 const isCapped = row.monthly_max_kpi > 0 && row.total_kpi >= row.monthly_max_kpi;
-                const ptsMax = row.total_possible_pts || 0;
-                const ptsGot = row.total_approved_pts || 0;
+                // 2026-05: Шинэ багана — daily/inventory оноог тусгаар харуулна
+                const dailyPtsMax = row.daily_pts_max ?? row.total_possible_pts ?? 0;
+                const dailyPtsGot = row.daily_pts_got ?? row.total_approved_pts ?? 0;
+                const invPtsMax   = row.inv_pts_max ?? row.inventory_total_pts ?? 0;
+                const invPtsGot   = row.inv_pts_got ?? row.inventory_approved_pts ?? 0;
+                const shortage    = row.inventory_shortage || 0;
+                const finalPay    = row.final_payout ?? (row.total_kpi - shortage);
 
                 return (
                   <div key={row.employee_id}>
-                    <button onClick={() => loadDetail(row.employee_id)}
-                      className="grid grid-cols-[1fr_70px_90px_100px_80px_110px_100px_30px] gap-1 items-center w-full px-4 py-3 hover:bg-gray-50/60 transition-colors text-left">
+                    <div role="button" tabIndex={0}
+                      onClick={() => loadDetail(row.employee_id)}
+                      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); loadDetail(row.employee_id); } }}
+                      className="grid grid-cols-[1fr_72px_88px_72px_88px_100px_110px_30px] gap-1 items-center w-full px-4 py-3 hover:bg-gray-50/60 transition-colors text-left cursor-pointer">
 
                       {/* Ажилтан */}
                       <div className="min-w-0">
@@ -1964,9 +2052,12 @@ function ReportTab() {
                             <span className="rounded-full bg-orange-50 border border-orange-100 px-1.5 py-0.5 text-[9px] font-semibold text-orange-600">Cap</span>
                           )}
                         </div>
-                        {/* Daily score bar */}
-                        <div className="flex items-center gap-1.5 mt-1.5">
-                          <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden max-w-[120px]">
+                        {/* Worked days + daily score bar */}
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <span className="text-[10px] text-gray-400 whitespace-nowrap">
+                            <b className="text-gray-700">{row.worked_days || 0}</b>/{row.scheduled_days || 0} өдөр
+                          </span>
+                          <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden max-w-[100px]">
                             <div className="h-full rounded-full bg-[#0071E3] transition-all"
                               style={{ width: `${Math.min(row.daily_score_pct, 100)}%` }} />
                           </div>
@@ -1974,60 +2065,87 @@ function ReportTab() {
                         </div>
                       </div>
 
-                      {/* Ажлын өдөр */}
+                      {/* Өдрийн оноо: got/max */}
                       <div className="text-center">
-                        <span className="text-sm font-bold text-gray-900">{row.worked_days || 0}</span>
-                        <span className="text-[10px] text-gray-400">/{row.scheduled_days || 0}</span>
+                        <span className="text-sm font-bold text-blue-600 tabular-nums">{dailyPtsGot}</span>
+                        <span className="text-[10px] text-gray-400 tabular-nums">/{dailyPtsMax}</span>
                       </div>
 
-                      {/* Оноо: авсан/нийт */}
-                      <div className="text-center">
-                        <span className="text-sm font-bold text-emerald-600">{ptsGot}</span>
-                        <span className="text-[10px] text-gray-400">/{ptsMax}</span>
+                      {/* Өдрийн ₮ */}
+                      <div className="text-right">
+                        {row.daily_payout > 0 ? (
+                          <span className="text-sm font-bold text-blue-700 tabular-nums">{row.daily_payout.toLocaleString()}₮</span>
+                        ) : (
+                          <span className="text-[10px] text-gray-300">—</span>
+                        )}
+                        {(row.daily_deducted || 0) > 0 && (
+                          <div className="text-[10px] text-red-500 tabular-nums">-{row.daily_deducted.toLocaleString()}₮</div>
+                        )}
                       </div>
 
-                      {/* Тооцоолол: daily_kpi_cap / ptsMax * ptsGot */}
+                      {/* Тооллогын оноо: got/max */}
                       <div className="text-center">
-                        {row.daily_kpi_cap > 0 && ptsMax > 0 ? (
-                          <div className="text-[10px] leading-tight">
-                            <span className="font-mono text-gray-500">
-                              {(row.daily_kpi_cap / 1000).toFixed(0)}k/{ptsMax}*{ptsGot}
-                            </span>
-                            <div className="font-bold text-blue-600 text-xs">
-                              = {row.daily_payout.toLocaleString()}₮
-                            </div>
+                        {invPtsMax > 0 ? (
+                          <>
+                            <span className="text-sm font-bold text-amber-600 tabular-nums">{invPtsGot}</span>
+                            <span className="text-[10px] text-gray-400 tabular-nums">/{invPtsMax}</span>
+                          </>
+                        ) : (
+                          <span className="text-[10px] text-gray-300">—</span>
+                        )}
+                      </div>
+
+                      {/* Тооллогын ₮ */}
+                      <div className="text-right">
+                        {row.inventory_payout > 0 ? (
+                          <span className="text-sm font-bold text-amber-700 tabular-nums">{row.inventory_payout.toLocaleString()}₮</span>
+                        ) : (
+                          <span className="text-[10px] text-gray-300">—</span>
+                        )}
+                        {row.monthly_inventory_budget > 0 && (
+                          <div className="text-[10px] text-gray-400 tabular-nums">/ {row.monthly_inventory_budget.toLocaleString()}₮</div>
+                        )}
+                      </div>
+
+                      {/* Тооллогын дутагдал (manual input) */}
+                      <div
+                        className="flex justify-end"
+                        onClick={e => e.stopPropagation()}
+                        onKeyDown={e => e.stopPropagation()}
+                      >
+                        <div className="relative w-full">
+                          <input
+                            type="number" min={0}
+                            value={shortageInput[row.employee_id] ?? ""}
+                            onChange={e => setShortageInput(prev => ({ ...prev, [row.employee_id]: e.target.value }))}
+                            onBlur={e => saveShortage(row, parseFloat(e.target.value) || 0)}
+                            onWheel={e => e.currentTarget.blur()}
+                            placeholder="0"
+                            disabled={savingShortage.has(row.employee_id)}
+                            className={`w-full rounded-lg border py-1.5 pl-2 pr-5 text-right text-xs font-medium tabular-nums focus:outline-none focus:ring-1 transition-all disabled:opacity-50 ${
+                              shortage > 0
+                                ? "border-red-200 bg-red-50/60 text-red-700 focus:ring-red-300 focus:border-red-400"
+                                : "border-gray-200 bg-gray-50 text-gray-600 focus:ring-[#0071E3]/30 focus:border-[#0071E3]"
+                            }`}
+                          />
+                          <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 pointer-events-none">₮</span>
+                        </div>
+                      </div>
+
+                      {/* Эцсийн ₮ */}
+                      <div className="text-right">
+                        <div className={`text-base font-bold tabular-nums ${
+                          shortage > 0 ? "text-emerald-700" : "text-gray-900"
+                        }`}>
+                          {finalPay.toLocaleString()}₮
+                        </div>
+                        {shortage > 0 && (
+                          <div className="text-[10px] text-gray-400 tabular-nums">
+                            {row.total_kpi.toLocaleString()} − {shortage.toLocaleString()}
                           </div>
-                        ) : (
-                          <span className="text-[10px] text-gray-300">—</span>
                         )}
-                      </div>
-
-                      {/* Нэмэлт ажлын дүн */}
-                      <div className="text-center">
-                        {(row.extra_payout || 0) > 0 ? (
-                          <span className="text-sm font-bold text-amber-600">+{row.extra_payout.toLocaleString()}₮</span>
-                        ) : (
-                          <span className="text-[10px] text-gray-300">—</span>
-                        )}
-                      </div>
-
-                      {/* Авах дүн */}
-                      <div className="text-right">
-                        <div className="text-base font-bold text-gray-900">{row.total_kpi.toLocaleString()}₮</div>
-                        {row.monthly_max_kpi > 0 && (
-                          <div className="text-[10px] text-gray-400">/ {row.monthly_max_kpi.toLocaleString()}₮</div>
-                        )}
-                        {row.inventory_payout > 0 && (
-                          <div className="text-[10px] text-amber-600 font-medium">+{row.inventory_payout.toLocaleString()}₮ тооллого</div>
-                        )}
-                      </div>
-
-                      {/* Хасалт */}
-                      <div className="text-right">
-                        {(row.daily_deducted || 0) > 0 ? (
-                          <span className="text-sm font-bold text-red-500">-{row.daily_deducted.toLocaleString()}₮</span>
-                        ) : (
-                          <span className="text-[10px] text-gray-300">0</span>
+                        {row.monthly_max_kpi > 0 && shortage === 0 && (
+                          <div className="text-[10px] text-gray-400 tabular-nums">/ {row.monthly_max_kpi.toLocaleString()}₮</div>
                         )}
                       </div>
 
@@ -2037,7 +2155,7 @@ function ReportTab() {
                           ? <ChevronUp size={15} className="text-gray-400" />
                           : <ChevronDown size={15} className="text-gray-400" />}
                       </div>
-                    </button>
+                    </div>
 
                     {/* ── KPI Formula Card (shown above detail) ────────────── */}
                     {detail?.id === row.employee_id && !detailLoading && (
@@ -2050,9 +2168,9 @@ function ReportTab() {
                             <div className="flex items-center gap-1.5 font-mono text-sm">
                               <span className="text-gray-600">{row.daily_kpi_cap.toLocaleString()}₮</span>
                               <span className="text-gray-400">/</span>
-                              <span className="text-gray-600">{ptsMax}</span>
+                              <span className="text-gray-600">{dailyPtsMax}</span>
                               <span className="text-gray-400">*</span>
-                              <span className="font-bold text-emerald-600">{ptsGot}</span>
+                              <span className="font-bold text-emerald-600">{dailyPtsGot}</span>
                               <span className="text-gray-400">=</span>
                               <span className="font-bold text-blue-700">{row.daily_payout.toLocaleString()}₮</span>
                             </div>
@@ -2062,17 +2180,42 @@ function ReportTab() {
                                 <span className="font-bold text-red-500">{row.daily_kpi_cap.toLocaleString()}₮ - {row.daily_payout.toLocaleString()}₮ = -{row.daily_deducted.toLocaleString()}₮</span>
                               </div>
                             )}
+                            {/* Inventory formula */}
+                            {invPtsMax > 0 && (
+                              <>
+                                <div className="text-xs text-gray-500 pt-1 mt-1 border-t border-blue-100/60">Тооллогын ажил</div>
+                                <div className="flex items-center gap-1.5 font-mono text-sm">
+                                  <span className="text-gray-600">{(row.monthly_inventory_budget || 0).toLocaleString()}₮</span>
+                                  <span className="text-gray-400">/</span>
+                                  <span className="text-gray-600">{invPtsMax}</span>
+                                  <span className="text-gray-400">*</span>
+                                  <span className="font-bold text-amber-600">{invPtsGot}</span>
+                                  <span className="text-gray-400">=</span>
+                                  <span className="font-bold text-amber-700">{row.inventory_payout.toLocaleString()}₮</span>
+                                </div>
+                              </>
+                            )}
                           </div>
                           {/* Inventory + total */}
                           <div className="space-y-1.5">
-                            {row.inventory_payout > 0 && (
+                            {(row.extra_payout || 0) > 0 && (
                               <>
-                                <div className="text-xs text-gray-500">Нэмэлт ажил</div>
-                                <div className="text-sm font-bold text-amber-600">{row.inventory_payout.toLocaleString()}₮</div>
+                                <div className="text-xs text-gray-500">Нэмэлт ажил (шууд ₮)</div>
+                                <div className="text-sm font-bold text-violet-600">+{row.extra_payout.toLocaleString()}₮</div>
                               </>
                             )}
-                            <div className="text-xs text-gray-500">Нийт олгох</div>
-                            <div className="text-lg font-bold text-gray-900">{row.total_kpi.toLocaleString()}₮</div>
+                            <div className="text-xs text-gray-500">Нийт KPI</div>
+                            <div className="text-base font-semibold text-gray-700">{row.total_kpi.toLocaleString()}₮</div>
+                            {shortage > 0 && (
+                              <>
+                                <div className="flex items-center gap-1.5 text-xs">
+                                  <span className="text-red-500">− Тооллогын дутагдал:</span>
+                                  <span className="font-bold text-red-600">{shortage.toLocaleString()}₮</span>
+                                </div>
+                              </>
+                            )}
+                            <div className="text-xs text-gray-500 pt-1 border-t border-blue-100/60">Эцсийн олгох</div>
+                            <div className="text-lg font-bold text-emerald-700">{finalPay.toLocaleString()}₮</div>
                           </div>
                         </div>
                         {/* Ээлж нөхсөн нэмэгдэл */}
