@@ -1638,11 +1638,17 @@ function PlanTab() {
   async function saveAll() {
     setSaving(true);
     try {
-      const payload = Object.values(plans).map(p => ({
-        employee_id: p.employee_id, year: planYear, month: planMonth,
-        daily_kpi_cap: p.daily_kpi_cap, monthly_max_kpi: p.monthly_max_kpi,
-        monthly_inventory_budget: p.monthly_inventory_budget ?? 0,
-      }));
+      // 2026-05: Нийт max нь ВСЕГДА = KPI даалгавар + Тооллогын төсөв
+      // (read-only display болсон тул сервер рүү илгээх дүн нь нийлбэр)
+      const payload = Object.values(plans).map(p => {
+        const autoMax = (p.daily_kpi_cap || 0) + (p.monthly_inventory_budget || 0);
+        return {
+          employee_id: p.employee_id, year: planYear, month: planMonth,
+          daily_kpi_cap: p.daily_kpi_cap || 0,
+          monthly_max_kpi: autoMax,
+          monthly_inventory_budget: p.monthly_inventory_budget ?? 0,
+        };
+      });
       await api.post("/kpi/employee-plans/bulk", payload);
       notify("Хадгалагдлаа ✓");
     } catch {
@@ -1652,7 +1658,7 @@ function PlanTab() {
     }
   }
 
-  const configuredCount = Object.values(plans).filter(p => p.daily_kpi_cap > 0 || p.monthly_max_kpi > 0).length;
+  const configuredCount = Object.values(plans).filter(p => (p.daily_kpi_cap || 0) > 0 || (p.monthly_inventory_budget || 0) > 0).length;
 
   return (
     <div className="space-y-4">
@@ -1708,9 +1714,9 @@ function PlanTab() {
         <div className="flex items-start gap-3 bg-blue-50/60 px-5 py-3 border-b border-blue-100/60">
           <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-200 text-blue-700 text-[9px] font-bold">i</div>
           <p className="text-xs text-blue-700 leading-relaxed">
-            <strong>Өдрийн cap</strong> — өдөр тутмын ажлын мөнгөн дээд хэмжээ.
+            <strong>KPI даалгавар</strong> — өдөр тутмын ажлын мөнгөн дээд хэмжээ.
             &nbsp;<strong>Тооллогын төсөв</strong> — max оноотойгоор тооллогоос авах мөнгөн дүн.
-            &nbsp;<strong>Нийт max</strong> = <span className="font-mono">cap + төсөв</span> (автомат бөглөгдөнө, шаардлагатай бол гар аар засаж болно).
+            &nbsp;<strong>Нийт max</strong> = <span className="font-mono">KPI даалгавар + Тооллогын төсөв</span> (автомат тооцоолно).
           </p>
         </div>
       </div>
@@ -1721,19 +1727,18 @@ function PlanTab() {
         <div className="grid grid-cols-[1fr_auto_140px_140px_140px] items-center border-b border-gray-100 bg-gray-50/80 px-5 py-2.5 gap-3">
           <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Ажилтан</span>
           <span className="w-24 text-[11px] font-bold uppercase tracking-widest text-gray-400">Тушаал</span>
-          <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 text-right">Өдрийн cap ₮</span>
-          <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 text-right">Нийт max ₮</span>
+          <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400 text-right">KPI даалгавар ₮</span>
           <span className="text-[11px] font-bold uppercase tracking-widest text-amber-500 text-right">Тооллогын төсөв ₮</span>
+          <span className="text-[11px] font-bold uppercase tracking-widest text-emerald-600 text-right">Нийт max ₮</span>
         </div>
         <div className="divide-y divide-gray-50">
           {users.filter(u => !filterRole || u.role === filterRole).map(u => {
             const p = plans[u.id] ?? { daily_kpi_cap: 0, monthly_max_kpi: 0, monthly_inventory_budget: 0 };
             const invBudget = p.monthly_inventory_budget ?? 0;
-            const hasData = p.daily_kpi_cap > 0 || p.monthly_max_kpi > 0 || invBudget > 0;
-            const isInconsistent = p.daily_kpi_cap > 0 && p.monthly_max_kpi > 0 && p.daily_kpi_cap > p.monthly_max_kpi;
-            // 2026-05: Нийт max автомат тооцоолсон уу, эсвэл гараар override хийсэн үү
+            // 2026-05: Нийт max нь ҮРГЭЛЖ авто-нийлбэр (read-only)
             const autoMax = (p.daily_kpi_cap || 0) + invBudget;
-            const isMaxAuto = autoMax > 0 && p.monthly_max_kpi === autoMax;
+            const hasData = p.daily_kpi_cap > 0 || invBudget > 0;
+            const isInconsistent = false; // өмнө: cap > max байх. Одоо max = cap + inv тул хэзээ ч үгүй.
             return (
               <div key={u.id}
                 className={`grid grid-cols-[1fr_auto_140px_140px_140px] items-center gap-3 px-5 py-3 transition-colors ${
@@ -1754,7 +1759,7 @@ function PlanTab() {
                 <span className="w-24 truncate rounded-full bg-gray-100 px-2 py-0.5 text-center text-[10px] font-medium text-gray-500">
                   {roles.find(r => r.value === u.role)?.label ?? u.role}
                 </span>
-                {/* Daily cap input */}
+                {/* KPI даалгавар (Өдрийн cap) input */}
                 <div className="flex justify-end">
                   <div className="relative w-32">
                     <input type="number" min={0}
@@ -1768,34 +1773,6 @@ function PlanTab() {
                       }`}
                       placeholder="0" />
                     <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">₮</span>
-                  </div>
-                </div>
-                {/* Monthly max input — авто = cap + төсөв, гар аар override хийж болно */}
-                <div className="flex justify-end">
-                  <div className="relative w-32" title={isMaxAuto ? "Автомат тооцоологдсон (cap + төсөв)" : autoMax > 0 ? `Гараар өөрчилсөн (авто: ${autoMax.toLocaleString()}₮)` : ""}>
-                    <input type="number" min={0}
-                      value={p.monthly_max_kpi || ""}
-                      onChange={e => updatePlan(u.id, "monthly_max_kpi", e.target.value)}
-                      onWheel={e => e.currentTarget.blur()}
-                      className={`w-full rounded-xl border py-2 pl-3 pr-10 text-right text-sm font-medium focus:outline-none focus:ring-2 transition-all ${
-                        isInconsistent
-                          ? "border-red-300 bg-red-50 text-red-700 focus:ring-red-200 focus:border-red-400"
-                          : isMaxAuto
-                          ? "border-emerald-200 bg-emerald-50/60 text-emerald-800 focus:ring-emerald-300/50 focus:border-emerald-400"
-                          : p.monthly_max_kpi > 0
-                          ? "border-orange-200 bg-orange-50/60 text-orange-800 focus:ring-orange-300/50 focus:border-orange-400"
-                          : "border-gray-200 bg-gray-50 text-gray-600 focus:ring-[#0071E3]/20 focus:border-[#0071E3]"
-                      }`}
-                      placeholder="0" />
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 pointer-events-none">
-                      {isMaxAuto && (
-                        <span className="rounded bg-emerald-200/70 px-1 py-px text-[8px] font-bold text-emerald-700">авто</span>
-                      )}
-                      {!isMaxAuto && p.monthly_max_kpi > 0 && autoMax > 0 && (
-                        <span className="rounded bg-orange-200/70 px-1 py-px text-[8px] font-bold text-orange-700">гар</span>
-                      )}
-                      <span className="text-xs text-gray-400">₮</span>
-                    </div>
                   </div>
                 </div>
                 {/* Inventory budget input */}
@@ -1814,6 +1791,22 @@ function PlanTab() {
                     <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">₮</span>
                   </div>
                 </div>
+                {/* Нийт max (read-only, авто тооцоолсон нийлбэр) */}
+                <div className="flex justify-end" title={`${(p.daily_kpi_cap || 0).toLocaleString()}₮ + ${invBudget.toLocaleString()}₮ = ${autoMax.toLocaleString()}₮`}>
+                  <div className={`relative w-32 rounded-xl border py-2 pl-3 pr-10 text-right text-sm font-bold tabular-nums cursor-not-allowed select-none ${
+                    autoMax > 0
+                      ? "border-emerald-200 bg-emerald-50/60 text-emerald-800"
+                      : "border-gray-200 bg-gray-50 text-gray-400"
+                  }`}>
+                    {autoMax > 0 ? autoMax.toLocaleString() : "0"}
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 pointer-events-none">
+                      {autoMax > 0 && (
+                        <span className="rounded bg-emerald-200/70 px-1 py-px text-[8px] font-bold text-emerald-700">авто</span>
+                      )}
+                      <span className="text-xs text-gray-400">₮</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             );
           })}
@@ -1825,11 +1818,14 @@ function PlanTab() {
               {users.length} ажилтан · {configuredCount} тохируулагдсан
             </span>
             <div className="flex gap-4 text-xs font-semibold">
+              <span className="text-blue-600">
+                KPI даалгавар: {Object.values(plans).reduce((s, p) => s + (p.daily_kpi_cap || 0), 0).toLocaleString()}₮
+              </span>
               <span className="text-amber-600">
                 Тооллогын төсөв: {Object.values(plans).reduce((s, p) => s + (p.monthly_inventory_budget || 0), 0).toLocaleString()}₮
               </span>
-              <span className="text-gray-600">
-                Нийт max: {Object.values(plans).reduce((s, p) => s + (p.monthly_max_kpi || 0), 0).toLocaleString()}₮
+              <span className="text-emerald-700">
+                Нийт max: {Object.values(plans).reduce((s, p) => s + ((p.daily_kpi_cap || 0) + (p.monthly_inventory_budget || 0)), 0).toLocaleString()}₮
               </span>
             </div>
           </div>
