@@ -149,5 +149,32 @@ class KpiEmployeePlan(Base):
     month           = Column(Integer, nullable=False)   # 1–12
     daily_kpi_cap   = Column(Float, nullable=False, default=0.0)   # өдөр тутмын ажлын дээд хязгаар
     monthly_max_kpi = Column(Float, nullable=False, default=0.0)   # нийт сарын дээд хязгаар
+
+    # ── Тооллогын үнэлгээ (2026-05-13 нэмсэн) ─────────────────────────────────
+    # Сарын тооллогын төсөв — ажилтан max оноо авбал ийм мөнгөн дүн авна.
+    # Нэгэн жишээ: 200,000₮; ажилтан 25/25 оноо авбал 200K, 20/25 авбал 160K
+    # (proportional). Хуучин үед нэрлэсэн "monthly_max_kpi - daily_kpi_cap"
+    # формула орлоно. Хоосон (NULL) үед migration startup-аар хуучин
+    # формулаар автоматаар backfill хийгдэнэ.
+    monthly_inventory_budget = Column(Float, nullable=True)
+    # Тооллогын дутагдал — гар утсаар оруулдаг хасалт. Эцсийн цалин =
+    # нийт KPI - inventory_shortage.
+    inventory_shortage       = Column(Float, nullable=False, default=0.0)
+
     created_at      = Column(DateTime, default=datetime.utcnow)
     updated_at      = Column(DateTime, default=datetime.utcnow)
+
+
+class KpiSettings(Base):
+    """KPI системийн singleton тохиргоо. Зөвхөн id=1 row л байх ёстой.
+
+    inventory_default_points — тооллого үүсгэх үед ажилтанд автоматаар
+    нэмэгдэх KPI entry-ийн анхдагч оноо (хатуу биш — UI-аас дахин засаж
+    болно). Энэ оноо нь шинэ inventory KPI entry бүрд хэрэглэгдэнэ;
+    хэдэн оноо аваагүй гэдгийг measured score-той харьцуулна.
+    """
+    __tablename__ = "kpi_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    inventory_default_points = Column(Float, nullable=False, default=5.0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

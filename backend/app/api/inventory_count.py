@@ -11,7 +11,7 @@ import re
 from app.api.deps import get_db, require_role
 
 from app.models.inventory_count import InventoryCount, InventoryCountFile
-from app.models.kpi import KpiAdminDailyTask, KpiChecklistEntry
+from app.models.kpi import KpiAdminDailyTask, KpiChecklistEntry, KpiDailyChecklist
 
 router = APIRouter(prefix="/inventory-count", tags=["inventory-count"])
 
@@ -63,6 +63,89 @@ def _build_kpi_task_name(warehouse_label: str, description: str) -> str:
     if desc:
         return f"{warehouse_label} — {desc}"
     return warehouse_label
+
+
+def _get_or_create_checklist(db: Session, employee_id: int, on_date: date) -> KpiDailyChecklist:
+    """Тухайн ажилтны тухайн өдрийн checklist row-ыг буцаана. Байхгүй бол
+    нэг 'auto-created' төлөвт үүсгэнэ — ингэснээр ажилтан тэр өдөр аппыг
+    нээгээгүй ч KPI entry нь бэлэн орших юм. Ажилтан дараа нь нэвтрэхэд
+    мөнхүү checklist-д шууд нэмэгдсэн байх болно."""
+    cl = db.query(KpiDailyChecklist).filter(
+        KpiDailyChecklist.employee_id == employee_id,
+        KpiDailyChecklist.date == on_date,
+    ).first()
+    if cl:
+        return cl
+    cl = KpiDailyChecklist(
+        employee_id=employee_id,
+        date=on_date,
+        status="open",  # ажилтан өөрөө submit хийх боломжтой хэвээр
+    )
+    db.add(cl)
+    db.flush()
+    return cl
+
+
+def _sync_inventory_kpi_entries(db: Session, kpi_task: KpiAdminDailyTask, default_points: float) -> None:
+    """Inventory KPI admin task-тай холбоотой ажилтан бүрд entry-г eager-аар
+    үүсгэдэг + хасагдсан ажилтнаас entry-г устгана.
+
+    Дараах хатуу дүрэмтэй:
+      - approved entry-г хэзээ ч устгадаггүй (audit trail хадгална)
+      - тэдгээрийг "is_active" өөрчилдөггүй
+      - шинээр insert хийх entry-ийн monetary_value = default_points (тооллогын
+        default оноо — KpiSettings.inventory_default_points-аас ирнэ)
+    """
+    target_ids = [
+        int(x) for x in (kpi_task.target_employee_ids or "").split(",") if x.strip()
+    ]
+    target_set = set(target_ids)
+
+    # 1) Одоогийн entries-ийг авч ангилна (approved биш үлдэх вэ хадгална)
+    existing = db.query(KpiChecklistEntry).filter(
+        KpiChecklistEntry.admin_task_id == kpi_task.id
+    ).all()
+    by_emp: dict[int, KpiChecklistEntry] = {}
+    for e in existing:
+        # admin_task_id-ээр холбоотой entry бүрийн checklist-ийг tied хийнэ
+        cl = db.query(KpiDailyChecklist).filter(
+            KpiDailyChecklist.id == e.checklist_id
+        ).first()
+        if cl:
+            by_emp[cl.employee_id] = e
+
+    # 2) Target-аас хасагдсан ажилтнуудын entry-ийг (approved биш бол) устгана
+    for emp_id, entry in list(by_emp.items()):
+        if emp_id in target_set:
+            continue
+        if (entry.approval_status or "pending") == "approved":
+            # approved entry-г устгахгүй, "соронзон" хадгална
+            continue
+        db.delete(entry)
+    db.flush()
+
+    # 3) Target-д шинэ ажилтан нэмэгдсэн бол entry үүсгэнэ (давхар үүсэх асуудал
+    # үгүй — by_emp дотор аль хэдий нь байгаа эсэхийг шалгана)
+    for emp_id in target_ids:
+        if emp_id in by_emp:
+            # Шинээр үүсэхгүй — байгаа entry хэвээр (approved ч, pending ч аль аль нь)
+            continue
+        cl = _get_or_create_checklist(db, emp_id, kpi_task.date)
+        entry = KpiChecklistEntry(
+            checklist_id=cl.id,
+            template_id=None,
+            config_id=None,
+            task_name=kpi_task.task_name,
+            monetary_value=default_points,
+            task_category="inventory",
+            is_checked=False,
+            approval_status="pending",
+            admin_task_id=kpi_task.id,
+            approver_id=kpi_task.approver_id,
+            is_adhoc=False,
+        )
+        db.add(entry)
+    db.flush()
 
 
 def _normalize_code(value) -> str:
@@ -268,11 +351,15 @@ def create_count(
     # KPI admin task үүсгэх (ажилтан сонгосон бол)
     kpi_task_id = None
     if body.target_employee_ids:
+        from app.api.kpi import get_inventory_default_points
+        default_points = get_inventory_default_points(db)
         task_name = _build_kpi_task_name(wh_label, body.description)
         target_ids_str = ",".join(str(x) for x in body.target_employee_ids)
+        # monetary_value-ыг хэвээр хадгална (хуучин данс/audit-д ишлэл болгоно)
+        # гэхдээ entry бүрд ашиглагдах оноо нь default_points
         kpi_task = KpiAdminDailyTask(
             task_name=task_name,
-            monetary_value=body.points,
+            monetary_value=body.points if body.points and body.points > 0 else default_points,
             task_category="inventory",
             date=body.count_date,
             approver_id=u.id,
@@ -284,6 +371,9 @@ def create_count(
         db.flush()
         c.kpi_admin_task_id = kpi_task.id
         kpi_task_id = kpi_task.id
+        # Eager: оролцогч ажилтан бүрд KpiChecklistEntry-г шууд үүсгэнэ. Ажилтан тэр
+        # өдөр аппыг нээгээгүй ч bulk approve-аар батлагдах боломжтой үлдэнэ.
+        _sync_inventory_kpi_entries(db, kpi_task, default_points)
 
     db.commit()
     db.refresh(c)
@@ -314,19 +404,24 @@ def update_count(
             KpiAdminDailyTask.id == c.kpi_admin_task_id
         ).first()
 
+    from app.api.kpi import get_inventory_default_points
+    default_points = get_inventory_default_points(db)
+
     if kpi_task:
         kpi_task.task_name = _build_kpi_task_name(wh_label, c.description)
         kpi_task.date = c.count_date
-        if body.points is not None:
+        if body.points is not None and body.points > 0:
             kpi_task.monetary_value = body.points
         if body.target_employee_ids is not None:
             kpi_task.target_employee_ids = ",".join(str(x) for x in body.target_employee_ids)
+        # Sync entries: оролцогч нэмэгдвэл шинэ entry, хасагдвал устгана (approved-аас бусдыг)
+        _sync_inventory_kpi_entries(db, kpi_task, default_points)
     else:
         # KPI task байхгүй — шинээр target/points орж ирсэн бол үүсгэнэ
         if body.target_employee_ids:
             new_task = KpiAdminDailyTask(
                 task_name=_build_kpi_task_name(wh_label, c.description),
-                monetary_value=body.points or 0.0,
+                monetary_value=(body.points if body.points and body.points > 0 else default_points),
                 task_category="inventory",
                 date=c.count_date,
                 approver_id=u.id,
@@ -337,6 +432,7 @@ def update_count(
             db.add(new_task)
             db.flush()
             c.kpi_admin_task_id = new_task.id
+            _sync_inventory_kpi_entries(db, new_task, default_points)
 
     db.commit()
     return {"ok": True}
@@ -352,8 +448,22 @@ def delete_count(
     if not c:
         raise HTTPException(404, "Тооллого олдсонгүй")
 
-    # Deactivate or delete linked KPI admin task
+    # Guard: батлагдсан KPI entry-тэй тооллого устгахыг хориглоно. Эс тэгвэл
+    # ажилтны цалин тооцоонд дотоод зөрчил үүсэх магадлалтай (data integrity).
     kpi_task_id = c.kpi_admin_task_id
+    if kpi_task_id:
+        approved_count = db.query(KpiChecklistEntry).filter(
+            KpiChecklistEntry.admin_task_id == kpi_task_id,
+            KpiChecklistEntry.approval_status == "approved",
+        ).count()
+        if approved_count > 0:
+            raise HTTPException(
+                400,
+                f"Энэ тооллогод {approved_count} ажилтны KPI аль хэдий нь батлагдсан "
+                "тул устгах боломжгүй. Эхлээд тэр KPI-уудыг буцаах хэрэгтэй."
+            )
+
+    # Deactivate or delete linked KPI admin task
     if kpi_task_id:
         kpi_task = db.query(KpiAdminDailyTask).filter(
             KpiAdminDailyTask.id == kpi_task_id
@@ -364,6 +474,11 @@ def delete_count(
             ).first()
             if has_refs:
                 kpi_task.is_active = False
+                # Үлдсэн (pending/rejected) entries-ийг устгана — approved нь дээр шалгасан
+                db.query(KpiChecklistEntry).filter(
+                    KpiChecklistEntry.admin_task_id == kpi_task_id,
+                    KpiChecklistEntry.approval_status != "approved",
+                ).delete(synchronize_session=False)
             else:
                 # Линкийг эхлээд салгаж дараа нь устгах (FK constraint-аас сэргийлж)
                 c.kpi_admin_task_id = None

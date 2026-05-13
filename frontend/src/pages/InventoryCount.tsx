@@ -216,7 +216,8 @@ export default function InventoryCount() {
         count_date: createDate,
         description: createDesc,
         target_employee_ids: createTargetIds,
-        points: parseFloat(createPoints) || 0,
+        // points-ыг хасав: backend KpiSettings.inventory_default_points-ыг ашиглана
+        points: 0,
       });
       showFlash("Тооллого үүсгэгдлээ");
       setShowCreate(false);
@@ -970,29 +971,17 @@ export default function InventoryCount() {
             </div>
 
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="mb-1 block text-xs text-gray-500">Огноо *</label>
-                  <input
-                    type="date"
-                    value={createDate}
-                    onChange={(e) => setCreateDate(e.target.value)}
-                    className="w-full rounded-apple border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#0071E3]"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-gray-500">Оноо *</label>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="0.1"
-                    value={createPoints}
-                    onChange={(e) => setCreatePoints(e.target.value)}
-                    placeholder="Жнь: 10"
-                    className="w-full rounded-apple border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#0071E3]"
-                  />
-                </div>
+              <div>
+                <label className="mb-1 block text-xs text-gray-500">Огноо *</label>
+                <input
+                  type="date"
+                  value={createDate}
+                  onChange={(e) => setCreateDate(e.target.value)}
+                  className="w-full rounded-apple border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#0071E3]"
+                />
               </div>
+              {/* Оноо: KpiSettings.inventory_default_points-аас автоматаар авна.
+                  Тохиргоог KPI удирдлага → Тохиргоо tab-аас засна. */}
               <div>
                 <label className="mb-1 block text-xs text-gray-500">Тайлбар</label>
                 <textarea
@@ -1048,7 +1037,7 @@ export default function InventoryCount() {
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!createDate || createTargetIds.length === 0 || !createPoints || busy}
+                disabled={!createDate || createTargetIds.length === 0 || busy}
                 className="rounded-apple bg-[#0071E3] px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
               >
                 {busy ? <RefreshCw size={14} className="animate-spin" /> : "Үүсгэх"}

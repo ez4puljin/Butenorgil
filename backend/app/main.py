@@ -15,7 +15,7 @@ from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
 from app.models.role import Role  # noqa: F401 – registers table
 from app.models.purchase_order import PurchaseOrderBrandStatus  # noqa: F401 – registers table
-from app.models.kpi import KpiScheduledDay, KpiShiftTransfer, KpiAuditLog  # noqa: F401 – registers tables
+from app.models.kpi import KpiScheduledDay, KpiShiftTransfer, KpiAuditLog, KpiSettings  # noqa: F401 – registers tables
 from app.models.calendar_label import CalendarLabel  # noqa: F401 – registers table
 from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrandStatus  # noqa: F401 – registers tables
 from app.models.min_stock_rule import MinStockRule  # noqa: F401 – registers table
@@ -289,6 +289,69 @@ def ensure_inventory_count_schema():
                     f"ALTER TABLE inventory_counts ADD COLUMN {col} BOOLEAN DEFAULT 0 NOT NULL"
                 ))
 
+def ensure_kpi_inventory_schema():
+    """Тооллогын KPI бүхэлдээ дахин зохиогдсон үед нэмэгдсэн талбарууд (2026-05-13):
+
+      - kpi_employee_plans.monthly_inventory_budget  — ажилтан сардаа авах боломжтой
+        тооллогын мөнгөн дээд хязгаар. NULL үед тойруу формулагаар (monthly_max_kpi -
+        daily_kpi_cap) backfill хийнэ — ингэснээр хуучин plan-ууд автоматаар шинэ
+        логиктой нийцэх юм.
+      - kpi_employee_plans.inventory_shortage  — гар утсаар оруулдаг сарын хасалт.
+      - kpi_settings  — singleton тохиргооны хүснэгт. inventory_default_points нь
+        тооллого үүсгэх үед ажилтан бүрд автоматаар нэмэгдэх KPI entry-ийн оноо.
+    """
+    with engine.begin() as conn:
+        cols_p = [r[1] for r in conn.execute(text("PRAGMA table_info(kpi_employee_plans)")).fetchall()]
+        if cols_p:
+            if "monthly_inventory_budget" not in cols_p:
+                conn.execute(text(
+                    "ALTER TABLE kpi_employee_plans ADD COLUMN monthly_inventory_budget FLOAT"
+                ))
+                # Backfill: хуучин формула (monthly_max_kpi - daily_kpi_cap)
+                conn.execute(text(
+                    "UPDATE kpi_employee_plans "
+                    "SET monthly_inventory_budget = MAX(0, monthly_max_kpi - daily_kpi_cap) "
+                    "WHERE monthly_inventory_budget IS NULL"
+                ))
+            if "inventory_shortage" not in cols_p:
+                conn.execute(text(
+                    "ALTER TABLE kpi_employee_plans ADD COLUMN inventory_shortage FLOAT DEFAULT 0"
+                ))
+        # kpi_settings singleton — table_create_all-ээр үүсгэгдсэн ч row нь хоосон
+        # байж болзошгүй учир нэг row бичнэ.
+        try:
+            count = conn.execute(text("SELECT COUNT(*) FROM kpi_settings")).scalar()
+            if not count:
+                conn.execute(text(
+                    "INSERT INTO kpi_settings (id, inventory_default_points) VALUES (1, 5.0)"
+                ))
+        except Exception:
+            pass
+
+
+def ensure_warehouse_supervisor_role():
+    """Шинэ 'warehouse_supervisor' (Агуулах ахлах) role-ыг автомат seed хийнэ.
+    KPI тооллогын bulk approve-д шаардлагатай. Хуучин системд entry байх ёсгүй
+    тул create_or_update pattern-ыг ашиглана."""
+    from app.models.role import Role as RoleModel
+    db = SessionLocal()
+    try:
+        existing = db.query(RoleModel).filter(RoleModel.value == "warehouse_supervisor").first()
+        default_perms = "dashboard,kpi_checklist,kpi_approvals,reports,inventory_count"
+        if not existing:
+            db.add(RoleModel(
+                value="warehouse_supervisor",
+                label="Агуулах ахлах",
+                color="bg-teal-100 text-teal-700",
+                base_role="supervisor",
+                permissions=default_perms,
+                is_system=False,
+            ))
+            db.commit()
+    finally:
+        db.close()
+
+
 def ensure_kpi_groups_schema():
     with engine.begin() as conn:
         # ── kpi_checklist_entries ────────────────────────────────────────────
@@ -545,6 +608,7 @@ def startup():
     ensure_order_lines_schema()
     ensure_kpi_admin_task_schema()
     ensure_kpi_groups_schema()
+    ensure_kpi_inventory_schema()
     ensure_po_vehicle_schema()
     ensure_po_archive_schema()
     ensure_inventory_count_schema()
@@ -556,6 +620,7 @@ def startup():
     ensure_bank_transactions_schema()
     ensure_roles_schema()
     ensure_roles_seeded()
+    ensure_warehouse_supervisor_role()
     ensure_new_permissions_backfill()
     ensure_calendar_labels_seeded()
     db = SessionLocal()

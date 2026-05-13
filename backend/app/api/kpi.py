@@ -10,10 +10,27 @@ from app.models.kpi import (
     KpiTaskGroup, KpiTaskTemplate, KpiEmployeeTaskConfig,
     KpiDailyChecklist, KpiChecklistEntry, KpiAdminDailyTask,
     KpiEmployeePlan, KpiScheduledDay, KpiShiftTransfer, KpiAuditLog,
+    KpiSettings,
 )
 from app.models.user import User
 
 router = APIRouter(prefix="/kpi", tags=["kpi"])
+
+
+def _get_or_create_kpi_settings(db: Session) -> KpiSettings:
+    """KpiSettings singleton row (id=1)-ыг буцаана. Байхгүй бол default-ээр үүсгэнэ."""
+    s = db.query(KpiSettings).filter(KpiSettings.id == 1).first()
+    if not s:
+        s = KpiSettings(id=1, inventory_default_points=5.0)
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+    return s
+
+
+def get_inventory_default_points(db: Session) -> float:
+    """Тооллого үүсгэх үед KPI entry-д тавих анхдагч оноо."""
+    return float(_get_or_create_kpi_settings(db).inventory_default_points or 5.0)
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
@@ -82,11 +99,15 @@ class EmployeePlanIn(BaseModel):
     month: int
     daily_kpi_cap: float
     monthly_max_kpi: float
+    monthly_inventory_budget: Optional[float] = None   # 2026-05-13: тооллогын төсөв
+    inventory_shortage: Optional[float] = None         # 2026-05-13: гар утсаар оруулдаг хасалт
 
 
 class EmployeePlanUpdateIn(BaseModel):
     daily_kpi_cap: Optional[float] = None
     monthly_max_kpi: Optional[float] = None
+    monthly_inventory_budget: Optional[float] = None
+    inventory_shortage: Optional[float] = None
 
 
 # ── Serializers ──────────────────────────────────────────────────────────────
@@ -871,6 +892,13 @@ def delete_admin_task(
 # ── KPI Employee Plans ───────────────────────────────────────────────────────
 
 def _ser_plan(p: KpiEmployeePlan, db: Session) -> dict:
+    # Тооллогын төсөв NULL үед хуучин формулаар (monthly_max - daily_cap)
+    # backfill хийгээд харуулна. Migration startup-аар DB-д аль хэдий
+    # backfill хийгдсэн, гэхдээ хэрэв ямар нэг шалтгаанаар NULL хэвээр
+    # үлдсэн бол энэ нь fallback болгоно.
+    inv_budget = p.monthly_inventory_budget
+    if inv_budget is None:
+        inv_budget = max(0.0, (p.monthly_max_kpi or 0.0) - (p.daily_kpi_cap or 0.0))
     return {
         "id": p.id,
         "employee_id": p.employee_id,
@@ -879,6 +907,8 @@ def _ser_plan(p: KpiEmployeePlan, db: Session) -> dict:
         "month": p.month,
         "daily_kpi_cap": p.daily_kpi_cap,
         "monthly_max_kpi": p.monthly_max_kpi,
+        "monthly_inventory_budget": float(inv_budget),
+        "inventory_shortage": float(p.inventory_shortage or 0.0),
     }
 
 
@@ -911,6 +941,10 @@ def upsert_employee_plan(
     if plan:
         plan.daily_kpi_cap = body.daily_kpi_cap
         plan.monthly_max_kpi = body.monthly_max_kpi
+        if body.monthly_inventory_budget is not None:
+            plan.monthly_inventory_budget = float(body.monthly_inventory_budget)
+        if body.inventory_shortage is not None:
+            plan.inventory_shortage = float(body.inventory_shortage)
         plan.updated_at = datetime.utcnow()
     else:
         plan = KpiEmployeePlan(
@@ -919,6 +953,12 @@ def upsert_employee_plan(
             month=body.month,
             daily_kpi_cap=body.daily_kpi_cap,
             monthly_max_kpi=body.monthly_max_kpi,
+            monthly_inventory_budget=(
+                float(body.monthly_inventory_budget)
+                if body.monthly_inventory_budget is not None
+                else max(0.0, body.monthly_max_kpi - body.daily_kpi_cap)
+            ),
+            inventory_shortage=float(body.inventory_shortage or 0.0),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -945,6 +985,10 @@ def bulk_upsert_plans(
         if plan:
             plan.daily_kpi_cap = body.daily_kpi_cap
             plan.monthly_max_kpi = body.monthly_max_kpi
+            if body.monthly_inventory_budget is not None:
+                plan.monthly_inventory_budget = float(body.monthly_inventory_budget)
+            if body.inventory_shortage is not None:
+                plan.inventory_shortage = float(body.inventory_shortage)
             plan.updated_at = datetime.utcnow()
         else:
             plan = KpiEmployeePlan(
@@ -953,6 +997,12 @@ def bulk_upsert_plans(
                 month=body.month,
                 daily_kpi_cap=body.daily_kpi_cap,
                 monthly_max_kpi=body.monthly_max_kpi,
+                monthly_inventory_budget=(
+                    float(body.monthly_inventory_budget)
+                    if body.monthly_inventory_budget is not None
+                    else max(0.0, body.monthly_max_kpi - body.daily_kpi_cap)
+                ),
+                inventory_shortage=float(body.inventory_shortage or 0.0),
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
@@ -1020,13 +1070,20 @@ def _calc_kpi_for_employee(employee_id: int, year: int, month: int, db: Session)
         KpiEmployeePlan.month == month,
     ).first()
 
-    daily_kpi_cap   = plan.daily_kpi_cap if plan else 0.0
-    monthly_max_kpi = plan.monthly_max_kpi if plan else 0.0
+    daily_kpi_cap      = plan.daily_kpi_cap if plan else 0.0
+    monthly_max_kpi    = plan.monthly_max_kpi if plan else 0.0
+    # Шинэ explicit талбар (NULL үед хуучин формулаар backfill: monthly_max - daily_cap)
+    monthly_inv_budget = (
+        plan.monthly_inventory_budget
+        if (plan and plan.monthly_inventory_budget is not None)
+        else max(0.0, monthly_max_kpi - daily_kpi_cap)
+    )
+    inventory_shortage = float(plan.inventory_shortage or 0.0) if plan else 0.0
 
     daily_payout = daily_kpi_cap * daily_score
 
-    # Тооллогоны дүн = (max - cap) * (approved_pts / total_pts)
-    inventory_budget = max(0.0, monthly_max_kpi - daily_kpi_cap)
+    # Тооллогоны мөнгөн дүн = budget × (хяналт хийгдсэн оноо / нийт оноо)
+    inventory_budget = monthly_inv_budget
     inv_score = (inv_approved_pts / inv_total_pts) if inv_total_pts > 0 else 0.0
     inventory_payout = inventory_budget * inv_score
 
@@ -1078,6 +1135,9 @@ def _calc_kpi_for_employee(employee_id: int, year: int, month: int, db: Session)
     shift_bonus = round((daily_kpi_cap / scheduled_days) * shift_cover_days) if scheduled_days > 0 and shift_cover_days > 0 else 0
     total_kpi = total_kpi + shift_bonus
 
+    # Эцсийн цалин = Нийт KPI - тооллогын дутагдал (гар утсаар оруулсан)
+    final_payout = total_kpi - inventory_shortage
+
     return {
         "employee_id": employee_id,
         "employee_username": _display_name(db, employee_id),
@@ -1085,10 +1145,19 @@ def _calc_kpi_for_employee(employee_id: int, year: int, month: int, db: Session)
         "daily_payout": round(daily_payout),
         "inventory_payout": round(inventory_payout),
         "total_kpi": round(total_kpi),
+        "final_payout": round(final_payout),                # Хасалтын дараах эцсийн дүн (₮)
         "daily_kpi_cap": daily_kpi_cap,
         "monthly_max_kpi": monthly_max_kpi,
+        "monthly_inventory_budget": round(monthly_inv_budget),  # Тооллогын төсөв (₮)
+        "inventory_shortage": round(inventory_shortage),    # Тооллогын дутагдал (₮)
         "plan_exists": plan is not None,
-        # Дэлгэрэнгүй оноо
+        # Дэлгэрэнгүй оноо — өдөр тутмын ажил
+        "daily_pts_max": round(total_possible),             # Өдрийн нийт цуглуулах оноо
+        "daily_pts_got": round(total_approved_pts),         # Өдрийн авсан оноо
+        # ── Тооллогын оноо — багана хуваагдсан ──────────────────────────
+        "inv_pts_max": round(inv_total_pts),                # Тооллогын нийт оноо
+        "inv_pts_got": round(inv_approved_pts),             # Тооллогын авсан оноо
+        # Backward-compat (хуучин key-ийн нэр)
         "total_possible_pts": round(total_possible),       # Нийт цуглуулах оноо
         "total_approved_pts": round(total_approved_pts),    # Авсан оноо
         "total_rejected_pts": round(rejected_pts),          # Татгалзсан оноо
@@ -1096,10 +1165,10 @@ def _calc_kpi_for_employee(employee_id: int, year: int, month: int, db: Session)
         # Ажлын өдрүүд
         "scheduled_days": scheduled_days,                   # Ажиллах ёстой
         "worked_days": worked_days,                         # Бодит ажилласан
-        # Тооллого дэлгэрэнгүй
-        "inventory_total_pts": round(inv_total_pts),        # Тооллогоны нийт оноо
-        "inventory_approved_pts": round(inv_approved_pts),  # Тооллогоны авсан оноо
-        "inventory_budget": round(inventory_budget),        # Тооллогоос авах max дүн
+        # Тооллого дэлгэрэнгүй (alias-ууд хуучин key-ийн нэр)
+        "inventory_total_pts": round(inv_total_pts),        # = inv_pts_max
+        "inventory_approved_pts": round(inv_approved_pts),  # = inv_pts_got
+        "inventory_budget": round(inventory_budget),        # = monthly_inventory_budget
         # Нэмэлт ажил (шууд ₮)
         "extra_payout": round(extra_payout),                # Нэмэлт ажлын дүн (₮)
         # Ээлж нөхсөн нэмэгдэл
@@ -1756,3 +1825,176 @@ def get_all_schedules(
             }
         by_emp[eid]["dates"].append(s.date.isoformat())
     return list(by_emp.values())
+
+
+# ── KPI системийн тохиргоо (singleton) ─────────────────────────────────────
+
+class KpiSettingsIn(BaseModel):
+    inventory_default_points: float
+
+
+@router.get("/settings")
+def get_kpi_settings(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """KPI системийн тохиргоог буцаана. Зөвхөн админ хандана."""
+    s = _get_or_create_kpi_settings(db)
+    return {
+        "inventory_default_points": float(s.inventory_default_points or 5.0),
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    }
+
+
+@router.put("/settings")
+def update_kpi_settings(
+    body: KpiSettingsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """KPI системийн тохиргоог шинэчилнэ. Зөвхөн админ хандана."""
+    s = _get_or_create_kpi_settings(db)
+    if body.inventory_default_points is None or body.inventory_default_points < 0:
+        raise HTTPException(400, "inventory_default_points нь 0-ээс дээш тоо байх ёстой")
+    s.inventory_default_points = float(body.inventory_default_points)
+    s.updated_at = datetime.utcnow()
+    db.commit(); db.refresh(s)
+    return {
+        "inventory_default_points": float(s.inventory_default_points),
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    }
+
+
+# ── Тооллогын KPI bulk-approve ────────────────────────────────────────────
+
+class InventoryBulkApproveIn(BaseModel):
+    year: int
+    month: int                    # 1-12
+    week_iso: Optional[int] = None   # ISO week 1-53; None бол сар бүхэлдээ
+    # "Илгээгүй буюу 0 оноотой" хүмүүсийг ч заавал батлах flag-тай байна.
+    # False (default) бол зөвхөн pending entries-ийг батална;
+    # True бол rejected entries-ийг ч approve болгоно (хүсэлт болгоход анхааруулга).
+    include_rejected: bool = False
+
+
+@router.post("/inventory/bulk-approve")
+def inventory_bulk_approve(
+    body: InventoryBulkApproveIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "warehouse_supervisor")),
+):
+    """
+    Тухайн сарын (эсвэл сонгосон долоо хоногийн) тооллогын pending entries-ийг
+    нэг дор approve хийнэ. "Илгээгүй буюу 0 оноотой" ажилтнуудын entries-ийг ч
+    хамруулна — гол нь is_checked=False ч approved status-аар явуулна.
+
+    Хатуу хязгаар:
+      - Зөвхөн admin / supervisor / warehouse_supervisor role
+      - "Бямба" гарагт хийхийг УЛ зөвлөв (UI confirm dialog) — backend нь хатуу
+        хориглодоггүй, audit гэрээслэлд ажилтан зөв хариуцлагатай гэж үздэг.
+      - Зөвхөн task_category="inventory" entries-т хэрэглэгдэнэ
+    """
+    if not (1 <= body.month <= 12):
+        raise HTTPException(400, "month нь 1-12-н хооронд байх ёстой")
+
+    # Хугацаа фильтр
+    from calendar import monthrange
+    first_day = date_type(body.year, body.month, 1)
+    last_day = date_type(body.year, body.month, monthrange(body.year, body.month)[1])
+
+    q = db.query(KpiChecklistEntry).join(
+        KpiDailyChecklist, KpiChecklistEntry.checklist_id == KpiDailyChecklist.id
+    ).filter(
+        KpiChecklistEntry.task_category == "inventory",
+        KpiDailyChecklist.date >= first_day,
+        KpiDailyChecklist.date <= last_day,
+    )
+
+    # Долоо хоног фильтр (ISO week)
+    if body.week_iso is not None:
+        # Долоо хоног дотрох бүх огноо
+        from datetime import timedelta as _td
+        # ISO week-ийн эхний өдрийг (Даваа) олох — Python datetime.isocalendar()-аар шалгана
+        all_entries = q.all()
+        kept = []
+        for e in all_entries:
+            cl = db.query(KpiDailyChecklist).filter(KpiDailyChecklist.id == e.checklist_id).first()
+            if not cl:
+                continue
+            iso_year, iso_week, _ = cl.date.isocalendar()
+            if iso_year == body.year and iso_week == body.week_iso:
+                kept.append(e)
+        entries = kept
+    else:
+        entries = q.all()
+
+    # Статусаар шүүх
+    if body.include_rejected:
+        target_entries = [e for e in entries if (e.approval_status or "pending") != "approved"]
+    else:
+        target_entries = [e for e in entries if (e.approval_status or "pending") == "pending"]
+
+    now = datetime.utcnow()
+    approved_count = 0
+    for e in target_entries:
+        e.approval_status = "approved"
+        # approved_value-г одоогийн monetary_value-р тогтооно (entry-ийн оноо)
+        e.approved_value = float(e.monetary_value or 0)
+        e.approved_at = now
+        e.approved_by_id = u.id
+        e.is_checked = True   # "илгээгүй ч approve" — checked болгох
+        approved_count += 1
+    db.commit()
+
+    return {
+        "ok": True,
+        "approved": approved_count,
+        "total_scanned": len(entries),
+        "scope": {
+            "year": body.year, "month": body.month,
+            "week_iso": body.week_iso,
+            "include_rejected": body.include_rejected,
+        },
+    }
+
+
+@router.get("/inventory/pending-summary")
+def inventory_pending_summary(
+    year: int,
+    month: int,
+    week_iso: Optional[int] = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "supervisor", "warehouse_supervisor")),
+):
+    """Bulk approve modal-д харуулах summary: хэдэн entry, хэн, ямар тооллого."""
+    if not (1 <= month <= 12):
+        raise HTTPException(400, "month нь 1-12-н хооронд байх ёстой")
+    from calendar import monthrange
+    first_day = date_type(year, month, 1)
+    last_day = date_type(year, month, monthrange(year, month)[1])
+
+    q = db.query(KpiChecklistEntry, KpiDailyChecklist).join(
+        KpiDailyChecklist, KpiChecklistEntry.checklist_id == KpiDailyChecklist.id
+    ).filter(
+        KpiChecklistEntry.task_category == "inventory",
+        KpiDailyChecklist.date >= first_day,
+        KpiDailyChecklist.date <= last_day,
+    )
+    rows = q.all()
+
+    if week_iso is not None:
+        rows = [
+            (e, c) for (e, c) in rows
+            if c.date.isocalendar()[0] == year and c.date.isocalendar()[1] == week_iso
+        ]
+
+    pending = [e for (e, c) in rows if (e.approval_status or "pending") == "pending"]
+    approved = [e for (e, c) in rows if (e.approval_status or "pending") == "approved"]
+    rejected = [e for (e, c) in rows if (e.approval_status or "pending") == "rejected"]
+    return {
+        "pending_count": len(pending),
+        "approved_count": len(approved),
+        "rejected_count": len(rejected),
+        "total_count": len(rows),
+        "pending_value": sum(float(e.monetary_value or 0) for e in pending),
+    }
