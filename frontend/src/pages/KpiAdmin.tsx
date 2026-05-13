@@ -1793,18 +1793,13 @@ function PlanTab() {
                 </div>
                 {/* Нийт max (read-only, авто тооцоолсон нийлбэр) */}
                 <div className="flex justify-end" title={`${(p.daily_kpi_cap || 0).toLocaleString()}₮ + ${invBudget.toLocaleString()}₮ = ${autoMax.toLocaleString()}₮`}>
-                  <div className={`relative w-32 rounded-xl border py-2 pl-3 pr-10 text-right text-sm font-bold tabular-nums cursor-not-allowed select-none ${
+                  <div className={`relative w-32 rounded-xl border py-2 pl-3 pr-7 text-right text-sm font-bold tabular-nums cursor-not-allowed select-none ${
                     autoMax > 0
                       ? "border-emerald-200 bg-emerald-50/60 text-emerald-800"
                       : "border-gray-200 bg-gray-50 text-gray-400"
                   }`}>
                     {autoMax > 0 ? autoMax.toLocaleString() : "0"}
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 pointer-events-none">
-                      {autoMax > 0 && (
-                        <span className="rounded bg-emerald-200/70 px-1 py-px text-[8px] font-bold text-emerald-700">авто</span>
-                      )}
-                      <span className="text-xs text-gray-400">₮</span>
-                    </div>
+                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">₮</span>
                   </div>
                 </div>
               </div>
