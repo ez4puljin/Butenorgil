@@ -122,6 +122,13 @@ export default function CalendarPage() {
   const [labels, setLabels] = useState<LabelDef[]>([]);
   const [showLabelManager, setShowLabelManager] = useState(false);
 
+  // 2026-05: Label-аар шүүх — олон сонголт боломжтой. Хоосон = бүгд.
+  const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
+  const toggleFilter = (key: string) => setActiveFilters(prev => {
+    const s = new Set(prev); s.has(key) ? s.delete(key) : s.add(key); return s;
+  });
+  const clearFilters = () => setActiveFilters(new Set());
+
   // Active labels (shown in UI); TASK_MAP — бүх label (event render-т fallback хэрэгтэй)
   const activeLabels = labels.filter(l => l.is_active).sort((a,b) => a.sort_order - b.sort_order);
   const TASK_MAP: Record<string, LabelDef> = Object.fromEntries(labels.map(l => [l.key, l]));
@@ -193,8 +200,13 @@ export default function CalendarPage() {
   const cells: (number|null)[] = [...Array(startWd).fill(null), ...Array.from({length:totalDays},(_,i)=>i+1)];
   while (cells.length % 7 !== 0) cells.push(null);
 
+  // 2026-05: Label шүүлтүүрээр шүүгдсэн events. activeFilters хоосон үед бүгд.
+  const filteredEvents = activeFilters.size > 0
+    ? events.filter(ev => activeFilters.has(ev.task_type))
+    : events;
+
   const byDate: Record<string, CalEvent[]> = {};
-  for (const ev of events) { (byDate[ev.date] ??= []).push(ev); }
+  for (const ev of filteredEvents) { (byDate[ev.date] ??= []).push(ev); }
 
   const todayISO = toISO(today.getFullYear(), today.getMonth()+1, today.getDate());
   const selEvents = selectedDate ? (byDate[selectedDate] ?? []) : [];
@@ -229,19 +241,41 @@ export default function CalendarPage() {
           {loading && <Loader2 size={13} className="animate-spin text-gray-300"/>}
         </div>
 
-        {/* Legend — task types */}
+        {/* Legend — task types (clickable filters) */}
         <div className="mb-2 flex flex-wrap items-center gap-1.5 px-0.5">
           {activeLabels.map(t => {
             const s = taskStyle(t.color);
             const Icon = taskIcon(t.icon);
+            const isOn  = activeFilters.has(t.key);
+            const dimmed = activeFilters.size > 0 && !isOn;
+            const ringColor = s.dot.replace("bg-", "ring-");
             return (
-              <span key={t.key}
-                className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-medium ${s.chip}`}>
+              <button key={t.key}
+                onClick={() => toggleFilter(t.key)}
+                title={isOn ? "Шүүлтүүрээс хасах" : "Зөвхөн энэ label-ыг харах"}
+                className={[
+                  "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all cursor-pointer",
+                  s.chip,
+                  isOn ? `ring-2 ring-offset-1 ${ringColor} shadow-sm` : "",
+                  dimmed ? "opacity-40 hover:opacity-70" : "hover:shadow-sm",
+                ].join(" ")}
+              >
                 <Icon size={11}/>
                 {t.label}
-              </span>
+                {isOn && <X size={10} className="ml-0.5 -mr-0.5"/>}
+              </button>
             );
           })}
+          {activeFilters.size > 0 && (
+            <button
+              onClick={clearFilters}
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50"
+              title="Бүх шүүлтүүрийг арилгах"
+            >
+              <X size={11}/>
+              Цэвэрлэх
+            </button>
+          )}
           {role === "admin" && (
             <button
               onClick={() => setShowLabelManager(true)}
@@ -253,6 +287,17 @@ export default function CalendarPage() {
             </button>
           )}
         </div>
+        {/* Filter status banner */}
+        {activeFilters.size > 0 && (
+          <div className="mb-2 flex items-center gap-2 rounded-apple bg-amber-50/60 border border-amber-100 px-3 py-1.5 text-[11px] text-amber-800">
+            <span className="font-semibold">
+              {activeFilters.size === 1 ? "1 label-аар шүүгдсэн" : `${activeFilters.size} label-аар шүүгдсэн`}
+            </span>
+            <span className="text-amber-700/80">
+              · {filteredEvents.length}/{events.length} ажил харагдаж байна
+            </span>
+          </div>
+        )}
 
         {/* Calendar grid */}
         <div className="overflow-hidden rounded-apple bg-white shadow-sm">
@@ -346,22 +391,26 @@ export default function CalendarPage() {
           </div>
         </div>
 
-        {/* Month summary — type breakdown */}
-        {events.length > 0 && (
+        {/* Month summary — type breakdown (filter-aware) */}
+        {filteredEvents.length > 0 && (
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {activeLabels.filter(t => events.some(e => e.task_type === t.key)).map(t => {
-              const count = events.filter(e => e.task_type === t.key).length;
-              const doneC = events.filter(e => e.task_type === t.key && e.is_done).length;
+            {activeLabels.filter(t => filteredEvents.some(e => e.task_type === t.key)).map(t => {
+              const count = filteredEvents.filter(e => e.task_type === t.key).length;
+              const doneC = filteredEvents.filter(e => e.task_type === t.key && e.is_done).length;
               const s = taskStyle(t.color);
               const Icon = taskIcon(t.icon);
+              const isOn = activeFilters.has(t.key);
+              const dimmed = activeFilters.size > 0 && !isOn;
               return (
-                <div key={t.key} className={`flex items-center gap-2.5 rounded-apple border px-3 py-2.5 ${s.chip}`}>
+                <button key={t.key}
+                  onClick={() => toggleFilter(t.key)}
+                  className={`flex items-center gap-2.5 rounded-apple border px-3 py-2.5 text-left transition-all ${s.chip} ${dimmed ? "opacity-40 hover:opacity-70" : "hover:shadow-sm"} ${isOn ? "ring-2 ring-offset-1 " + s.dot.replace("bg-","ring-") : ""}`}>
                   <Icon size={14} className="shrink-0"/>
                   <div className="min-w-0">
                     <div className="text-xs font-semibold whitespace-nowrap">{t.label}</div>
                     <div className="text-[11px] opacity-70">{doneC}/{count} дууссан</div>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -572,10 +621,23 @@ export default function CalendarPage() {
               {/* Add button */}
               {!showForm && (
                 <div className="border-t border-gray-100 p-3">
-                  <button onClick={() => setShowForm(true)}
+                  <button onClick={() => {
+                    // Шүүлтүүртэй үед шинэ event-ийн default type-ыг шүүж буй label-аар
+                    if (activeFilters.size === 1) {
+                      setSelType([...activeFilters][0]);
+                    } else if (activeFilters.size > 1 && !activeFilters.has(selType)) {
+                      setSelType([...activeFilters][0]);
+                    }
+                    setShowForm(true);
+                  }}
                     className="flex w-full items-center justify-center gap-2 rounded-apple border border-dashed border-gray-200 py-2.5 text-sm text-gray-500 hover:border-[#0071E3] hover:text-[#0071E3] transition-colors">
                     <Plus size={15}/>
                     Ажил нэмэх
+                    {activeFilters.size === 1 && (
+                      <span className="text-[10px] text-gray-400">
+                        ({TASK_MAP[[...activeFilters][0]]?.label})
+                      </span>
+                    )}
                   </button>
                 </div>
               )}
