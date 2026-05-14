@@ -236,9 +236,10 @@ function CrossAccountSelect({ value, onSave, presets }: {
 
 function ActionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const cls: Record<string, string> = {
-    close:  "bg-red-50 text-red-700 border-red-200",
-    create: "bg-green-50 text-green-700 border-green-200",
-    "":     "bg-gray-50 text-gray-400 border-gray-200",
+    close:        "bg-red-50 text-red-700 border-red-200",
+    create:       "bg-green-50 text-green-700 border-green-200",
+    close_create: "bg-violet-50 text-violet-700 border-violet-200",
+    "":           "bg-gray-50 text-gray-400 border-gray-200",
   };
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
@@ -246,6 +247,7 @@ function ActionSelect({ value, onChange }: { value: string; onChange: (v: string
       <option value="">—</option>
       <option value="close">Хаах</option>
       <option value="create">Үүсгэх</option>
+      <option value="close_create">Хаах Үүсгэх</option>
     </select>
   );
 }
@@ -1151,6 +1153,7 @@ export default function BankStatementPage() {
                     <option value="">— (цэвэрлэх)</option>
                     <option value="close">Хаах</option>
                     <option value="create">Үүсгэх</option>
+                    <option value="close_create">Хаах Үүсгэх</option>
                   </select>
 
                   {/* Export type select */}
@@ -1293,7 +1296,7 @@ export default function BankStatementPage() {
                               ) : t.is_fee ? (
                                 <span onClick={() => setFeeLockModal(true)}
                                   className="cursor-not-allowed rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 hover:bg-amber-50">
-                                  {t.action === "create" ? "Үүсгэх" : "Хаах"}
+                                  {t.action === "create" ? "Үүсгэх" : t.action === "close_create" ? "Хаах Үүсгэх" : "Хаах"}
                                 </span>
                               ) : (
                                 <ActionSelect value={t.action} onChange={v => updateTxn(t.id, { action: v })}/>
@@ -1416,6 +1419,7 @@ export default function BankStatementPage() {
                     <option value="">—</option>
                     <option value="close">Хаах</option>
                     <option value="create">Үүсгэх</option>
+                    <option value="close_create">Хаах Үүсгэх</option>
                   </select>
                 </div>
                 {/* Экспорт (info only) */}
@@ -1482,6 +1486,7 @@ export default function BankStatementPage() {
                     <option value="">—</option>
                     <option value="close">Хаах</option>
                     <option value="create">Үүсгэх</option>
+                    <option value="close_create">Хаах Үүсгэх</option>
                   </select>
                 </div>
                 {/* Экспорт */}

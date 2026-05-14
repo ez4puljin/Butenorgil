@@ -1047,8 +1047,18 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
         is_pos = _is_pos_income(bd)
 
         # Кредит мөрийн анхдагч action = "Хаах" (хэрэв хэрэглэгч өөрөөр сонгоогүй бол)
+        # 2026-05: Хэрэглэгчийн хүсэлтээр O баганы утга шинэчлэгдэв
+        #   close        → 1   (Хаах — нэг үйлдэл)
+        #   create       → 1   (Үүсгэх — нэг үйлдэл)
+        #   close_create → 2   (Хаах Үүсгэх — хосолсон үйлдэл)
+        #   бусад/хоосон → ""
         eff_action = (t.action or "").strip() or "close"
-        action_val: object = 2 if eff_action == "close" else (1 if eff_action == "create" else "")
+        if eff_action == "close_create":
+            action_val: object = 2
+        elif eff_action in ("close", "create"):
+            action_val = 1
+        else:
+            action_val = ""
 
         if is_pos:
             pos_date  = _extract_date_from_desc(bd)
