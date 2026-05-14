@@ -129,6 +129,15 @@ export default function CalendarPage() {
   });
   const clearFilters = () => setActiveFilters(new Set());
 
+  // 2026-05: Drag-and-drop event-ийг өөр өдөр рүү зөөх
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [dragOverDate, setDragOverDate] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const notify = (msg: string, ok = true) => {
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 2500);
+  };
+
   // Active labels (shown in UI); TASK_MAP — бүх label (event render-т fallback хэрэгтэй)
   const activeLabels = labels.filter(l => l.is_active).sort((a,b) => a.sort_order - b.sort_order);
   const TASK_MAP: Record<string, LabelDef> = Object.fromEntries(labels.map(l => [l.key, l]));
@@ -193,6 +202,25 @@ export default function CalendarPage() {
     setEvents(evs => evs.filter(e => e.id!==id));
   };
 
+  // 2026-05: Event-ийг өөр өдөр рүү чирж зөөх
+  const moveEvent = async (id: number, newDate: string) => {
+    const ev = events.find(e => e.id === id);
+    if (!ev || ev.date === newDate) return;
+    const oldDate = ev.date;
+    // Optimistic update — UI шууд хариу үзүүлэх
+    setEvents(evs => evs.map(e => e.id === id ? { ...e, date: newDate } : e));
+    try {
+      const r = await api.patch(`/calendar/events/${id}`, { date: newDate });
+      setEvents(evs => evs.map(e => e.id === id ? r.data : e));
+      const [, m, d] = newDate.split("-").map(Number);
+      notify(`${m}/${d}-нд зөөгдлөө ✓`);
+    } catch (e: any) {
+      // Rollback on error
+      setEvents(evs => evs.map(e2 => e2.id === id ? { ...e2, date: oldDate } : e2));
+      notify(e?.response?.data?.detail ?? "Зөөхөд алдаа гарлаа", false);
+    }
+  };
+
   // ── Grid data ────────────────────────────────────────────────────────────────
 
   const totalDays = daysInMonth(year, month);
@@ -216,6 +244,24 @@ export default function CalendarPage() {
   return (
     <div className="flex flex-col gap-4 overflow-x-hidden lg:flex-row lg:items-start lg:gap-6">
 
+      {/* Toast (drag-and-drop notifications) */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -16, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -16, scale: 0.96 }}
+            transition={{ duration: 0.18 }}
+            className={`fixed top-4 right-4 z-[100] flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-medium shadow-lg ${
+              toast.ok ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
+            }`}
+          >
+            {toast.ok ? <Check size={14}/> : <X size={14}/>}
+            {toast.msg}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ════════════════ Calendar panel ════════════════ */}
       <div className="min-w-0 flex-1">
 
@@ -223,7 +269,7 @@ export default function CalendarPage() {
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">Календар</h1>
-            <p className="text-xs text-gray-400">Өдөр дарж ажлын төлөвлөгөө нэмнэ</p>
+            <p className="text-xs text-gray-400">Өдөр дарж ажил нэмэх · Ажлыг чирж өөр өдөр рүү зөөх</p>
           </div>
           <button onClick={goToday}
             className="rounded-apple border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50">
@@ -319,9 +365,27 @@ export default function CalendarPage() {
               const pending  = dayEvs.filter(e => !e.is_done);
               const done     = dayEvs.filter(e => e.is_done);
 
+              const isDropTarget = iso && dragOverDate === iso && draggingId != null;
               return (
                 <div key={i}
                   onClick={() => { if (iso) { setSelectedDate(iso); setShowForm(false); }}}
+                  onDragOver={iso ? (e) => {
+                    if (draggingId == null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    if (dragOverDate !== iso) setDragOverDate(iso);
+                  } : undefined}
+                  onDragLeave={iso ? () => {
+                    if (dragOverDate === iso) setDragOverDate(null);
+                  } : undefined}
+                  onDrop={iso ? (e) => {
+                    e.preventDefault();
+                    setDragOverDate(null);
+                    const idStr = e.dataTransfer.getData("text/plain");
+                    const id = parseInt(idStr, 10);
+                    if (!isNaN(id)) moveEvent(id, iso);
+                    setDraggingId(null);
+                  } : undefined}
                   className={[
                     // Mobile: compact dot-only cells. Desktop: auto-height chip cells.
                     "relative flex flex-col gap-0.5 p-1 transition-colors",
@@ -329,8 +393,9 @@ export default function CalendarPage() {
                     i % 7 !== 6 ? "border-r border-gray-100" : "",
                     Math.floor(i/7) > 0 ? "border-t border-gray-100" : "",
                     day ? "cursor-pointer" : "",
-                    isSel ? "bg-blue-50/70" : isToday ? "bg-blue-50/30" : "",
-                    day && !isSel ? "hover:bg-gray-50" : "",
+                    isDropTarget ? "bg-blue-100 ring-2 ring-inset ring-[#0071E3]" :
+                      isSel ? "bg-blue-50/70" : isToday ? "bg-blue-50/30" : "",
+                    day && !isSel && !isDropTarget ? "hover:bg-gray-50" : "",
                   ].join(" ")}
                 >
                   {day && (
@@ -360,16 +425,36 @@ export default function CalendarPage() {
                         )}
                       </div>
 
-                      {/* Desktop: full text chips — auto-height, no truncation */}
+                      {/* Desktop: full text chips — auto-height, no truncation, draggable */}
                       <div className="hidden flex-col gap-0.5 sm:flex">
                         {pending.map(ev => {
                           const t = TASK_MAP[ev.task_type];
                           const s = taskStyle(t?.color ?? "gray");
                           const Icon = taskIcon(t?.icon ?? "MoreHorizontal");
                           const shortName = t?.short || t?.label || ev.task_type;
+                          const canMove = ev.created_by_user_id === userId || role === "admin" || role === "supervisor";
+                          const isDragging = draggingId === ev.id;
                           return (
                             <span key={ev.id}
-                              className={`flex items-start gap-0.5 rounded border px-1 py-0.5 text-[10px] font-medium leading-snug ${s.chip}`}>
+                              draggable={canMove}
+                              onDragStart={canMove ? (e) => {
+                                e.stopPropagation();
+                                e.dataTransfer.setData("text/plain", String(ev.id));
+                                e.dataTransfer.effectAllowed = "move";
+                                setDraggingId(ev.id);
+                              } : undefined}
+                              onDragEnd={canMove ? () => {
+                                setDraggingId(null);
+                                setDragOverDate(null);
+                              } : undefined}
+                              onClick={(e) => { e.stopPropagation(); if (iso) { setSelectedDate(iso); setShowForm(false); } }}
+                              title={canMove ? "Чирж өөр өдөр рүү зөөж болно" : t?.label}
+                              className={[
+                                "flex items-start gap-0.5 rounded border px-1 py-0.5 text-[10px] font-medium leading-snug transition-all",
+                                s.chip,
+                                canMove ? "cursor-grab active:cursor-grabbing hover:shadow-sm" : "",
+                                isDragging ? "opacity-30 scale-95" : "",
+                              ].join(" ")}>
                               <Icon size={9} className="mt-[1px] shrink-0"/>
                               <span className="break-words">
                                 {shortName}{ev.notes ? ` (${ev.notes})` : ""}

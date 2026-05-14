@@ -29,6 +29,7 @@ class EventUpdateIn(BaseModel):
     is_done: Optional[bool] = None
     task_type: Optional[str] = None
     notes: Optional[str] = None
+    date: Optional[date_type] = None   # 2026-05: drag-and-drop reschedule
 
 
 def _serialize(ev: CalendarEvent, db: Session) -> dict:
@@ -104,7 +105,7 @@ def update_event(
     if body.is_done is not None:
         ev.is_done = body.is_done
 
-    if body.task_type is not None or body.notes is not None:
+    if body.task_type is not None or body.notes is not None or body.date is not None:
         if u.id != ev.created_by_user_id and u.role not in ("admin", "supervisor"):
             raise HTTPException(403, "Зөвхөн үүсгэсэн хүн засах боломжтой")
         if body.task_type is not None:
@@ -113,6 +114,8 @@ def update_event(
             ev.title = body.task_type
         if body.notes is not None:
             ev.description = body.notes.strip()
+        if body.date is not None:
+            ev.date = body.date  # drag-and-drop reschedule
 
     db.commit()
     db.refresh(ev)
