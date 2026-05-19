@@ -16,3 +16,4 @@ from app.api.inventory_count import router as inventory_count_router
 from app.api.erkhet_auto import router as erkhet_auto_router
 from app.api.receivings import router as receivings_router
 from app.api.bank_statements import router as bank_statements_router
+from app.api.expiration import router as expiration_router

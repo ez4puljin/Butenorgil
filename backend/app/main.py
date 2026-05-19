@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -51,18 +51,18 @@ def ensure_users_schema():
             conn.execute(text("UPDATE users SET base_role = role WHERE base_role = '' OR base_role IS NULL"))
 
 _ROLE_PERMISSIONS = {
-    "admin":           "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,admin_panel,min_stock,audit_log,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements",
-    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto,bank_statements",
-    "manager":         "dashboard,imports,reports,order,receivings,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count",
-    "warehouse_clerk": "order,receivings,calendar,kpi_checklist,kpi_approvals",
-    "accountant":      "dashboard,reports,accounts_receivable,order,receivings,calendar,kpi_checklist,kpi_approvals,sales_report,bank_statements",
+    "admin":           "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,admin_panel,min_stock,audit_log,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking",
+    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking",
+    "manager":         "dashboard,imports,reports,order,receivings,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,expiration_tracking",
+    "warehouse_clerk": "order,receivings,calendar,kpi_checklist,kpi_approvals,expiration_tracking",
+    "accountant":      "dashboard,reports,accounts_receivable,order,receivings,calendar,kpi_checklist,kpi_approvals,sales_report,bank_statements,expiration_tracking",
 }
 
 
 def ensure_new_permissions_backfill():
     """Хэрэв одоо байгаа role-ууд хуучин 'order' / 'admin_panel' permission-тай боловч
-    шинэ задлагдсан permission (receivings/min_stock/audit_log)-гүй бол автоматаар нэмнэ.
-    Энэ нь backward-compat хадгалах зорилготой."""
+    шинэ задлагдсан permission (receivings/min_stock/audit_log/expiration_tracking)
+    гүй бол автоматаар нэмнэ. Энэ нь backward-compat хадгалах зорилготой."""
     from app.models.role import Role as RoleModel
     db = SessionLocal()
     try:
@@ -83,6 +83,11 @@ def ensure_new_permissions_backfill():
                 if "audit_log" not in perms:
                     perms.add("audit_log")
                     changed = True
+            # 2026-05: Хугацааны хяналт permission-ыг БҮХ role-д автомат нэмэх
+            # (бүх ажилчид ашиглах гэж user requirement-д тодорхойлсон).
+            if "expiration_tracking" not in perms:
+                perms.add("expiration_tracking")
+                changed = True
             if changed:
                 # Sort-аар тогтвортой дараалал хадгалах
                 r.permissions = ",".join(sorted(perms))
@@ -138,6 +143,19 @@ def ensure_min_stock_rules_schema():
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(min_stock_rules)")).fetchall()]
         if cols and "product_id" not in cols:
             conn.execute(text("ALTER TABLE min_stock_rules ADD COLUMN product_id INTEGER"))
+
+
+def ensure_expiration_items_schema():
+    """Хугацааны хяналт (expiration_items) шинэ багана нэмэх migration helper.
+    Шинэ table бол create_all() өөрөө үүсгэнэ. Энд зөвхөн хуучин table-д
+    шинэ багана нэмэх ALTER логик байна."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(expiration_items)")).fetchall()]
+        if not cols:
+            return  # create_all() анх удаа үүсгэнэ
+        # Backward-compatible багана нэмэх (хэрвээ хуучин үед үүссэн бол):
+        if "liability_user_ids" not in cols:
+            conn.execute(text("ALTER TABLE expiration_items ADD COLUMN liability_user_ids VARCHAR(500) DEFAULT ''"))
 
 def ensure_po_lines_schema():
     with engine.begin() as conn:
@@ -615,6 +633,7 @@ def startup():
     ensure_po_brand_status_table()
     ensure_shipment_lines_schema()
     ensure_min_stock_rules_schema()
+    ensure_expiration_items_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()
     ensure_bank_transactions_schema()
@@ -699,6 +718,7 @@ app.include_router(inventory_count_router)
 app.include_router(receivings_router)
 app.include_router(erkhet_auto_router)
 app.include_router(bank_statements_router)
+app.include_router(expiration_router)
 
 @app.get("/health")
 def health():
