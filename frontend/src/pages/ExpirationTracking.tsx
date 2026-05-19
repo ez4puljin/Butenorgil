@@ -526,19 +526,19 @@ export default function ExpirationTracking() {
                     {/* Бараа */}
                     <td className="px-3 py-2.5 min-w-[180px]">
                       <div className="font-semibold text-gray-900 text-sm">{it.product_name}</div>
-                      <div className="text-[10px] text-gray-400 font-mono">{it.product_code}{it.product_barcode ? ` · ${it.product_barcode}` : ""}</div>
+                      <div className="text-[10px] text-gray-400 font-mono">{it.product_code}</div>
                     </td>
                     {/* Брэнд */}
                     <td className="px-3 py-2.5 text-xs text-gray-600">{it.product_brand || "—"}</td>
-                    {/* Тайлбар */}
-                    <td className="px-3 py-2.5 text-xs text-gray-700 min-w-[150px] max-w-[260px]">
+                    {/* Тайлбар — бүтэн харагдана */}
+                    <td className="px-3 py-2.5 text-xs text-gray-700 min-w-[180px] align-top">
                       {isEditing ? (
                         <textarea value={editNotes}
                           onChange={e => setEditNotes(e.target.value)}
-                          rows={2} placeholder="Тэмдэглэл..."
-                          className="w-full rounded-lg border border-blue-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"/>
+                          rows={3} placeholder="Тэмдэглэл..."
+                          className="w-full rounded-lg border border-blue-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-y"/>
                       ) : it.notes ? (
-                        <span className="italic line-clamp-2 leading-snug" title={it.notes}>{it.notes}</span>
+                        <span className="italic leading-snug whitespace-pre-wrap break-words">{it.notes}</span>
                       ) : (
                         <span className="text-gray-300">—</span>
                       )}
