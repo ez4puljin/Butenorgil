@@ -8,8 +8,10 @@ import {
   Plus, Search, X, Check, Loader2, AlertCircle, CheckCircle,
   Timer, Printer, Archive, ArchiveRestore, Trash2, Pencil, Filter,
   ScanLine, Calendar as CalendarIcon, Users, AlertTriangle, FileText,
+  Camera,
 } from "lucide-react";
 import { api } from "../lib/api";
+import BarcodeScanner from "../components/BarcodeScanner";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -158,10 +160,14 @@ export default function ExpirationTracking() {
   const [liabNote, setLiabNote] = useState("");
   const [liabSaving, setLiabSaving] = useState(false);
 
-  // Edit qty inline
+  // Edit qty + notes inline
   const [editId, setEditId] = useState<number | null>(null);
   const [editFloor, setEditFloor] = useState("");
   const [editWarehouse, setEditWarehouse] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+
+  // Camera barcode scanner
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   // Delete confirm
   const [confirmDel, setConfirmDel] = useState<ExpirationItemRow | null>(null);
@@ -285,6 +291,7 @@ export default function ExpirationTracking() {
     setEditId(it.id);
     setEditFloor(String(it.qty_floor));
     setEditWarehouse(String(it.qty_warehouse));
+    setEditNotes(it.notes || "");
   }
 
   async function saveEdit(it: ExpirationItemRow) {
@@ -292,7 +299,9 @@ export default function ExpirationTracking() {
     const qw = parseFloat(editWarehouse) || 0;
     if (qf < 0 || qw < 0) { notify("Үлдэгдэл сөрөг байж болохгүй", false); return; }
     try {
-      const r = await api.patch(`/expiration/items/${it.id}`, { qty_floor: qf, qty_warehouse: qw });
+      const r = await api.patch(`/expiration/items/${it.id}`, {
+        qty_floor: qf, qty_warehouse: qw, notes: editNotes.trim(),
+      });
       setItems(prev => prev.map(p => p.id === it.id ? r.data : p));
       setEditId(null);
       notify("Хадгалагдлаа ✓");
@@ -485,6 +494,7 @@ export default function ExpirationTracking() {
               <tr>
                 <th className="px-3 py-2.5 text-left">Бараа</th>
                 <th className="px-3 py-2.5 text-left">Брэнд</th>
+                <th className="px-3 py-2.5 text-left">Тайлбар</th>
                 <th className="px-3 py-2.5 text-center">Дуусах огноо</th>
                 <th className="px-3 py-2.5 text-center">Үлдсэн</th>
                 <th className="px-3 py-2.5 text-right">Заал</th>
@@ -497,12 +507,12 @@ export default function ExpirationTracking() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {loading && (
-                <tr><td colSpan={10} className="py-12 text-center text-sm text-gray-400">
+                <tr><td colSpan={11} className="py-12 text-center text-sm text-gray-400">
                   <Loader2 size={14} className="inline animate-spin mr-2"/> Ачааллаж байна...
                 </td></tr>
               )}
               {!loading && visibleItems.length === 0 && (
-                <tr><td colSpan={10} className="py-12 text-center text-sm text-gray-400">
+                <tr><td colSpan={11} className="py-12 text-center text-sm text-gray-400">
                   Бүртгэл байхгүй. <button onClick={openAdd} className="text-[#0071E3] hover:underline">Шинэ нэмэх</button>
                 </td></tr>
               )}
@@ -517,10 +527,22 @@ export default function ExpirationTracking() {
                     <td className="px-3 py-2.5 min-w-[180px]">
                       <div className="font-semibold text-gray-900 text-sm">{it.product_name}</div>
                       <div className="text-[10px] text-gray-400 font-mono">{it.product_code}{it.product_barcode ? ` · ${it.product_barcode}` : ""}</div>
-                      {it.notes && <div className="mt-0.5 text-[10px] text-gray-500 italic line-clamp-1">{it.notes}</div>}
                     </td>
                     {/* Брэнд */}
                     <td className="px-3 py-2.5 text-xs text-gray-600">{it.product_brand || "—"}</td>
+                    {/* Тайлбар */}
+                    <td className="px-3 py-2.5 text-xs text-gray-700 min-w-[150px] max-w-[260px]">
+                      {isEditing ? (
+                        <textarea value={editNotes}
+                          onChange={e => setEditNotes(e.target.value)}
+                          rows={2} placeholder="Тэмдэглэл..."
+                          className="w-full rounded-lg border border-blue-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"/>
+                      ) : it.notes ? (
+                        <span className="italic line-clamp-2 leading-snug" title={it.notes}>{it.notes}</span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
                     {/* Дуусах огноо */}
                     <td className="px-3 py-2.5 text-center text-xs tabular-nums">{fmtDate(it.expiration_date)}</td>
                     {/* Үлдсэн */}
@@ -642,7 +664,12 @@ export default function ExpirationTracking() {
                   <input ref={scanRef} value={pickerQuery}
                     onChange={e => { setPickerQuery(e.target.value); if (selectedProduct) setSelectedProduct(null); }}
                     placeholder="Бараа хайх эсвэл скан хийх..."
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-3 py-2 text-sm focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0071E3]/15"/>
+                    className="w-full rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-12 py-2 text-sm focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0071E3]/15"/>
+                  <button onClick={() => setScannerOpen(true)} type="button"
+                    title="Камераар баркод скан хийх"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex h-7 w-8 items-center justify-center rounded-lg bg-[#0071E3] text-white hover:bg-blue-600 transition-colors shadow-sm">
+                    <Camera size={14}/>
+                  </button>
                 </div>
                 {pickerSearching && (
                   <div className="mt-1 flex items-center gap-1 text-[11px] text-gray-400">
@@ -855,6 +882,43 @@ export default function ExpirationTracking() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Barcode scanner overlay ─────────────────────────────── */}
+      {scannerOpen && (
+        <BarcodeScanner
+          onClose={() => setScannerOpen(false)}
+          onDetected={async (code) => {
+            setScannerOpen(false);
+            const clean = (code || "").trim();
+            if (!clean) return;
+            setPickerQuery(clean);
+            // Auto-search ба нэг л үр дүн байвал шууд сонгох
+            try {
+              const r = await api.get("/expiration/lookup/products", { params: { q: clean } });
+              const hits: ProductHit[] = r.data;
+              if (hits.length === 1) {
+                selectProduct(hits[0]);
+                notify(`Бараа олдлоо: ${hits[0].name}`);
+              } else if (hits.length > 1) {
+                // Барадоктой exact match эхэнд байх ёстой — серверээс ингэж буцаадаг
+                const exact = hits.find(h => h.barcode === clean);
+                if (exact) {
+                  selectProduct(exact);
+                  notify(`Бараа олдлоо: ${exact.name}`);
+                } else {
+                  setPickerHits(hits);
+                  notify(`${hits.length} бараа олдлоо — сонгоно уу`);
+                }
+              } else {
+                setPickerHits([]);
+                notify(`'${clean}' баркодтой бараа олдсонгүй`, false);
+              }
+            } catch {
+              notify("Хайхад алдаа гарлаа", false);
+            }
+          }}
+        />
       )}
 
       {/* ── Print styles (A4 landscape) ─────────────────────────── */}
