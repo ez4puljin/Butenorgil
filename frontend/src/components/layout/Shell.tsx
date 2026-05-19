@@ -205,10 +205,10 @@ export default function Shell(props: { children: React.ReactNode }) {
     <div className="min-h-screen bg-[#F5F5F7]">
 
       {/* ══ DESKTOP (lg+) ═══════════════════════════════════════════════ */}
-      <div className="hidden lg:flex min-h-screen">
+      <div className="hidden lg:flex min-h-screen print:block">
 
         {/* Sidebar — нуух/харуулах toggle-тай */}
-        <div className={`relative shrink-0 transition-all duration-300 ${desktopSidebarOpen ? "w-64" : "w-0"}`}>
+        <div className={`relative shrink-0 transition-all duration-300 print:hidden ${desktopSidebarOpen ? "w-64" : "w-0"}`}>
           <aside className={`sticky top-0 h-screen overflow-hidden transition-all duration-300 ${
             desktopSidebarOpen ? "w-64 opacity-100" : "w-0 opacity-0 pointer-events-none"
           }`}>
@@ -265,23 +265,23 @@ export default function Shell(props: { children: React.ReactNode }) {
         </div>
 
         {/* Desktop content */}
-        <main className="min-w-0 flex-1 p-6 pb-8 relative">
+        <main className="min-w-0 flex-1 p-6 pb-8 relative print:p-0 print:pb-0">
           {/* Sidebar нуугдсан үед харуулах товч */}
           {!desktopSidebarOpen && (
             <button onClick={toggleDesktopSidebar}
-              className="fixed top-4 left-4 z-50 flex h-10 w-10 items-center justify-center rounded-xl bg-white shadow-md border border-gray-100 text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-all"
+              className="fixed top-4 left-4 z-50 flex h-10 w-10 items-center justify-center rounded-xl bg-white shadow-md border border-gray-100 text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-all print:hidden"
               title="Цэс харуулах">
               <Menu size={18} />
             </button>
           )}
-          <div className={`transition-all duration-300 ${!desktopSidebarOpen ? "pl-12" : ""}`}>
+          <div className={`transition-all duration-300 ${!desktopSidebarOpen ? "pl-12" : ""} print:pl-0`}>
             {props.children}
           </div>
         </main>
       </div>
 
       {/* ══ TABLET / MOBILE (below lg) ══════════════════════════════════ */}
-      <div className="flex flex-col lg:hidden min-h-screen">
+      <div className="flex flex-col lg:hidden min-h-screen print:hidden">
         {/* Top bar — compact page title + menu + avatar */}
         <header
           className="sticky top-0 z-30 flex items-center gap-2 border-b border-gray-100 bg-white/90 px-3 backdrop-blur-md"

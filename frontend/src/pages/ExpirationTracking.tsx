@@ -925,7 +925,18 @@ export default function ExpirationTracking() {
       <style>{`
         @media print {
           @page { size: A4 landscape; margin: 10mm; }
-          body { background: white !important; }
+          html, body { background: white !important; margin: 0 !important; padding: 0 !important; }
+          /* Preserve colors (status pills, row backgrounds) */
+          * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+          /* Toast / scanner overlays — print-д хэрэггүй */
+          .fixed { display: none !important; }
+          /* Row нэг л хуудасанд таслагдахгүй */
+          tr { page-break-inside: avoid; break-inside: avoid; }
+          thead { display: table-header-group; }
+          /* Select dropdown chrome-ыг арилгана — зөвхөн текст үлдээх */
+          select { appearance: none !important; -webkit-appearance: none !important; border: none !important; background: transparent !important; padding-right: 0 !important; }
+          /* Бүх бариулыг (cursor, hover) print-д хэрэггүй — Tailwind escape */
+          button { cursor: default !important; }
         }
       `}</style>
     </div>
