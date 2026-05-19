@@ -480,15 +480,15 @@ export default function ExpirationTracking() {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="rounded-2xl bg-white shadow-sm border border-gray-100 overflow-hidden print:border-0 print:rounded-none print:shadow-none">
+      {/* Table — Desktop + Print */}
+      <div className="hidden md:block rounded-2xl bg-white shadow-sm border border-gray-100 overflow-hidden print:border-0 print:rounded-none print:shadow-none print:block">
         {/* Print header (only visible when printing) */}
         <div className="hidden print:block px-4 py-3 border-b border-gray-300">
           <h1 className="text-lg font-bold text-gray-900">Хугацааны хяналтын тайлан</h1>
           <p className="text-xs text-gray-500">Хэвлэсэн: {localToday()} · Нийт {visibleItems.length} бараа</p>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto print:overflow-visible">
           <table className="min-w-full text-sm">
             <thead className="bg-gray-50/80 text-[10px] font-bold uppercase tracking-widest text-gray-500 print:bg-gray-100">
               <tr>
@@ -639,6 +639,162 @@ export default function ExpirationTracking() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* ── Mobile card list (md-аас доош) ─────────────────────────── */}
+      <div className="md:hidden space-y-2 print:hidden">
+        {loading && (
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-400 rounded-2xl bg-white shadow-sm border border-gray-100">
+            <Loader2 size={14} className="animate-spin"/> Ачааллаж байна...
+          </div>
+        )}
+        {!loading && visibleItems.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-3 py-10 rounded-2xl bg-white shadow-sm border border-gray-100">
+            <Timer size={28} className="text-gray-300"/>
+            <p className="text-sm text-gray-500">Бүртгэл байхгүй</p>
+            <button onClick={openAdd} className="rounded-xl bg-[#0071E3] px-4 py-2 text-xs font-semibold text-white hover:bg-blue-600">
+              <Plus size={12} className="inline mr-1"/> Шинэ нэмэх
+            </button>
+          </div>
+        )}
+        {!loading && visibleItems.map(it => {
+          const meta = STATUS_META[it.status] || STATUS_META.review;
+          const isEditing = editId === it.id;
+          return (
+            <div key={it.id} className={`rounded-2xl bg-white shadow-sm border overflow-hidden ${
+              it.is_expired ? "border-red-200 bg-red-50/30" :
+              it.is_expiring_soon ? "border-amber-200 bg-amber-50/20" : "border-gray-100"
+            }`}>
+              {/* Header row: name + status */}
+              <div className="flex items-start justify-between gap-2 px-3 py-2.5 border-b border-gray-50">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-bold text-gray-900 leading-tight">{it.product_name}</h3>
+                  <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] text-gray-400 font-mono">{it.product_code}</span>
+                    {it.product_brand && (
+                      <span className="text-[10px] text-gray-500">· {it.product_brand}</span>
+                    )}
+                  </div>
+                </div>
+                <select value={it.status}
+                  onChange={e => changeStatus(it, e.target.value)}
+                  disabled={it.status === "archived"}
+                  className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold cursor-pointer disabled:cursor-not-allowed ${meta.color}`}>
+                  <option value="review">Хянагдаж байна</option>
+                  <option value="city_return">Хот буцаалт</option>
+                  <option value="internal_sale">Дотоод хямдрал</option>
+                  <option value="archived">Архив</option>
+                </select>
+              </div>
+
+              {/* Date + days remaining */}
+              <div className="flex items-center justify-between px-3 py-2 bg-gray-50/40 border-b border-gray-50 text-xs">
+                <span className="flex items-center gap-1 text-gray-500">
+                  <CalendarIcon size={11}/>
+                  <span className="tabular-nums">{fmtDate(it.expiration_date)}</span>
+                </span>
+                <span className={`tabular-nums ${daysColor(it.days_left)}`}>
+                  {daysLabel(it.days_left)}
+                </span>
+              </div>
+
+              {/* Quantities grid */}
+              <div className="grid grid-cols-3 divide-x divide-gray-100 border-b border-gray-50">
+                <div className="px-2 py-2 text-center">
+                  <div className="text-[10px] uppercase font-semibold text-gray-400">Заал</div>
+                  {isEditing ? (
+                    <input type="number" min={0} value={editFloor}
+                      onChange={e => setEditFloor(e.target.value)}
+                      onWheel={e => e.currentTarget.blur()}
+                      className="mt-0.5 w-full rounded-lg border border-blue-200 px-1 py-1 text-center text-sm font-bold tabular-nums focus:outline-none focus:ring-1 focus:ring-blue-300"/>
+                  ) : (
+                    <div className="text-base font-bold tabular-nums text-gray-900">{it.qty_floor}</div>
+                  )}
+                </div>
+                <div className="px-2 py-2 text-center">
+                  <div className="text-[10px] uppercase font-semibold text-gray-400">Агуулах</div>
+                  {isEditing ? (
+                    <input type="number" min={0} value={editWarehouse}
+                      onChange={e => setEditWarehouse(e.target.value)}
+                      onWheel={e => e.currentTarget.blur()}
+                      className="mt-0.5 w-full rounded-lg border border-blue-200 px-1 py-1 text-center text-sm font-bold tabular-nums focus:outline-none focus:ring-1 focus:ring-blue-300"/>
+                  ) : (
+                    <div className="text-base font-bold tabular-nums text-gray-900">{it.qty_warehouse}</div>
+                  )}
+                </div>
+                <div className="px-2 py-2 text-center bg-blue-50/40">
+                  <div className="text-[10px] uppercase font-semibold text-blue-500">Нийт</div>
+                  <div className="text-base font-bold tabular-nums text-blue-700">{it.qty_total}</div>
+                </div>
+              </div>
+
+              {/* Notes */}
+              {(it.notes || isEditing) && (
+                <div className="px-3 py-2 border-b border-gray-50">
+                  <div className="text-[10px] uppercase font-semibold text-gray-400 mb-0.5">Тайлбар</div>
+                  {isEditing ? (
+                    <textarea value={editNotes}
+                      onChange={e => setEditNotes(e.target.value)}
+                      rows={2} placeholder="Тэмдэглэл..."
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"/>
+                  ) : (
+                    <p className="text-xs text-gray-700 italic whitespace-pre-wrap break-words leading-snug">{it.notes}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Liability */}
+              <div className="px-3 py-2 border-b border-gray-50">
+                <div className="text-[10px] uppercase font-semibold text-gray-400 mb-0.5">Хариуцлага</div>
+                <button onClick={() => openLiability(it)}
+                  className={`w-full text-left rounded-lg px-2 py-1.5 text-[11px] font-semibold border border-dashed border-transparent hover:border-gray-300 ${
+                    LIABILITY_META[it.liability_type]?.color || "bg-gray-100 text-gray-500"
+                  }`}>
+                  <Users size={10} className="inline mr-1"/>
+                  {liabilityShort(it)}
+                </button>
+                {it.liability_note && (
+                  <p className="mt-1 text-[10px] text-gray-500 italic whitespace-pre-wrap">{it.liability_note}</p>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-1.5 px-3 py-2 bg-gray-50/30">
+                {isEditing ? (
+                  <>
+                    <button onClick={() => saveEdit(it)}
+                      className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-600">
+                      <Check size={12}/> Хадгалах
+                    </button>
+                    <button onClick={() => setEditId(null)}
+                      className="flex items-center justify-center gap-1 rounded-lg bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-200">
+                      <X size={12}/>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => startEdit(it)}
+                      className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100">
+                      <Pencil size={11}/> Засах
+                    </button>
+                    <button onClick={() => toggleArchive(it)}
+                      className={`flex-1 flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs font-semibold ${
+                        it.status === "archived"
+                          ? "bg-amber-50 text-amber-700 hover:bg-amber-100"
+                          : "bg-violet-50 text-violet-700 hover:bg-violet-100"
+                      }`}>
+                      {it.status === "archived" ? <><ArchiveRestore size={11}/> Сэргээх</> : <><Archive size={11}/> Архив</>}
+                    </button>
+                    <button onClick={() => setConfirmDel(it)}
+                      className="flex items-center justify-center rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100">
+                      <Trash2 size={11}/>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* ── Add modal ────────────────────────────────────────────── */}
@@ -921,21 +1077,31 @@ export default function ExpirationTracking() {
         />
       )}
 
-      {/* ── Print styles (A4 landscape) ─────────────────────────── */}
+      {/* ── Print styles (A4 landscape, compact, олон бараа) ─────── */}
       <style>{`
         @media print {
-          @page { size: A4 landscape; margin: 10mm; }
-          html, body { background: white !important; margin: 0 !important; padding: 0 !important; }
+          @page { size: A4 landscape; margin: 8mm; }
+          html, body { background: white !important; margin: 0 !important; padding: 0 !important; font-size: 9pt !important; }
           /* Preserve colors (status pills, row backgrounds) */
           * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-          /* Toast / scanner overlays — print-д хэрэггүй */
+          /* Toast / scanner / modal overlays — print-д хэрэггүй */
           .fixed { display: none !important; }
           /* Row нэг л хуудасанд таслагдахгүй */
           tr { page-break-inside: avoid; break-inside: avoid; }
           thead { display: table-header-group; }
+          /* COMPACT mode — олон бараа сар нь нэг A4-д багтаах */
+          table { font-size: 8.5pt !important; border-collapse: collapse !important; width: 100% !important; }
+          th { padding: 3px 4px !important; background: #f3f4f6 !important; border-bottom: 1px solid #d1d5db !important; font-size: 7pt !important; }
+          td { padding: 3px 4px !important; border-bottom: 1px solid #e5e7eb !important; vertical-align: top !important; }
           /* Select dropdown chrome-ыг арилгана — зөвхөн текст үлдээх */
-          select { appearance: none !important; -webkit-appearance: none !important; border: none !important; background: transparent !important; padding-right: 0 !important; }
-          /* Бүх бариулыг (cursor, hover) print-д хэрэггүй — Tailwind escape */
+          select { appearance: none !important; -webkit-appearance: none !important; border: 1px solid #d1d5db !important; background: transparent !important; padding: 1px 4px !important; font-size: 8pt !important; }
+          /* Pill / badge font size */
+          [class*="rounded-full"] { font-size: 7pt !important; padding: 1px 4px !important; }
+          /* Notes - line-height tight */
+          .leading-snug { line-height: 1.2 !important; }
+          /* Print header — illustration */
+          h1 { font-size: 11pt !important; margin: 0 !important; }
+          /* Бүх бариулыг (cursor, hover) print-д хэрэггүй */
           button { cursor: default !important; }
         }
       `}</style>
