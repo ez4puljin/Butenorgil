@@ -38,6 +38,7 @@ const navItems: NavItem[] = [
   { to: "/erkhet-auto",         label: "Erkhet автомат",     icon: Bot,            pageKey: "erkhet_auto" },
   { to: "/bank-statements",    label: "Тооцоо хаах",        icon: Landmark,       pageKey: "bank_statements" },
   { to: "/expiration",         label: "Хугацааны хяналт",    icon: Timer,          pageKey: "expiration_tracking" },
+  { to: "/documents",          label: "Бичиг баримт",        icon: FileText,       pageKey: "documents" },
 ];
 
 const BOTTOM_NAV_MAX = 4;

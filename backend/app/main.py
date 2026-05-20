@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -51,7 +51,7 @@ def ensure_users_schema():
             conn.execute(text("UPDATE users SET base_role = role WHERE base_role = '' OR base_role IS NULL"))
 
 _ROLE_PERMISSIONS = {
-    "admin":           "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,admin_panel,min_stock,audit_log,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking",
+    "admin":           "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,admin_panel,min_stock,audit_log,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking,documents",
     "supervisor":      "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking",
     "manager":         "dashboard,imports,reports,order,receivings,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,expiration_tracking",
     "warehouse_clerk": "order,receivings,calendar,kpi_checklist,kpi_approvals,expiration_tracking",
@@ -87,6 +87,11 @@ def ensure_new_permissions_backfill():
             # (бүх ажилчид ашиглах гэж user requirement-д тодорхойлсон).
             if "expiration_tracking" not in perms:
                 perms.add("expiration_tracking")
+                changed = True
+            # 2026-05: Бичиг баримт permission — ЗӨВХӨН admin (base_role=admin)
+            # role-д автомат нэмнэ. Custom admin role үүсгэвэл мөн.
+            if (r.value == "admin" or (r.base_role or "").lower() == "admin") and "documents" not in perms:
+                perms.add("documents")
                 changed = True
             if changed:
                 # Sort-аар тогтвортой дараалал хадгалах
@@ -156,6 +161,17 @@ def ensure_expiration_items_schema():
         # Backward-compatible багана нэмэх (хэрвээ хуучин үед үүссэн бол):
         if "liability_user_ids" not in cols:
             conn.execute(text("ALTER TABLE expiration_items ADD COLUMN liability_user_ids VARCHAR(500) DEFAULT ''"))
+
+
+def ensure_documents_schema():
+    """Бичиг баримт (document_groups + document_files) шинэ багана нэмэх
+    migration helper. Шинэ table бол create_all() өөрөө үүсгэнэ. Энд
+    зөвхөн хуучин table-д шинэ багана нэмэх ALTER логик байна."""
+    # Сериалаар одоохондоо ALTER хэрэгцээгүй — анх удаа үүсгэхдээ create_all()
+    # харна. Файл хадгалах хавтсыг хангах:
+    import os
+    docs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploaded_documents")
+    os.makedirs(docs_dir, exist_ok=True)
 
 def ensure_po_lines_schema():
     with engine.begin() as conn:
@@ -634,6 +650,7 @@ def startup():
     ensure_shipment_lines_schema()
     ensure_min_stock_rules_schema()
     ensure_expiration_items_schema()
+    ensure_documents_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()
     ensure_bank_transactions_schema()
@@ -719,6 +736,7 @@ app.include_router(receivings_router)
 app.include_router(erkhet_auto_router)
 app.include_router(bank_statements_router)
 app.include_router(expiration_router)
+app.include_router(documents_router)
 
 @app.get("/health")
 def health():

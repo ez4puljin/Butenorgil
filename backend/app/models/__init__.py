@@ -9,3 +9,4 @@ from app.models.purchase_order import PurchaseOrder, PurchaseOrderLine, Purchase
 from app.models.calendar_event import CalendarEvent
 from app.models.kpi import KpiTaskGroup, KpiTaskTemplate, KpiEmployeeTaskConfig, KpiDailyChecklist, KpiChecklistEntry, KpiAdminDailyTask
 from app.models.expiration_item import ExpirationItem
+from app.models.document import DocumentGroup, DocumentFile

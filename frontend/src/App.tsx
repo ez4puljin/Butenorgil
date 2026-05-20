@@ -29,6 +29,7 @@ import ReceivingList from "./pages/ReceivingList";
 import ReceivingDetail from "./pages/ReceivingDetail";
 import BankStatement from "./pages/BankStatement";
 import ExpirationTracking from "./pages/ExpirationTracking";
+import Documents from "./pages/Documents";
 import ServerConfig from "./pages/ServerConfig";
 import { useEffect, useState } from "react";
 import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
@@ -58,6 +59,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "erkhet_auto",         path: "/erkhet-auto" },
   { key: "bank_statements",     path: "/bank-statements" },
   { key: "expiration_tracking", path: "/expiration" },
+  { key: "documents",           path: "/documents" },
 ];
 
 // Permissions-аас эхний зөвшөөрөгдсөн хуудасны замыг олно
@@ -245,6 +247,10 @@ export default function App() {
                 <Route
                   path="/expiration"
                   element={can("expiration_tracking") ? <ExpirationTracking /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/documents"
+                  element={can("documents") ? <Documents /> : <DefaultRedirect />}
                 />
                 <Route path="*" element={<DefaultRedirect />} />
               </Routes>

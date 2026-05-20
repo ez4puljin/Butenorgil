@@ -73,6 +73,7 @@ const PAGE_KEYS = [
   { key: "erkhet_auto",         label: "Erkhet автомат" },
   { key: "bank_statements",     label: "Тооцоо хаах" },
   { key: "expiration_tracking", label: "Хугацааны хяналт" },
+  { key: "documents",           label: "Бичиг баримт" },
 ];
 
 const parseTagIds = (raw: string): number[] =>
