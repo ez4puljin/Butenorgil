@@ -33,6 +33,7 @@ import ServerConfig from "./pages/ServerConfig";
 import { useEffect, useState } from "react";
 import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
 import { api, setApiBaseUrl } from "./lib/api";
+import { registerBackButtonHandler } from "./lib/backButton";
 
 // Permissions → route mapping (Shell-ийн navItems-тай дараалал таарна)
 export const PAGE_ROUTES: { key: string; path: string }[] = [
@@ -92,6 +93,8 @@ export default function App() {
       try { setApiBaseUrl(saved); } catch {}
     }
     if (!native) return;
+    // Android back товчны history-aware handler бүртгэх
+    registerBackButtonHandler();
     // Preferences (reinstall survival) background check — non-blocking
     (async () => {
       try {
