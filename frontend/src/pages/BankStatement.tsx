@@ -658,6 +658,28 @@ export default function BankStatementPage() {
     } catch { setErr("Устгах амжилтгүй"); }
   }
 
+  // ── Дебит ↔ Кредит сольж засах ─────────────────────────────────────
+  async function swapDebitCredit() {
+    if (!openStmt) return;
+    if (!confirm(
+      `Энэ хуулгын БҮХ гүйлгээний Дебит ба Кредит утгыг солих уу?\n\n` +
+      `Хуулга: ${openStmt.account_number} (${openStmt.date_from})\n` +
+      `Гүйлгээний тоо: ${openStmt.txn_count + openStmt.fee_count}\n\n` +
+      `(Хуучин parser-ийн алдаатай байсан үед эсвэл хуулгын баганад буруу таниулагдсан үед хэрэглэнэ.)`
+    )) return;
+    try {
+      const r = await api.post(`/bank-statements/${openStmt.id}/swap-debit-credit`);
+      const n = r.data?.swapped_count ?? 0;
+      alert(`${n} гүйлгээний Дебит↔Кредит солигдлоо ✓`);
+      // Reload the statement detail
+      const sr = await api.get(`/bank-statements/${openStmt.id}`);
+      setOpenStmt(sr.data);
+      loadCalendar(year, month);
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? "Солих амжилтгүй");
+    }
+  }
+
   // ── Export to Эрхэт ───────────────────────────────────────────────
 
   function openExportModal() {
@@ -1106,6 +1128,12 @@ export default function BankStatementPage() {
                     showFees ? "border-amber-200 bg-amber-50 text-amber-700" : "border-gray-200 text-gray-500 hover:bg-gray-50"
                   }`}>
                   {showFees ? <><Eye size={11}/>Зөвхөн шимтгэл харуулах</> : <><EyeOff size={11}/>Шимтгэл нуусан</>}
+                </button>
+                {/* Swap Дебит ↔ Кредит */}
+                <button onClick={swapDebitCredit}
+                  title="Хуулга буруу импортлогдсон тохиолдолд Дебит ба Кредит баганыг солих"
+                  className="flex items-center gap-1 rounded-xl border border-orange-200 bg-orange-50 px-2.5 py-1.5 text-[11px] font-semibold text-orange-700 hover:bg-orange-100 transition-colors">
+                  ⇄ Дебит↔Кредит
                 </button>
                 {/* Export button */}
                 <button onClick={openExportModal}

@@ -16,7 +16,7 @@ import re
 import zipfile
 from openpyxl import Workbook
 
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db, get_current_user, require_role
 from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig, SettlementConfig, CrossAccountPreset, FeeConfig
 from app.models.user import User
 
@@ -76,16 +76,59 @@ def _extract_date_from_desc(desc: str):
     return None
 
 
+def _detect_columns(raw: "pd.DataFrame") -> dict:
+    """Header row (1)-ыг scan хийгээд Дебит/Кредит/Огноо/Утга/Харьцсан данс
+    багануудын индексийг автоматаар олно. Банкны хуулгын excel формат
+    хувирвал ч (col[3]=Кредит/col[4]=Дебит гэх мэт) зөв ажиллана.
+
+    Backward-compat default-ууд:
+      date=0, debit=3, credit=4, desc=6, counterpart=7
+    """
+    cols = {"date": 0, "debit": 3, "credit": 4, "desc": 6, "counterpart": 7}
+    try:
+        # Header нь ихэвчлэн row 1-д байдаг (row 0 нь метадата).
+        # Зарим хуулга-д row 0 эсвэл row 2 ч байж болно — 0..3 row-уудыг сканаах.
+        for hr in range(min(4, len(raw))):
+            header_row = raw.iloc[hr].tolist()
+            found = {}
+            for idx, val in enumerate(header_row):
+                if not isinstance(val, str):
+                    continue
+                s = val.strip().lower()
+                if not s:
+                    continue
+                # Дебит — exact "дебит" эсвэл "debit"
+                if "дебит" in s or "debit" in s:
+                    found["debit"] = idx
+                # Кредит — exact "кредит" эсвэл "credit"
+                elif "кредит" in s or "credit" in s:
+                    found["credit"] = idx
+                # Гүйлгээний огноо / Огноо
+                elif ("огноо" in s and ("гүйлгээ" in s or idx <= 1)) or s == "date":
+                    found.setdefault("date", idx)
+                # Гүйлгээний утга / Тайлбар / Description
+                elif "утга" in s or "тайлбар" in s or "description" in s:
+                    found["desc"] = idx
+                # Харьцсан данс / Counterparty account
+                elif ("харьцсан" in s and "данс" in s) or "counterparty" in s:
+                    found["counterpart"] = idx
+            # Хэрэв debit + credit олдсон бол энэ row нь header гэж үзнэ
+            if "debit" in found and "credit" in found:
+                cols.update(found)
+                cols["_header_row"] = hr
+                break
+    except Exception:
+        pass
+    return cols
+
+
 def _parse_excel(content: bytes, filename: str) -> dict:
     """Хаанбанкны бодит хуулга Excel-ийн форматыг танина:
 
     Row 0: Хэвлэсэн огноо / Хэрэглэгч / Интервал гэх мэт нийтлэг
             мэдээлэл (col[6] нь интервал огноо, e.g. "2026/05/07").
-    Row 1: Багана-ын гарчиг
-        col[0] Гүйлгээний огноо   col[1] Салбар
-        col[2] Эхний үлдэгдэл     col[3] Дебит гүйлгээ (- утгатай)
-        col[4] Кредит гүйлгээ     col[5] Эцсийн үлдэгдэл
-        col[6] Гүйлгээний утга    col[7] Харьцсан данс
+    Row 1: Багана-ын гарчиг — _detect_columns()-аар динамик ялгана:
+        Дебит/Кредит баганы байршил хоорондоо солигдсон ч зөв таних.
     Row 2..n: Гүйлгээний мөрүүд.
     Last row: "Нийт дүн:" нийлбэр (хасна).
     """
@@ -116,57 +159,65 @@ def _parse_excel(content: bytes, filename: str) -> dict:
         pass
 
     # Header нь row 1 — гарчиг тэмдэглэгээ. Data row 2-оос эхэлнэ.
-    # `header=None`-аар уншиж шууд багана index-ээр хандана.
     df = raw
+    cols = _detect_columns(raw)
+    debit_col = cols.get("debit", 3)
+    credit_col = cols.get("credit", 4)
+    date_col = cols.get("date", 0)
+    desc_col = cols.get("desc", 6)
+    cpart_col = cols.get("counterpart", 7)
+    # Data row нь header row-ын дараагаасаа эхэлнэ
+    data_start = (cols.get("_header_row", 1) + 1)
 
     transactions = []
-    for i in range(2, len(df)):
+    for i in range(data_start, len(df)):
         row = df.iloc[i]
-        # Эхний баганд "Нийт дүн" эсвэл хоосон бол алгасна (нийлбэр мөр)
-        first = row.iloc[0]
+        # date багана: "Нийт дүн" эсвэл хоосон бол алгасна (нийлбэр мөр)
+        first = row.iloc[date_col] if df.shape[1] > date_col else None
         if pd.isna(first):
             continue
         first_str = str(first).strip()
         if not first_str or first_str.startswith("Нийт"):
             continue
 
-        # col[0] — Гүйлгээний огноо (datetime)
+        # Гүйлгээний огноо (datetime)
         txn_date = None
         try:
             txn_date = pd.to_datetime(first).to_pydatetime()
         except Exception:
             continue  # огноо парс хийгдэхгүй бол data row биш
 
-        # col[3] — Дебит (Excel-д сөрөг утгатай → abs())
+        # Дебит (зарим банкны хуулагт сөрөг утгатай → abs())
         raw_debit  = 0.0
         try:
-            v = row.iloc[3] if df.shape[1] > 3 else 0
+            v = row.iloc[debit_col] if df.shape[1] > debit_col else 0
             if pd.notna(v): raw_debit = float(v)
         except Exception:
             pass
         debit = abs(raw_debit)
 
-        # col[4] — Кредит
+        # Кредит
         credit = 0.0
         try:
-            v = row.iloc[4] if df.shape[1] > 4 else 0
+            v = row.iloc[credit_col] if df.shape[1] > credit_col else 0
             if pd.notna(v): credit = float(v)
         except Exception:
             pass
+        credit = abs(credit)  # эерэг ч сөрөг ч байж болно, абсолют утга
 
-        # col[6] — Гүйлгээний утга
+        # Гүйлгээний утга
         desc = ""
-        if df.shape[1] > 6:
-            v = row.iloc[6]
+        if df.shape[1] > desc_col:
+            v = row.iloc[desc_col]
             if pd.notna(v):
                 desc = str(v).strip()
                 if desc.lower() == "nan":
                     desc = ""
 
-        # col[7] — Харьцсан данс (зарим мөрд хоосон)
+        # Харьцсан данс (зарим мөрд хоосон)
         cpart = ""
-        if df.shape[1] > 7:
-            v = row.iloc[7]
+        if df.shape[1] > cpart_col:
+            v = row.iloc[cpart_col]
             if pd.notna(v):
                 try:
                     # 5303363476.0 → "5303363476"
@@ -1205,3 +1256,35 @@ def delete_statement(
     db.delete(s)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/{stmt_id}/swap-debit-credit")
+def swap_debit_credit(
+    stmt_id: int,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor")),
+):
+    """Тухайн хуулгын БҮХ гүйлгээний Дебит ↔ Кредит утгыг солих.
+
+    Хэрэглээ: Хуучин parser-ийн алдаатай байсан үед эсвэл хуулгын excel
+    формат column swapped гэдгийг олж мэдсэн үед, файлыг дахин upload
+    хийхгүйгээр одоо байгаа data-г засах. Affected: бүх transaction
+    дотроос debit ↔ credit утгуудыг swap, plus action-ийг recompute
+    (credit > 0 → "close" default).
+    """
+    s = db.query(BankStatement).filter(BankStatement.id == stmt_id).first()
+    if not s:
+        raise HTTPException(404, "Хуулга олдсонгүй")
+    cnt = 0
+    for t in s.transactions:
+        d_old = float(t.debit or 0)
+        c_old = float(t.credit or 0)
+        t.debit = c_old
+        t.credit = d_old
+        # action-г credit > 0 эсэхэд тулгуурлан дахин тавьж өгнө
+        # (зөвхөн хуучин default утгатай байсан үед — manual утга өөрчилөхгүй)
+        if (t.action or "") in ("", "close") and not t.is_fee:
+            t.action = "close" if t.credit > 0 else ""
+        cnt += 1
+    db.commit()
+    return {"ok": True, "swapped_count": cnt, "statement_id": stmt_id}
