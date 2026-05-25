@@ -243,14 +243,14 @@ function CrossAccountSelect({ value, onSave, presets }: {
 
 function ActionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const cls: Record<string, string> = {
-    close:        "bg-red-50 text-red-700 border-red-200",
-    create:       "bg-green-50 text-green-700 border-green-200",
-    close_create: "bg-violet-50 text-violet-700 border-violet-200",
-    "":           "bg-gray-50 text-gray-400 border-gray-200",
+    close:        "bg-red-50 text-red-700 border-red-300 hover:bg-red-100 ring-red-200",
+    create:       "bg-green-50 text-green-700 border-green-300 hover:bg-green-100 ring-green-200",
+    close_create: "bg-violet-50 text-violet-700 border-violet-300 hover:bg-violet-100 ring-violet-200",
+    "":           "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 ring-gray-200",
   };
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
-      className={`rounded border px-1.5 py-0.5 text-[11px] font-medium outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer ${cls[value] ?? cls[""]}`}>
+      className={`w-full rounded-md border px-1.5 py-1 text-[11px] font-semibold outline-none focus:ring-2 cursor-pointer transition-colors ${cls[value] ?? cls[""]}`}>
       <option value="">—</option>
       <option value="close">Хаах</option>
       <option value="create">Үүсгэх</option>
@@ -263,13 +263,13 @@ function ActionSelect({ value, onChange }: { value: string; onChange: (v: string
 
 function ExportTypeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const cls: Record<string, string> = {
-    kass:      "bg-violet-50 text-violet-700 border-violet-200",
-    hariltsah: "bg-sky-50 text-sky-700 border-sky-200",
-    "":        "bg-gray-50 text-gray-400 border-gray-200",
+    kass:      "bg-violet-50 text-violet-700 border-violet-300 hover:bg-violet-100 ring-violet-200",
+    hariltsah: "bg-sky-50 text-sky-700 border-sky-300 hover:bg-sky-100 ring-sky-200",
+    "":        "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 ring-gray-200",
   };
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
-      className={`rounded border px-1.5 py-0.5 text-[11px] font-medium outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer ${cls[value] ?? cls[""]}`}>
+      className={`w-full rounded-md border px-1.5 py-1 text-[11px] font-semibold outline-none focus:ring-2 cursor-pointer transition-colors ${cls[value] ?? cls[""]}`}>
       <option value="">—</option>
       <option value="kass">Касс</option>
       <option value="hariltsah">Харилцах</option>
@@ -1045,15 +1045,19 @@ export default function BankStatementPage() {
                   </div>
                 </div>
 
-                {/* Statement cards */}
-                <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+                {/* Statement cards — openStmt үед нэг багана (зүүн талд жагсаалт), үгүй үед grid */}
+                <div className={`flex-1 overflow-y-auto p-3 ${
+                  openStmt
+                    ? "space-y-2.5"
+                    : "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                }`}>
                   {loadingDay && (
-                    <div className="flex items-center justify-center py-8 text-gray-400">
+                    <div className="col-span-full flex items-center justify-center py-8 text-gray-400">
                       <RefreshCw size={14} className="animate-spin mr-2"/>Ачааллаж байна…
                     </div>
                   )}
                   {!loadingDay && dayStmts.length === 0 && (
-                    <div className="flex flex-col items-center justify-center py-12 text-gray-400 gap-2">
+                    <div className="col-span-full flex flex-col items-center justify-center py-12 text-gray-400 gap-2">
                       <div className="grid h-12 w-12 place-items-center rounded-2xl bg-gray-50">
                         <CreditCard size={20} className="opacity-40"/>
                       </div>
@@ -1425,43 +1429,49 @@ export default function BankStatementPage() {
                                   onSave={v => updateTxn(t.id, { custom_description: v })}/>
                               )}
                             </td>
-                            <td className="border-r border-blue-100 bg-blue-50/20 px-2 py-1.5 text-center">
+                            <td className="border-r border-blue-100 bg-blue-50/20 px-1.5 py-1.5 text-center">
                               {t.is_settlement ? (
                                 <span onClick={() => setSettlementLockModal(true)}
-                                  className="cursor-not-allowed rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 hover:bg-amber-50">
-                                  Хаах
+                                  className="inline-flex cursor-not-allowed items-center gap-0.5 rounded-md border border-red-300 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-amber-50 transition-colors"
+                                  title="Settlement тохиргооноос засна уу">
+                                  🔒 Хаах
                                 </span>
                               ) : t.is_fee ? (
                                 <span onClick={() => setFeeLockModal(true)}
-                                  className="cursor-not-allowed rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 hover:bg-amber-50">
-                                  {t.action === "create" ? "Үүсгэх" : t.action === "close_create" ? "Хаах Үүсгэх" : "Хаах"}
+                                  className="inline-flex cursor-not-allowed items-center gap-0.5 rounded-md border border-red-300 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-amber-50 transition-colors"
+                                  title="Шимтгэл тохиргооноос засна уу">
+                                  🔒 {t.action === "create" ? "Үүсгэх" : t.action === "close_create" ? "Х+Ү" : "Хаах"}
                                 </span>
                               ) : (
                                 <ActionSelect value={t.action} onChange={v => updateTxn(t.id, { action: v })}/>
                               )}
                             </td>
-                            <td className="px-2 py-1.5 text-center">
+                            <td className="px-1.5 py-1.5 text-center">
                               {t.is_fee ? (
                                 <span onClick={() => setFeeLockModal(true)}
-                                  className="cursor-not-allowed rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700 hover:bg-amber-200">
+                                  className="inline-flex cursor-not-allowed items-center rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[10.5px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors">
                                   Шимтгэл
                                 </span>
                               ) : t.debit > 0
                                 ? <ExportTypeSelect value={t.export_type} onChange={v => updateTxn(t.id, { export_type: v })}/>
-                                : <span className="rounded-full bg-green-100 px-1.5 py-0.5 text-[9px] font-semibold text-green-700">Авлага</span>
+                                : <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10.5px] font-semibold text-emerald-700">
+                                    Авлага
+                                  </span>
                               }
                             </td>
-                            <td className="px-2 py-1.5 text-center whitespace-nowrap">
+                            <td className="px-1.5 py-1.5 text-center whitespace-nowrap">
                               {t.credit > 0 && !t.is_fee ? (
-                                <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold font-mono text-emerald-700 ring-1 ring-emerald-200">
+                                <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-bold font-mono text-emerald-700"
+                                  title="Авлага → 120105">
                                   120105
                                 </span>
                               ) : (t.debit > 0 || t.is_fee) && openStmt?.erp_account_code ? (
-                                <span className="rounded-md bg-sky-50 px-2 py-0.5 text-[11px] font-bold font-mono text-sky-700 ring-1 ring-sky-200">
+                                <span className="inline-flex items-center rounded-md border border-sky-300 bg-sky-50 px-2 py-1 text-[11px] font-bold font-mono text-sky-700"
+                                  title={`Тухайн дансны ERP код: ${openStmt.erp_account_code}`}>
                                   {openStmt.erp_account_code}
                                 </span>
                               ) : (
-                                <span className="text-[10px] text-gray-300">—</span>
+                                <span className="text-[11px] text-gray-300">—</span>
                               )}
                             </td>
                           </tr>
