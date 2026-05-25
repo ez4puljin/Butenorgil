@@ -66,21 +66,31 @@ REM ---- Build frontend if dist is missing OR git commit changed (git pull detec
 echo [2/3] Checking frontend build...
 set "REBUILD=0"
 set "BUILD_STAMP=%ROOT%\frontend\dist\.git_built_hash"
+set "GIT_HEAD="
+set "STORED_HASH=none"
 
+REM Step A: No dist at all → must build
 if not exist "%ROOT%\frontend\dist\index.html" (
     echo   No dist found - building...
     set "REBUILD=1"
-) else (
-    REM Get current git HEAD hash
+)
+
+REM Step B: Get current git HEAD (only if not already flagged)
+if "!REBUILD!"=="0" (
     for /f %%h in ('git -C "%ROOT%" rev-parse HEAD 2^>nul') do set "GIT_HEAD=%%h"
-    REM Read the hash that was used for the last build
-    set "STORED_HASH=none"
-    if exist "%BUILD_STAMP%" (
-        set /p STORED_HASH=<"%BUILD_STAMP%"
-    )
-    REM If hashes differ → git pull happened or first run after update
-    if /i not "!GIT_HEAD!"=="!STORED_HASH!" (
-        echo   Source updated since last build ^(commit: !GIT_HEAD:~0,7!^) - rebuilding...
+)
+
+REM Step C: Read stored build hash  (use for/f to avoid CRLF and space-in-path issues)
+if "!REBUILD!"=="0" if exist "%BUILD_STAMP%" (
+    for /f "usebackq delims=" %%h in ("%BUILD_STAMP%") do set "STORED_HASH=%%h"
+)
+
+REM Step D: Compare — show both values for debugging
+if "!REBUILD!"=="0" (
+    echo   Current commit : !GIT_HEAD!
+    echo   Built from     : !STORED_HASH!
+    if not "!GIT_HEAD!"=="!STORED_HASH!" (
+        echo   Commit changed - rebuilding frontend...
         set "REBUILD=1"
     )
 )
@@ -103,10 +113,13 @@ if "!REBUILD!"=="1" (
     )
     popd
     echo   [OK] Build complete.
-    REM Save current git hash so next startup knows this commit is already built
-    for /f %%h in ('git -C "%ROOT%" rev-parse HEAD 2^>nul') do echo %%h>"%BUILD_STAMP%"
+    REM Write hash using > redirect to avoid append and extra whitespace
+    for /f %%h in ('git -C "%ROOT%" rev-parse HEAD 2^>nul') do (
+        >"%BUILD_STAMP%" echo %%h
+    )
+    echo   Build stamp saved.
 ) else (
-    echo   [OK] Build is up to date ^(commit: !GIT_HEAD:~0,7!^).
+    echo   [OK] Build is up to date.
 )
 
 echo.
