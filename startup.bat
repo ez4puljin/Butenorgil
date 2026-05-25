@@ -62,15 +62,30 @@ if not exist "%ROOT%\frontend\package.json" (
     goto :fail
 )
 
-REM ---- Build frontend if dist is missing or older than source ----
+REM ---- Build frontend if dist is missing OR git commit changed (git pull detection) ----
 echo [2/3] Checking frontend build...
 set "REBUILD=0"
+set "BUILD_STAMP=%ROOT%\frontend\dist\.git_built_hash"
+
 if not exist "%ROOT%\frontend\dist\index.html" (
     echo   No dist found - building...
     set "REBUILD=1"
+) else (
+    REM Get current git HEAD hash
+    for /f %%h in ('git -C "%ROOT%" rev-parse HEAD 2^>nul') do set "GIT_HEAD=%%h"
+    REM Read the hash that was used for the last build
+    set "STORED_HASH=none"
+    if exist "%BUILD_STAMP%" (
+        set /p STORED_HASH=<"%BUILD_STAMP%"
+    )
+    REM If hashes differ → git pull happened or first run after update
+    if /i not "!GIT_HEAD!"=="!STORED_HASH!" (
+        echo   Source updated since last build ^(commit: !GIT_HEAD:~0,7!^) - rebuilding...
+        set "REBUILD=1"
+    )
 )
 
-if "%REBUILD%"=="1" (
+if "!REBUILD!"=="1" (
     pushd "%ROOT%\frontend"
     if not exist "node_modules" (
         echo   Running npm install...
@@ -88,8 +103,10 @@ if "%REBUILD%"=="1" (
     )
     popd
     echo   [OK] Build complete.
+    REM Save current git hash so next startup knows this commit is already built
+    for /f %%h in ('git -C "%ROOT%" rev-parse HEAD 2^>nul') do echo %%h>"%BUILD_STAMP%"
 ) else (
-    echo   [OK] Existing dist will be served. Run npm run build manually if you changed sources.
+    echo   [OK] Build is up to date ^(commit: !GIT_HEAD:~0,7!^).
 )
 
 echo.
