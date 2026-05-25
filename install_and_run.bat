@@ -157,8 +157,6 @@ if errorlevel 1 (
 
 popd
 echo   [OK] Frontend built. Backend will serve it directly.
-REM Save git hash so startup.bat knows this build is current
-for /f %%h in ('git -C "!ROOT!" rev-parse HEAD 2^>nul') do echo %%h>"!ROOT!\frontend\dist\.git_built_hash"
 echo.
 
 REM ---- Detect LAN IP for the user-friendly banner ----

@@ -27,7 +27,7 @@ echo   Project: %ROOT%
 echo.
 
 REM ---- Stop any previous instance on port 8000 (avoid conflicts) ----
-echo [1/3] Cleaning previous instances...
+echo [1/4] Cleaning previous instances...
 
 REM First pass: kill processes listening on port 8000.
 call :kill_port_8000
@@ -62,65 +62,58 @@ if not exist "%ROOT%\frontend\package.json" (
     goto :fail
 )
 
-REM ---- Build frontend if dist is missing OR git commit changed (git pull detection) ----
-echo [2/3] Checking frontend build...
-set "REBUILD=0"
-set "BUILD_STAMP=%ROOT%\frontend\dist\.git_built_hash"
-set "GIT_HEAD="
-set "STORED_HASH=none"
+REM ---- Auto-pull latest from git so users don't need to remember "git pull" ----
+echo [2/4] Pulling latest changes from git...
+where git >nul 2>&1
+if errorlevel 1 (
+    echo   [!] git not in PATH - skipping pull, using local code.
+    goto :skip_pull
+)
+if not exist "%ROOT%\.git" (
+    echo   [!] Not a git repo - skipping pull, using local code.
+    goto :skip_pull
+)
+pushd "%ROOT%"
+git pull --ff-only
+if errorlevel 1 (
+    echo   [!] git pull failed ^(local changes / no internet / conflict^) - continuing with current code
+) else (
+    echo   [OK] Local code is up to date.
+)
+popd
+:skip_pull
+echo.
 
-REM Step A: No dist at all → must build
-if not exist "%ROOT%\frontend\dist\index.html" (
-    echo   No dist found - building...
-    set "REBUILD=1"
+REM ---- Always rebuild frontend on every startup (30-60 sec but guarantees fresh UI) ----
+echo [3/4] Building frontend...
+pushd "%ROOT%\frontend"
+
+REM Check node_modules: missing OR package.json newer → reinstall
+set "NEED_INSTALL=0"
+if not exist "node_modules" set "NEED_INSTALL=1"
+if "!NEED_INSTALL!"=="0" (
+    REM PowerShell timestamp compare: if package.json is newer than node_modules, reinstall
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=(Get-Item 'package.json').LastWriteTime; $n=(Get-Item 'node_modules' -ErrorAction SilentlyContinue).LastWriteTime; if (!$n -or $p -gt $n) { exit 1 } else { exit 0 }" >nul 2>&1
+    if errorlevel 1 set "NEED_INSTALL=1"
 )
 
-REM Step B: Get current git HEAD (only if not already flagged)
-if "!REBUILD!"=="0" (
-    for /f %%h in ('git -C "%ROOT%" rev-parse HEAD 2^>nul') do set "GIT_HEAD=%%h"
-)
-
-REM Step C: Read stored build hash  (use for/f to avoid CRLF and space-in-path issues)
-if "!REBUILD!"=="0" if exist "%BUILD_STAMP%" (
-    for /f "usebackq delims=" %%h in ("%BUILD_STAMP%") do set "STORED_HASH=%%h"
-)
-
-REM Step D: Compare — show both values for debugging
-if "!REBUILD!"=="0" (
-    echo   Current commit : !GIT_HEAD!
-    echo   Built from     : !STORED_HASH!
-    if not "!GIT_HEAD!"=="!STORED_HASH!" (
-        echo   Commit changed - rebuilding frontend...
-        set "REBUILD=1"
-    )
-)
-
-if "!REBUILD!"=="1" (
-    pushd "%ROOT%\frontend"
-    if not exist "node_modules" (
-        echo   Running npm install...
-        call npm install
-        if errorlevel 1 (
-            popd
-            goto :err_npm
-        )
-    )
-    echo   Building optimized bundle...
-    call npm run build
+if "!NEED_INSTALL!"=="1" (
+    echo   Installing npm dependencies ^(package.json changed or first install^)...
+    call npm install
     if errorlevel 1 (
         popd
-        goto :err_build
+        goto :err_npm
     )
-    popd
-    echo   [OK] Build complete.
-    REM Write hash using > redirect to avoid append and extra whitespace
-    for /f %%h in ('git -C "%ROOT%" rev-parse HEAD 2^>nul') do (
-        >"%BUILD_STAMP%" echo %%h
-    )
-    echo   Build stamp saved.
-) else (
-    echo   [OK] Build is up to date.
 )
+
+echo   Building optimized bundle ^(takes 20-60 seconds^)...
+call npm run build
+if errorlevel 1 (
+    popd
+    goto :err_build
+)
+popd
+echo   [OK] Frontend rebuilt fresh.
 
 echo.
 
@@ -191,7 +184,7 @@ echo.
 :fw_done
 
 REM ---- Start backend (HTTPS) + cert helper (HTTP, cert download only) ----
-echo [3/3] Starting servers...
+echo [4/4] Starting servers...
 echo.
 echo   App (HTTPS):       https://!LAN_IP!:8000
 echo   Setup helper (HTTP): http://!LAN_IP!:8080/
