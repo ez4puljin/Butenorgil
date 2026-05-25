@@ -15,9 +15,16 @@ dist/
 backend/app/data/uploads/
 backend/app/data/outputs/
 backend/app/data/backups/
+backend/app/uploaded_documents/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
+
+# Logs
+backend/*.log
+backend/**/*.log
 
 # IDE
 .vscode/
