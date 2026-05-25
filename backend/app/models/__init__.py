@@ -10,3 +10,4 @@ from app.models.calendar_event import CalendarEvent
 from app.models.kpi import KpiTaskGroup, KpiTaskTemplate, KpiEmployeeTaskConfig, KpiDailyChecklist, KpiChecklistEntry, KpiAdminDailyTask
 from app.models.expiration_item import ExpirationItem
 from app.models.document import DocumentGroup, DocumentFile
+from app.models.product_monthly_sales import ProductMonthlySales

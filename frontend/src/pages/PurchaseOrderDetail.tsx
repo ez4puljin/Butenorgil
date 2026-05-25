@@ -407,6 +407,34 @@ export default function PurchaseOrderDetail() {
     ? ((order as any).brand_status ?? (order as any).brand_statuses?.[brandFilter!] ?? order.status)
     : order?.status ?? "preparing";
 
+  // ── Сарын борлуулалтын статистик (preparing/reviewing-д харагдана) ──
+  type SalesStats = {
+    avg_12m: number;
+    avg_3m: number;
+    last_month: number;
+    same_month_prev_year: number;
+    data_months_12m: number;
+  };
+  const [salesStats, setSalesStats] = useState<Record<string, SalesStats>>({});
+  useEffect(() => {
+    if (!order) { setSalesStats({}); return; }
+    if (!["preparing", "reviewing"].includes(effectiveStatus)) { setSalesStats({}); return; }
+    const codes = Array.from(
+      new Set((order.lines || []).map((l: any) => l.item_code).filter(Boolean))
+    );
+    if (codes.length === 0) { setSalesStats({}); return; }
+    // Захиалгын order_date → anchor сар
+    const od = String(order.order_date || "");
+    const ym = od.slice(0, 7).split("-");
+    if (ym.length !== 2) return;
+    const anchor_year  = parseInt(ym[0], 10);
+    const anchor_month = parseInt(ym[1], 10);
+    if (!anchor_year || !anchor_month) return;
+    api.post("/product-monthly-sales/stats", { item_codes: codes, anchor_year, anchor_month })
+      .then(r => setSalesStats(r.data ?? {}))
+      .catch(() => setSalesStats({}));
+  }, [order?.id, effectiveStatus]);
+
   const canEdit = (() => {
     if (!order) return false;
     const st = effectiveStatus;
@@ -637,7 +665,14 @@ export default function PurchaseOrderDetail() {
   const currentIdx = STATUS_SEQUENCE.indexOf(effectiveStatus as any);
 
   const showStockCols = ["preparing", "reviewing"].includes(effectiveStatus);
-  const showEstCostCols = ["preparing", "reviewing", "sending"].includes(effectiveStatus);
+  // Шинэ: Сарын борлуулалтын 4 багана preparing/reviewing статусанд
+  const showSalesStatsCols = ["preparing", "reviewing"].includes(effectiveStatus);
+  // Шинэ: Нэгж жин + Хайрцаг/ш preparing/reviewing-д нуугдана (sales stats-ын оронд)
+  const showUnitWeightCols = !showSalesStatsCols;
+  // Шинэ: Машин баган preparing/reviewing-д нуугдана
+  const showVehicleCol     = !showSalesStatsCols;
+  // Modified: одоо preparing/reviewing-аас sales stats харж байгаа учир estCost-ыг хасав
+  const showEstCostCols = effectiveStatus === "sending";
   const showLoadingCols = effectiveStatus === "loading";
   const showTransitCols = effectiveStatus === "transit";
   const showReceivedCols = ["arrived", "accounting", "confirmed", "received"].includes(effectiveStatus);
@@ -645,14 +680,19 @@ export default function PurchaseOrderDetail() {
   const showPriceDiff = effectiveStatus === "accounting";
 
   const colCount = (() => {
-    const base = showStockCols ? 9 : 7;
-    let total;
-    if (showEstCostCols) total = base + 2;
-    else if (showLoadingCols) total = base + 2;
-    else if (showTransitCols) total = base - 1 + 1;
-    else if (showReceivedCols) total = base + 4 + (showPriceCols ? (showPriceDiff ? 4 : 3) : 0);
-    else total = base;
-    return total + 1; // +1 for Машин column
+    // Үргэлж: Агуулах, Код, Нэр, Жин (4)
+    let n = 4;
+    if (showStockCols)        n += 2;  // Нөөц, Борлуулалт
+    if (showUnitWeightCols)   n += 2;  // Нэгж жин, Хайрцаг/ш
+    if (!showTransitCols)     n += 1;  // Захиалах
+    if (showEstCostCols)      n += 2;  // Нэгж үнэ, Тооцоолсон дүн
+    if (showLoadingCols)      n += 2;  // Ачигдсан + spacer
+    if (showTransitCols)      n += 1;  // Ачигдсан (transit)
+    if (showReceivedCols)     n += 4;  // Ачигдсан, Ирсэн, Зөрүү, Тайлбар
+    if (showPriceCols)        n += showPriceDiff ? 4 : 3;
+    if (showVehicleCol)       n += 1;  // Машин
+    if (showSalesStatsCols)   n += 4;  // 4 sales stats columns
+    return n;
   })();
 
   // ── Loading skeleton ──
@@ -1312,12 +1352,24 @@ export default function PurchaseOrderDetail() {
                       <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Борлуулалт</th>
                     </>
                   )}
-                  <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Нэгж жин</th>
-                  <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Хайрцаг/ш</th>
+                  {showUnitWeightCols && (
+                    <>
+                      <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Нэгж жин</th>
+                      <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Хайрцаг/ш</th>
+                    </>
+                  )}
                   {!showTransitCols && (
                     <th className="w-20 px-2 py-2.5 text-right text-xs font-semibold text-gray-500 md:w-28 md:px-4">
                       {showReceivedCols ? "Захиалсан" : "Захиалах"}
                     </th>
+                  )}
+                  {showSalesStatsCols && (
+                    <>
+                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-blue-600 md:table-cell" title="Сүүлийн 12 сарын дундаж борлуулалт">12с дунд.</th>
+                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-blue-700 md:table-cell" title="Сүүлийн 3 сарын дундаж борлуулалт">3с дунд.</th>
+                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-emerald-600 md:table-cell" title="Сүүлийн сарын борлуулалт">Сүүлийн сар</th>
+                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-amber-600 md:table-cell" title="Өмнөх оны энэ сарын борлуулалт">Өмнөх он</th>
+                    </>
                   )}
                   {showEstCostCols && (
                     <>
@@ -1352,7 +1404,9 @@ export default function PurchaseOrderDetail() {
                       )}
                     </>
                   )}
-                  <th className="hidden px-4 py-2.5 text-xs font-semibold text-sky-600 md:table-cell">Машин</th>
+                  {showVehicleCol && (
+                    <th className="hidden px-4 py-2.5 text-xs font-semibold text-sky-600 md:table-cell">Машин</th>
+                  )}
                   <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Жин (кг)</th>
                 </tr>
               </thead>
@@ -1538,8 +1592,12 @@ export default function PurchaseOrderDetail() {
                             </>
                             );
                           })()}
-                          <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.unit_weight.toFixed(3)}</td>
-                          <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.pack_ratio}</td>
+                          {showUnitWeightCols && (
+                            <>
+                              <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.unit_weight.toFixed(3)}</td>
+                              <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.pack_ratio}</td>
+                            </>
+                          )}
                           {!showTransitCols && (
                             <td className="px-2 py-2 text-right md:px-4">
                               {canEdit && !showReceivedCols ? (
@@ -1563,6 +1621,23 @@ export default function PurchaseOrderDetail() {
                               )}
                             </td>
                           )}
+
+                          {/* Sales stats (preparing/reviewing): 12с дунд / 3с дунд / Сүүлийн сар / Өмнөх он */}
+                          {showSalesStatsCols && (() => {
+                            const ss = salesStats[l.item_code];
+                            const fmtQ = (n?: number) => (n && n > 0) ? Math.round(n).toLocaleString("mn-MN") : <span className="text-gray-300">—</span>;
+                            return (
+                              <>
+                                <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-blue-700 md:table-cell"
+                                    title={ss && ss.data_months_12m < 12 ? `${ss.data_months_12m} сараас тооцоолсон` : undefined}>
+                                  {fmtQ(ss?.avg_12m)}
+                                </td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-blue-800 md:table-cell">{fmtQ(ss?.avg_3m)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-emerald-700 md:table-cell">{fmtQ(ss?.last_month)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-amber-700 md:table-cell">{fmtQ(ss?.same_month_prev_year)}</td>
+                              </>
+                            );
+                          })()}
 
                           {/* Estimated cost (preparing/sending) */}
                           {showEstCostCols && (() => {
@@ -1801,6 +1876,7 @@ export default function PurchaseOrderDetail() {
                             );
                           })()}
                           {/* Машин — тухайн бараа ямар машинд ачигдсан (clickable dropdown) */}
+                          {showVehicleCol && (
                           <td className="hidden px-4 py-2.5 md:table-cell">
                             {(() => {
                               const ships = productShipmentMap[l.product_id] ?? [];
@@ -1855,6 +1931,7 @@ export default function PurchaseOrderDetail() {
                               );
                             })()}
                           </td>
+                          )}
                           {/* Жин (кг) — хамгийн сүүлийн багана */}
                           <td className="hidden px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-gray-700 md:table-cell">
                             {rowWeight > 0 ? rowWeight.toFixed(2) : <span className="text-gray-300">—</span>}
@@ -1874,11 +1951,23 @@ export default function PurchaseOrderDetail() {
                           </div>
                         </td>
                         {showStockCols && <td className="hidden md:table-cell"/>}
-                        <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-400 md:table-cell">{el.unit_weight.toFixed(3)}</td>
-                        <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-400 md:table-cell">{el.pack_ratio}</td>
+                        {showUnitWeightCols && (
+                          <>
+                            <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-400 md:table-cell">{el.unit_weight.toFixed(3)}</td>
+                            <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-400 md:table-cell">{el.pack_ratio}</td>
+                          </>
+                        )}
                         <td className="px-2 py-2 text-right md:px-4">
                           <span className="text-xs font-semibold tabular-nums text-amber-700">{el.qty_box.toFixed(0)}</span>
                         </td>
+                        {showSalesStatsCols && (
+                          <>
+                            <td className="hidden md:table-cell"/>
+                            <td className="hidden md:table-cell"/>
+                            <td className="hidden md:table-cell"/>
+                            <td className="hidden md:table-cell"/>
+                          </>
+                        )}
                         {showLoadingCols && (
                           <>
                             <td className="hidden md:table-cell"/>
@@ -1899,7 +1988,7 @@ export default function PurchaseOrderDetail() {
                         {showEstCostCols && <><td className="hidden md:table-cell"/><td className="hidden md:table-cell"/></>}
                         {showReceivedCols && <><td className="hidden md:table-cell"/><td/><td className="hidden md:table-cell"/><td className="hidden md:table-cell"/></>}
                         {showPriceCols && <><td className="hidden md:table-cell"/><td/><td className="hidden md:table-cell"/>{showPriceDiff && <td className="hidden md:table-cell"/>}</>}
-                        <td className="hidden md:table-cell"/>
+                        {showVehicleCol && <td className="hidden md:table-cell"/>}
                         <td className="hidden px-4 py-2.5 text-right text-xs font-semibold tabular-nums text-amber-600 md:table-cell">{el.computed_weight.toFixed(2)}</td>
                       </tr>
                     ))}

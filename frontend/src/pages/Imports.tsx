@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
 import { api } from "../lib/api";
-import { UploadCloud, Info, Play, Pencil, Plus, Trash2 } from "lucide-react";
+import { UploadCloud, Info, Play, Pencil, Plus, Trash2, CalendarRange, ChevronRight } from "lucide-react";
 
 type ImportCard = {
   id: string;
@@ -312,6 +313,23 @@ export default function Imports() {
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="overflow-x-hidden">
       <div className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Файл оруулалт</div>
       <div className="mt-1 text-xs text-gray-500 sm:text-sm">Эксел файл оруулах, скрипт ажиллуулах, мастер шинэчлэх</div>
+
+      {/* Special tile: Сарын борлуулалт — энэ нь жирийн file upload биш — sub-page руу navigate */}
+      <div className="mt-4 sm:mt-6">
+        <Link to="/imports/product-monthly-sales"
+          className="flex items-center justify-between gap-3 rounded-apple bg-gradient-to-r from-emerald-500 to-teal-600 p-4 text-white shadow-sm transition-all hover:from-emerald-600 hover:to-teal-700 hover:shadow-md sm:p-5">
+          <div className="flex items-center gap-3">
+            <div className="grid h-11 w-11 place-items-center rounded-xl bg-white/20">
+              <CalendarRange size={22}/>
+            </div>
+            <div>
+              <div className="text-base font-bold sm:text-lg">Сарын борлуулалт (Агуулах + Заал)</div>
+              <div className="text-[12px] text-white/80 sm:text-[13px]">Сар бүрийн борлуулалтын тоо ширхэгээр оруулна — Захиалга бэлдэх үед статистик харагдана</div>
+            </div>
+          </div>
+          <ChevronRight size={22} className="shrink-0 opacity-80"/>
+        </Link>
+      </div>
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:mt-6 sm:gap-4 md:grid-cols-2 xl:grid-cols-3">
         {importCards.map((c) => (

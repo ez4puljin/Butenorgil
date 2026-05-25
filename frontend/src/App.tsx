@@ -30,6 +30,7 @@ import ReceivingDetail from "./pages/ReceivingDetail";
 import BankStatement from "./pages/BankStatement";
 import ExpirationTracking from "./pages/ExpirationTracking";
 import Documents from "./pages/Documents";
+import ProductSalesImport from "./pages/ProductSalesImport";
 import ServerConfig from "./pages/ServerConfig";
 import { useEffect, useState } from "react";
 import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
@@ -174,6 +175,7 @@ export default function App() {
                   element={can("dashboard") ? <Dashboard /> : <DefaultRedirect />}
                 />
                 <Route path="/imports" element={<Imports />} />
+                <Route path="/imports/product-monthly-sales" element={<ProductSalesImport />} />
                 <Route path="/reports" element={<Reports />} />
                 <Route
                   path="/order"

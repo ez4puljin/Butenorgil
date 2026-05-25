@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -172,6 +172,24 @@ def ensure_documents_schema():
     import os
     docs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploaded_documents")
     os.makedirs(docs_dir, exist_ok=True)
+
+
+def ensure_product_monthly_sales_schema():
+    """Сарын борлуулалтын тоо ширхэг (product_monthly_sales) — шинэ table бол
+    create_all() үүсгэнэ. Хуучин үед үүссэн хувилбарт qty_warehouse,
+    qty_showroom баганыг шалгаж, дутуу бол ALTER хийнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(product_monthly_sales)")).fetchall()]
+        if not cols:
+            return  # create_all() үүсгэнэ
+        if "qty_warehouse" not in cols:
+            conn.execute(text("ALTER TABLE product_monthly_sales ADD COLUMN qty_warehouse FLOAT NOT NULL DEFAULT 0"))
+        if "qty_showroom" not in cols:
+            conn.execute(text("ALTER TABLE product_monthly_sales ADD COLUMN qty_showroom FLOAT NOT NULL DEFAULT 0"))
+    # Хадгалах хавтсыг хангах
+    import os
+    pms_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "monthly_sales")
+    os.makedirs(pms_dir, exist_ok=True)
 
 def ensure_po_lines_schema():
     with engine.begin() as conn:
@@ -651,6 +669,7 @@ def startup():
     ensure_min_stock_rules_schema()
     ensure_expiration_items_schema()
     ensure_documents_schema()
+    ensure_product_monthly_sales_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()
     ensure_bank_transactions_schema()
@@ -737,6 +756,7 @@ app.include_router(erkhet_auto_router)
 app.include_router(bank_statements_router)
 app.include_router(expiration_router)
 app.include_router(documents_router)
+app.include_router(product_monthly_sales_router)
 
 @app.get("/health")
 def health():
