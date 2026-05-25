@@ -91,6 +91,13 @@ function fmtDate(s: string | null) {
   if (!s) return "—";
   return s.replace("T", " ").slice(0, 16);
 }
+/** Compact form for tables: "MM-DD HH:mm" (year & seconds dropped — context is the statement period). */
+function fmtDateShort(s: string | null) {
+  if (!s) return "—";
+  const v = s.replace("T", " ");
+  // "2026-05-20 09:41:00" → "05-20 09:41"
+  return v.length >= 16 ? `${v.slice(5, 10)} ${v.slice(11, 16)}` : v.slice(0, 16);
+}
 function pad2(n: number) { return String(n).padStart(2, "0"); }
 function toDateStr(y: number, m: number, d: number) {
   return `${y}-${pad2(m)}-${pad2(d)}`;
@@ -195,7 +202,7 @@ function CrossAccountSelect({ value, onSave, presets }: {
   return (
     <div ref={containerRef} className="relative">
       <button onClick={() => setOpen(!open)}
-        className={`flex w-full min-w-[80px] items-center justify-between rounded px-1.5 py-0.5 text-[11px] font-mono hover:bg-blue-50 hover:text-blue-700 ${
+        className={`flex w-full items-center justify-between rounded px-1 py-0.5 text-[11px] font-mono hover:bg-blue-50 hover:text-blue-700 ${
           value ? "text-gray-800" : "text-gray-300 italic"
         }`}>
         <span className="truncate">{value || "Харьцсан данс…"}</span>
@@ -344,7 +351,7 @@ function PartnerSearch({ value, onSave, onClear }: {
         onFocus={handleFocus}
         onBlur={handleBlur}
         placeholder="Хайх…"
-        className="w-full min-w-[120px] rounded border border-transparent bg-transparent px-1.5 py-0.5 pr-5 text-[11px] text-gray-800 outline-none hover:border-gray-200 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300"
+        className="w-full rounded border border-transparent bg-transparent px-1 py-0.5 pr-5 text-[11px] text-gray-800 outline-none hover:border-gray-200 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300"
       />
 
       {/* Clear button — утга байгаа үед харагдана */}
@@ -870,20 +877,31 @@ export default function BankStatementPage() {
   return (
     <div className="flex h-[calc(100vh-5rem)] flex-col gap-0 overflow-hidden rounded-2xl bg-white shadow-sm lg:h-[calc(100vh-2.5rem)]">
 
-      {/* ── Top tabs ──────────────────────────────────────────────── */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-gray-100 px-4 pt-3 pb-0">
-        <Landmark size={15} className="mr-1 text-blue-500 shrink-0" />
-        <span className="mr-3 text-sm font-bold text-gray-900">Тооцоо хаах</span>
-        {(["calendar", "settings"] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`flex items-center gap-1.5 rounded-t-xl border-b-2 px-4 py-2 text-[12px] font-semibold transition-colors ${
-              tab === t
-                ? "border-[#0071E3] text-[#0071E3]"
-                : "border-transparent text-gray-400 hover:text-gray-700"
-            }`}>
-            {t === "calendar" ? <><CalendarDays size={13}/>Календар</> : <><Settings size={13}/>Тохиргоо</>}
-          </button>
-        ))}
+      {/* ── Page header — title + segmented tabs ──────────────────── */}
+      <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#0071E3] to-[#004aad] text-white shadow-sm shadow-blue-500/30">
+            <Landmark size={16}/>
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-[15px] font-bold tracking-tight text-gray-900 leading-tight">Тооцоо хаах</h1>
+            <p className="text-[11px] text-gray-500 leading-tight">Банкны хуулга боловсруулалт</p>
+          </div>
+        </div>
+
+        {/* Segmented tabs */}
+        <div className="flex items-center gap-1 rounded-2xl bg-gray-50 p-1 ring-1 ring-gray-100">
+          {(["calendar", "settings"] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-[12px] font-semibold transition-all ${
+                tab === t
+                  ? "bg-[#0071E3] text-white shadow-sm shadow-blue-500/25"
+                  : "text-gray-500 hover:text-gray-900"
+              }`}>
+              {t === "calendar" ? <><CalendarDays size={13}/>Календар</> : <><Settings size={13}/>Тохиргоо</>}
+            </button>
+          ))}
+        </div>
 
         {/* Hidden file input (always in DOM) */}
         <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple className="hidden"
@@ -903,173 +921,224 @@ export default function BankStatementPage() {
       {tab === "calendar" && (
         <div className="flex min-h-0 flex-1 overflow-hidden">
 
-          {/* ── Calendar widget (left) ───────────────────────────── */}
-          <div className="flex w-[260px] shrink-0 flex-col border-r border-gray-100 p-4">
+          {/* ── Calendar widget (left) — Statement сонгосон үед нуугдана ── */}
+          <div className={`flex flex-col border-r border-gray-100 transition-all duration-200 ${
+            openStmt ? "hidden" : "w-[280px] shrink-0 p-4"
+          }`}>
             {/* Month nav */}
             <div className="mb-3 flex items-center justify-between">
               <button onClick={prevMonth}
-                className="grid h-7 w-7 place-items-center rounded-lg text-gray-400 hover:bg-gray-100">
-                <ChevronLeft size={15}/>
+                className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors">
+                <ChevronLeft size={16}/>
               </button>
-              <span className="text-[13px] font-bold text-gray-800">
-                {year} · {MN_MONTHS[month - 1]}
-              </span>
+              <div className="text-center">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 leading-none">{year}</div>
+                <div className="mt-0.5 text-[14px] font-bold text-gray-900 leading-tight">{MN_MONTHS[month - 1]}</div>
+              </div>
               <button onClick={nextMonth}
-                className="grid h-7 w-7 place-items-center rounded-lg text-gray-400 hover:bg-gray-100">
-                <ChevronRight size={15}/>
+                className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors">
+                <ChevronRight size={16}/>
               </button>
             </div>
 
             {/* Weekday headers */}
-            <div className="mb-1 grid grid-cols-7 text-center">
-              {MN_WEEKDAYS.map(d => (
-                <div key={d} className="text-[10px] font-semibold text-gray-400">{d}</div>
+            <div className="mb-2 grid grid-cols-7 text-center">
+              {MN_WEEKDAYS.map((d, i) => (
+                <div key={d} className={`text-[10px] font-semibold uppercase tracking-wider ${i >= 5 ? "text-rose-400" : "text-gray-400"}`}>{d}</div>
               ))}
             </div>
 
             {/* Day grid */}
-            <div className="grid grid-cols-7 gap-y-0.5">
+            <div className="grid grid-cols-7 gap-y-1">
               {cells.map((day, idx) => {
                 if (!day) return <div key={`e${idx}`} />;
                 const ds = toDateStr(year, month, day);
                 const cnt = calData[ds] ?? 0;
                 const isToday    = ds === today;
                 const isSelected = ds === selectedDate;
+                const dow = (firstDow + day - 1) % 7;
+                const isWeekend = dow >= 5;
                 return (
                   <button key={ds} onClick={() => selectDay(ds)}
-                    className={`relative flex h-8 w-full flex-col items-center justify-center rounded-lg text-[12px] font-medium transition-colors ${
-                      isSelected ? "bg-[#0071E3] text-white"
-                      : isToday  ? "bg-blue-50 text-[#0071E3]"
-                      : cnt > 0  ? "hover:bg-blue-50 text-gray-800"
-                      : "text-gray-400 hover:bg-gray-50"
+                    className={`relative mx-auto flex h-9 w-9 items-center justify-center rounded-xl text-[13px] font-semibold transition-all ${
+                      isSelected
+                        ? "bg-[#0071E3] text-white shadow-md shadow-blue-500/30"
+                        : isToday
+                          ? "ring-2 ring-[#0071E3] ring-offset-1 text-[#0071E3]"
+                          : cnt > 0
+                            ? "text-gray-900 hover:bg-blue-50"
+                            : isWeekend
+                              ? "text-rose-300 hover:bg-gray-50"
+                              : "text-gray-400 hover:bg-gray-50"
                     }`}>
-                    {day}
+                    <span className="leading-none">{day}</span>
                     {cnt > 0 && (
-                      <span className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-0.5 text-[8px] font-bold ${
-                        isSelected ? "bg-white/30 text-white" : "bg-[#0071E3] text-white"
-                      }`}>{cnt}</span>
+                      <span className={`absolute -bottom-0.5 left-1/2 -translate-x-1/2 h-1 w-1 rounded-full ${
+                        isSelected ? "bg-white/80" : "bg-[#0071E3]"
+                      }`}/>
                     )}
                   </button>
                 );
               })}
             </div>
 
-            {/* Legend */}
-            <div className="mt-auto pt-4 text-[10px] text-gray-400 space-y-1">
-              <div className="flex items-center gap-1.5">
-                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#0071E3] text-[8px] font-bold text-white">2</span>
-                хуулгын тоо
+            {/* Summary card */}
+            <div className="mt-auto">
+              <div className="rounded-2xl border border-gray-100 bg-gray-50/60 px-3 py-3">
+                <div className="flex items-baseline justify-between">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Энэ сард</div>
+                  <div className="text-[18px] font-bold text-gray-900 leading-none">
+                    {Object.values(calData).reduce((a, b) => a + b, 0)}
+                  </div>
+                </div>
+                <div className="mt-0.5 text-[11px] text-gray-500">хуулга оруулсан</div>
               </div>
-              {Object.keys(calData).length > 0 && (
-                <p className="text-[10px] text-gray-300">
-                  {Object.values(calData).reduce((a, b) => a + b, 0)} хуулга оруулсан
-                </p>
-              )}
+              <button onClick={() => selectDay(today)}
+                className="mt-2 w-full rounded-xl border border-gray-200 bg-white py-2 text-[12px] font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
+                Өнөөдөр
+              </button>
             </div>
           </div>
 
           {/* ── Day detail / Statement list (middle) ─────────────── */}
           <div className={`flex flex-col overflow-hidden transition-all duration-200 ${
-            openStmt ? "w-[240px] shrink-0 border-r border-gray-100" : "flex-1"
+            openStmt ? "w-[280px] shrink-0 border-r border-gray-100" : "flex-1"
           }`}>
             {!selectedDate ? (
               /* No day selected */
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-gray-400">
-                <CalendarDays size={32} className="opacity-30"/>
-                <p className="text-[13px]">Өдрөө сонгоно уу</p>
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 text-gray-400 p-8">
+                <div className="grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50">
+                  <CalendarDays size={28} className="text-blue-400"/>
+                </div>
+                <div className="text-center">
+                  <p className="text-[14px] font-semibold text-gray-700">Өдрөө сонгоно уу</p>
+                  <p className="text-[12px] text-gray-400 mt-0.5">Зүүн талын календараас огноо сонгоно уу</p>
+                </div>
               </div>
             ) : (
               <>
                 {/* Day header */}
-                <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2.5">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-bold text-gray-900">
-                      {selectedDate.slice(0, 10)}
-                    </p>
-                    <p className="text-[11px] text-gray-400">{dayStmts.length} хуулга</p>
+                <div className="shrink-0 border-b border-gray-100 px-4 py-3">
+                  <div className="flex items-start justify-between">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Сонгосон өдөр</div>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-[15px] font-bold text-gray-900">{selectedDate.slice(0, 10)}</span>
+                      </div>
+                    </div>
+                    <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-700 ring-1 ring-blue-200">{dayStmts.length} хуулга</span>
                   </div>
-                  {/* Fee export */}
-                  <button onClick={() => {
-                    setFeeExportFrom(selectedDate);
-                    setFeeExportTo(selectedDate);
-                    setFeeExportOpen(true);
-                  }}
-                    className="flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors shrink-0">
-                    <Download size={11}/>Шимтгэл
-                  </button>
-                  {/* Upload */}
-                  <button onClick={() => fileRef.current?.click()} disabled={uploading}
-                    className="flex items-center gap-1 rounded-xl bg-[#0071E3] px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:opacity-60 shrink-0">
-                    {uploading ? <><RefreshCw size={11} className="animate-spin"/>Оруулж…</> : <><Upload size={11}/>Файл</>}
-                  </button>
+                  {/* Actions */}
+                  <div className="mt-3 flex gap-2">
+                    <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#0071E3] px-3 py-2 text-[12px] font-semibold text-white hover:bg-blue-600 disabled:opacity-60 transition-colors shadow-sm shadow-blue-500/20">
+                      {uploading ? <><RefreshCw size={12} className="animate-spin"/>Оруулж…</> : <><Upload size={12}/>Файл оруулах</>}
+                    </button>
+                    <button onClick={() => {
+                      setFeeExportFrom(selectedDate);
+                      setFeeExportTo(selectedDate);
+                      setFeeExportOpen(true);
+                    }}
+                      className="flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors">
+                      <Download size={12}/>Шимтгэл
+                    </button>
+                  </div>
                 </div>
 
                 {/* Statement cards */}
-                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
                   {loadingDay && (
                     <div className="flex items-center justify-center py-8 text-gray-400">
                       <RefreshCw size={14} className="animate-spin mr-2"/>Ачааллаж байна…
                     </div>
                   )}
                   {!loadingDay && dayStmts.length === 0 && (
-                    <div className="flex flex-col items-center justify-center py-8 text-gray-400">
-                      <p className="text-[12px]">Хуулга байхгүй</p>
+                    <div className="flex flex-col items-center justify-center py-12 text-gray-400 gap-2">
+                      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-gray-50">
+                        <CreditCard size={20} className="opacity-40"/>
+                      </div>
+                      <p className="text-[12px] font-medium">Хуулга байхгүй</p>
+                      <p className="text-[11px] text-gray-300">Excel файлаас оруулна уу</p>
                     </div>
                   )}
                   {dayStmts.map(s => {
                     const pct = s.txn_count > 0 ? Math.round((s.filled_count / s.txn_count) * 100) : 0;
                     const isOpen = openStmt?.id === s.id;
+                    const initial = (s.account_number || "?").slice(0, 1).toUpperCase();
                     return (
                       <div key={s.id}
                         onClick={() => openStatement(s)}
-                        className={`group relative cursor-pointer rounded-xl border p-3 transition-all ${
+                        className={`group relative cursor-pointer rounded-2xl border bg-white p-3.5 transition-all hover:-translate-y-px ${
                           isOpen
-                            ? "border-[#0071E3] bg-blue-50"
-                            : "border-gray-100 hover:border-blue-200 hover:bg-gray-50"
+                            ? "border-[#0071E3] ring-2 ring-blue-100 shadow-md shadow-blue-500/10"
+                            : "border-gray-100 hover:border-blue-200"
                         }`}>
                         {/* Delete */}
                         <button
                           onClick={e => { e.stopPropagation(); deleteStmt(s.id); }}
-                          className="absolute right-2 top-2 hidden rounded p-1 group-hover:flex text-gray-400 hover:bg-red-50 hover:text-red-500">
-                          <Trash2 size={11}/>
+                          className="absolute right-2 top-2 hidden h-6 w-6 place-items-center rounded-lg text-gray-300 hover:bg-red-50 hover:text-red-500 group-hover:grid">
+                          <Trash2 size={12}/>
                         </button>
 
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <CreditCard size={12} className={isOpen ? "text-[#0071E3]" : "text-gray-400"}/>
-                          <span className={`text-[12px] font-bold ${isOpen ? "text-[#0071E3]" : "text-gray-800"}`}>
-                            {s.account_number}
-                          </span>
-                          {s.is_registered ? (
-                            s.erp_account_code ? (
-                              <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700"
-                                title={`ERP данс код: ${s.erp_account_code}`}>
-                                {s.erp_account_code}
-                              </span>
-                            ) : (
-                              <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700"
-                                title="Тохиргоонд бүртгэлтэй ч ERP код хоосон">
-                                ERP код ?
-                              </span>
-                            )
-                          ) : (
-                            <span className="flex items-center gap-0.5 rounded-md bg-rose-100 px-1.5 py-0.5 text-[9px] font-semibold text-rose-700"
-                              title="Энэ дансыг Тохиргоо tab дотор бүртгэнэ үү">
-                              <AlertCircle size={9}/>Бүртгэлгүй
-                            </span>
+                        <div className="flex items-start gap-2.5">
+                          {/* Avatar */}
+                          <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-[13px] font-bold ${
+                            isOpen ? "bg-[#0071E3] text-white" : "bg-gradient-to-br from-blue-50 to-indigo-50 text-blue-600"
+                          }`}>
+                            {initial}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className={`truncate text-[13px] font-bold ${isOpen ? "text-[#0071E3]" : "text-gray-900"}`}>
+                              {s.account_number}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-1.5">
+                              {s.is_registered ? (
+                                s.erp_account_code ? (
+                                  <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700 ring-1 ring-emerald-200"
+                                    title={`ERP данс код: ${s.erp_account_code}`}>
+                                    {s.erp_account_code}
+                                  </span>
+                                ) : (
+                                  <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 ring-1 ring-amber-200">ERP ?</span>
+                                )
+                              ) : (
+                                <span className="flex items-center gap-0.5 rounded-md bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 ring-1 ring-rose-200">
+                                  <AlertCircle size={9}/>Шинэ
+                                </span>
+                              )}
+                              <span className="text-[10px] font-semibold text-gray-300">·</span>
+                              <span className="text-[10px] font-semibold text-gray-400">{s.currency}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Balance strip */}
+                        <div className="mt-3 flex items-center gap-3">
+                          <div className="flex items-center gap-1 text-emerald-700">
+                            <ChevronDown size={11}/>
+                            <span className="font-mono text-[12px] font-semibold tabular-nums">{fmtMnt(s.total_credit)}</span>
+                          </div>
+                          {s.total_debit > 0 && (
+                            <div className="flex items-center gap-1 text-rose-700">
+                              <ChevronDown size={11} className="rotate-180"/>
+                              <span className="font-mono text-[12px] font-semibold tabular-nums">{fmtMnt(s.total_debit)}</span>
+                            </div>
                           )}
-                          <span className="ml-auto text-[10px] text-gray-400 font-mono">{s.currency}</span>
+                          <span className="ml-auto text-[10px] font-semibold text-gray-400">{s.txn_count}ш</span>
                         </div>
-                        <div className="flex gap-3 text-[11px] mb-2">
-                          <span className="text-green-600 font-medium">↓{fmtMnt(s.total_credit)}</span>
-                          {s.total_debit > 0 && <span className="text-red-500 font-medium">↑{fmtMnt(s.total_debit)}</span>}
-                          <span className="ml-auto text-gray-400">{s.txn_count}ш</span>
+
+                        {/* Progress + status */}
+                        <div className="mt-3">
+                          <div className="mb-1 flex items-center justify-between text-[10px]">
+                            <span className="font-semibold text-gray-500">{s.filled_count}/{s.txn_count} бөглөсөн</span>
+                            <span className={`font-bold ${pct === 100 ? "text-emerald-600" : pct >= 50 ? "text-blue-600" : "text-gray-400"}`}>{pct}%</span>
+                          </div>
+                          <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
+                            <div className={`h-full rounded-full transition-all ${
+                              pct === 100 ? "bg-emerald-500" : pct >= 50 ? "bg-[#0071E3]" : "bg-gray-300"
+                            }`} style={{ width: `${pct}%` }}/>
+                          </div>
                         </div>
-                        {/* Progress */}
-                        <div className="h-1 rounded-full bg-gray-100">
-                          <div className={`h-1 rounded-full ${isOpen ? "bg-[#0071E3]" : "bg-gray-300"}`}
-                            style={{ width: `${pct}%` }}/>
-                        </div>
-                        <p className="mt-0.5 text-[10px] text-gray-400">{s.filled_count}/{s.txn_count} бөглөсөн</p>
                       </div>
                     );
                   })}
@@ -1081,79 +1150,102 @@ export default function BankStatementPage() {
           {/* ── Transaction table (right, appears when stmt open) ─── */}
           {openStmt && (
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              {/* Stmt header */}
-              <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-4 py-2.5">
+              {/* Stmt header — Row 1: identity + primary action */}
+              <div className="flex shrink-0 items-center gap-3 border-b border-gray-100 px-4 py-3">
                 <button onClick={() => setOpenStmt(null)}
-                  className="grid h-7 w-7 place-items-center rounded-lg text-gray-400 hover:bg-gray-100">
-                  <ArrowLeft size={14}/>
+                  className="grid h-9 w-9 place-items-center rounded-xl text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors">
+                  <ArrowLeft size={16}/>
                 </button>
-                <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
-                  <span className="text-[13px] font-bold text-gray-900">{openStmt.account_number}</span>
-                  {openStmt.is_registered ? (
-                    openStmt.erp_account_code ? (
-                      <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700"
-                        title="ERP данс код">
-                        {openStmt.erp_account_code}
-                      </span>
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-sm shadow-blue-500/30">
+                  <CreditCard size={18}/>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[15px] font-bold text-gray-900 truncate">{openStmt.account_number}</span>
+                    {openStmt.is_registered ? (
+                      openStmt.erp_account_code ? (
+                        <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700 ring-1 ring-emerald-200"
+                          title="ERP данс код">
+                          ERP {openStmt.erp_account_code}
+                        </span>
+                      ) : (
+                        <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 ring-1 ring-amber-200">
+                          ERP код ?
+                        </span>
+                      )
                     ) : (
-                      <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">
-                        ERP код ?
+                      <span className="flex items-center gap-0.5 rounded-md bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 ring-1 ring-rose-200">
+                        <AlertCircle size={10}/>Бүртгэлгүй данс
                       </span>
-                    )
-                  ) : (
-                    <span className="flex items-center gap-0.5 rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
-                      <AlertCircle size={10}/>Бүртгэлгүй данс
-                    </span>
-                  )}
-                  <span className="text-[11px] text-gray-400">{openStmt.date_from?.slice(0,10)} – {openStmt.date_to?.slice(0,10)}</span>
-                </div>
-                {/* Stats */}
-                <div className="hidden sm:flex items-center gap-4 text-[12px]">
-                  <div className="text-center">
-                    <div className="font-bold text-green-600">{fmtMnt(totalCredit)}</div>
-                    <div className="text-gray-400 text-[10px]">Кредит</div>
+                    )}
                   </div>
-                  <div className="text-center">
-                    <div className="font-bold text-red-600">{fmtMnt(totalDebit)}</div>
-                    <div className="text-gray-400 text-[10px]">Дебит</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="font-bold text-gray-700">{filledCount}/{mainTxns.length}</div>
-                    <div className="text-gray-400 text-[10px]">Бөглөсөн</div>
+                  <div className="text-[11.5px] font-mono text-gray-500 truncate">
+                    {openStmt.date_from?.slice(0,10)} – {openStmt.date_to?.slice(0,10)} · {openStmt.currency}
                   </div>
                 </div>
-                {/* Fee toggle */}
-                <button onClick={() => setShowFees(v => !v)}
-                  className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                    showFees ? "border-amber-200 bg-amber-50 text-amber-700" : "border-gray-200 text-gray-500 hover:bg-gray-50"
-                  }`}>
-                  {showFees ? <><Eye size={11}/>Зөвхөн шимтгэл харуулах</> : <><EyeOff size={11}/>Шимтгэл нуусан</>}
-                </button>
-                {/* Swap Дебит ↔ Кредит */}
-                <button onClick={swapDebitCredit}
-                  title="Хуулга буруу импортлогдсон тохиолдолд Дебит ба Кредит баганыг солих"
-                  className="flex items-center gap-1 rounded-xl border border-orange-200 bg-orange-50 px-2.5 py-1.5 text-[11px] font-semibold text-orange-700 hover:bg-orange-100 transition-colors">
-                  ⇄ Дебит↔Кредит
-                </button>
                 {/* Export button */}
                 <button onClick={openExportModal}
-                  className="flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors">
-                  <Download size={11}/>Эрхэт экспорт
+                  className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2.5 text-[12.5px] font-semibold text-white hover:bg-emerald-700 transition-colors shadow-sm shadow-emerald-500/25">
+                  <Download size={14}/>Эрхэт экспорт
                 </button>
+              </div>
+
+              {/* Stmt header — Row 2: stats + view controls */}
+              <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-100 bg-gray-50/50 px-4 py-2">
+                {/* Stat pills (compact) */}
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-baseline gap-1 rounded-md bg-white px-2 py-0.5 ring-1 ring-emerald-200">
+                    <span className="text-[10px] font-semibold text-emerald-600">КР</span>
+                    <span className="font-mono text-[12px] font-bold tabular-nums text-emerald-800">{fmtMnt(totalCredit)}</span>
+                  </div>
+                  <div className="flex items-baseline gap-1 rounded-md bg-white px-2 py-0.5 ring-1 ring-rose-200">
+                    <span className="text-[10px] font-semibold text-rose-600">ДБ</span>
+                    <span className="font-mono text-[12px] font-bold tabular-nums text-rose-800">{fmtMnt(totalDebit)}</span>
+                  </div>
+                  <div className="flex items-baseline gap-1 rounded-md bg-white px-2 py-0.5 ring-1 ring-blue-200">
+                    <span className="text-[10px] font-semibold text-blue-600">ОК</span>
+                    <span className="font-mono text-[12px] font-bold tabular-nums text-blue-800">{filledCount}/{mainTxns.length}</span>
+                  </div>
+                </div>
+
+                <div className="ml-auto flex items-center gap-1.5">
+                  {/* View toggle group */}
+                  <div className="flex items-center gap-0.5 rounded-lg bg-white p-0.5 ring-1 ring-gray-200">
+                    <button onClick={() => setShowFees(false)}
+                      className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+                        !showFees ? "bg-gray-100 text-gray-900" : "text-gray-500 hover:text-gray-900"
+                      }`}>
+                      <EyeOff size={10}/>Үндсэн
+                    </button>
+                    <button onClick={() => setShowFees(true)}
+                      className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+                        showFees ? "bg-amber-100 text-amber-700" : "text-gray-500 hover:text-gray-900"
+                      }`}>
+                      <Eye size={10}/>Шимтгэл
+                    </button>
+                  </div>
+
+                  {/* Swap Дебит ↔ Кредит */}
+                  <button onClick={swapDebitCredit}
+                    title="Хуулга буруу импортлогдсон тохиолдолд Дебит ба Кредит баганыг солих"
+                    className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700 transition-colors">
+                    ⇄ Солих
+                  </button>
+                </div>
               </div>
 
               {/* ── Bulk edit bar ─────────────────────────────────── */}
               {selectedTxns.size > 0 && (
-                <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-blue-100 bg-blue-50 px-3 py-1.5">
+                <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-blue-100 bg-gradient-to-r from-blue-50 to-blue-50/60 px-3 py-2">
                   {/* Count badge + clear */}
-                  <span className="flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-[11px] font-bold text-white shrink-0">
-                    <Check size={9}/>{selectedTxns.size} мөр
+                  <span className="flex items-center gap-1 rounded-full bg-[#0071E3] px-2.5 py-0.5 text-[11px] font-bold text-white shadow-sm shrink-0">
+                    <Check size={10}/>{selectedTxns.size} мөр
                   </span>
                   <button onClick={clearSelection} title="Сонголтыг цуцлах"
-                    className="grid h-5 w-5 place-items-center rounded text-blue-500 hover:bg-blue-100">
-                    <X size={11}/>
+                    className="grid h-6 w-6 place-items-center rounded-lg text-blue-500 hover:bg-white">
+                    <X size={12}/>
                   </button>
-                  <div className="h-4 w-px bg-blue-200 mx-0.5 shrink-0"/>
+                  <div className="h-5 w-px bg-blue-200 mx-0.5 shrink-0"/>
 
                   {/* Partner name */}
                   <input value={bulkForm.partner_name}
@@ -1211,29 +1303,45 @@ export default function BankStatementPage() {
                 </div>
               ) : (
                 <div className="flex-1 overflow-auto">
-                  <table className="w-full min-w-[1000px] border-collapse text-[12px]">
-                    <thead className="sticky top-0 z-10 bg-gray-50">
+                  <table className="w-full border-collapse text-[12.5px] table-fixed">
+                    {/* Explicit column widths — flexible bank/customer note columns use auto */}
+                    <colgroup>
+                      <col className="w-8"/>           {/* checkbox */}
+                      <col className="w-8"/>           {/* # */}
+                      <col className="w-[78px]"/>      {/* Огноо */}
+                      <col className="w-[88px]"/>      {/* Кредит */}
+                      <col className="w-[88px]"/>      {/* Дебит */}
+                      <col/>                            {/* Банкны утга — flexible */}
+                      <col className="w-[92px]"/>      {/* Б.харьцсан данс */}
+                      <col className="w-[120px]"/>     {/* Харилцагч */}
+                      <col className="w-[100px]"/>     {/* Харьцсан данс */}
+                      <col/>                            {/* Гүйлгээний утга — flexible */}
+                      <col className="w-[68px]"/>      {/* Үйлдэл */}
+                      <col className="w-[78px]"/>      {/* Экспорт */}
+                      <col className="w-[64px]"/>      {/* Данс */}
+                    </colgroup>
+                    <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_#f3f4f6]">
                       <tr>
                         {/* Select-all checkbox */}
-                        <th className="w-8 border-b border-gray-100 px-2 py-2 text-center">
+                        <th className="px-1 py-3 text-center">
                           <input type="checkbox"
                             checked={visibleTxns.length > 0 && visibleTxns.every(t => selectedTxns.has(t.id))}
                             ref={el => { if (el) el.indeterminate = selectedTxns.size > 0 && !visibleTxns.every(t => selectedTxns.has(t.id)); }}
                             onChange={e => e.target.checked ? selectAllVisible() : clearSelection()}
-                            className="cursor-pointer accent-blue-600"/>
+                            className="h-3.5 w-3.5 cursor-pointer accent-[#0071E3]"/>
                         </th>
-                        <th className="w-7 border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-gray-400">#</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-gray-500 whitespace-nowrap">Огноо</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-right text-[11px] font-semibold text-green-600 whitespace-nowrap">Кредит ₮</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-right text-[11px] font-semibold text-red-500 whitespace-nowrap">Дебит ₮</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-gray-500">Банкны утга</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-gray-500 whitespace-nowrap">Банкны харьцсан данс</th>
-                        <th className="border-b border-l border-gray-200 px-2 py-2 text-left text-[11px] font-semibold text-blue-600 whitespace-nowrap">Харилцагч</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-blue-600 whitespace-nowrap">Харьцсан данс</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-left text-[11px] font-semibold text-blue-600 whitespace-nowrap">Гүйлгээний утга</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-blue-600 whitespace-nowrap">Үйлдэл</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-emerald-600 whitespace-nowrap">Экспорт</th>
-                        <th className="border-b border-gray-100 px-2 py-2 text-center text-[11px] font-semibold text-emerald-600 whitespace-nowrap">Данс</th>
+                        <th className="px-1 py-3 text-center text-[10px] font-bold uppercase tracking-wider text-gray-400">#</th>
+                        <th className="px-2 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Огноо</th>
+                        <th className="px-2 py-3 text-right text-[10px] font-bold uppercase tracking-wider text-emerald-600">Кредит ₮</th>
+                        <th className="px-2 py-3 text-right text-[10px] font-bold uppercase tracking-wider text-rose-500">Дебит ₮</th>
+                        <th className="px-2 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Банкны утга</th>
+                        <th className="px-2 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Б.харьц.</th>
+                        <th className="border-x border-blue-100 bg-blue-50/40 px-2 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-blue-700">Харилцагч</th>
+                        <th className="border-r border-blue-100 bg-blue-50/40 px-2 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-blue-700">Харьц. данс</th>
+                        <th className="border-r border-blue-100 bg-blue-50/40 px-2 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-blue-700">Гүйлгээний утга</th>
+                        <th className="border-r border-blue-100 bg-blue-50/40 px-1 py-3 text-center text-[10px] font-bold uppercase tracking-wider text-blue-700">Үйлдэл</th>
+                        <th className="px-1 py-3 text-center text-[10px] font-bold uppercase tracking-wider text-emerald-700">Экспорт</th>
+                        <th className="px-1 py-3 text-center text-[10px] font-bold uppercase tracking-wider text-emerald-700">Данс</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1249,25 +1357,25 @@ export default function BankStatementPage() {
                         return (
                           <tr key={t.id} className={`border-b border-gray-50 transition-colors ${rowBg}`}>
                             {/* Row checkbox */}
-                            <td className="px-2 py-1.5 text-center">
+                            <td className="px-1 py-1.5 text-center">
                               <input type="checkbox"
                                 checked={isSelected}
                                 onChange={() => toggleSelect(t.id)}
                                 className="cursor-pointer accent-blue-600"/>
                             </td>
-                            <td className="px-2 py-1.5 text-center text-[10px] text-gray-300">{i + 1}</td>
-                            <td className="px-2 py-1.5 whitespace-nowrap text-[11px] text-gray-500">{fmtDate(t.txn_date)}</td>
-                            <td className="px-2 py-1.5 text-right font-medium tabular-nums">
+                            <td className="px-1 py-1.5 text-center text-[10px] text-gray-300">{i + 1}</td>
+                            <td className="px-2 py-1.5 whitespace-nowrap text-[11px] text-gray-500 font-mono" title={fmtDate(t.txn_date)}>{fmtDateShort(t.txn_date)}</td>
+                            <td className="px-2 py-1.5 text-right font-medium tabular-nums text-[11.5px]">
                               {t.credit > 0 ? <span className="text-green-600">{t.credit.toLocaleString("mn-MN")}</span> : "—"}
                             </td>
-                            <td className="px-2 py-1.5 text-right font-medium tabular-nums">
+                            <td className="px-2 py-1.5 text-right font-medium tabular-nums text-[11.5px]">
                               {t.debit > 0 ? <span className="text-red-500">{t.debit.toLocaleString("mn-MN")}</span> : "—"}
                             </td>
-                            <td className="px-2 py-1.5 min-w-[200px]">
-                              <div className="text-gray-600 break-words">{t.bank_description || "—"}</div>
+                            <td className="px-2 py-1.5">
+                              <div className="truncate text-gray-600 text-[11.5px]" title={t.bank_description || ""}>{t.bank_description || "—"}</div>
                             </td>
-                            <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px] text-gray-500">{t.bank_counterpart || "—"}</td>
-                            <td className="border-l border-gray-200 px-1 py-1.5 min-w-[140px]">
+                            <td className="px-2 py-1.5 truncate font-mono text-[10.5px] text-gray-500" title={t.bank_counterpart || ""}>{t.bank_counterpart || "—"}</td>
+                            <td className="border-x border-blue-100 bg-blue-50/20 px-1 py-1.5">
                               {t.is_settlement ? (
                                 <div onClick={() => setSettlementLockModal(true)}
                                   className="cursor-not-allowed rounded px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-amber-50"
@@ -1292,10 +1400,11 @@ export default function BankStatementPage() {
                                 />
                               )}
                             </td>
-                            <td className="px-1 py-1.5 min-w-[110px]">
+                            <td className="border-r border-blue-100 bg-blue-50/20 px-1 py-1.5">
                               {(t.is_settlement || t.is_fee) ? (
                                 <div onClick={() => (t.is_settlement ? setSettlementLockModal(true) : setFeeLockModal(true))}
-                                  className="cursor-not-allowed rounded px-1.5 py-0.5 text-[11px] font-mono text-gray-700 hover:bg-amber-50">
+                                  className="cursor-not-allowed truncate rounded px-1.5 py-0.5 text-[11px] font-mono text-gray-700 hover:bg-amber-50"
+                                  title={t.partner_account || ""}>
                                   {t.partner_account || "—"}
                                 </div>
                               ) : (
@@ -1304,10 +1413,11 @@ export default function BankStatementPage() {
                                   onSave={v => updateTxn(t.id, { partner_account: v })}/>
                               )}
                             </td>
-                            <td className="px-1 py-1.5 min-w-[130px]">
+                            <td className="border-r border-blue-100 bg-blue-50/20 px-1 py-1.5">
                               {(t.is_settlement || t.is_fee) ? (
                                 <div onClick={() => (t.is_settlement ? setSettlementLockModal(true) : setFeeLockModal(true))}
-                                  className="cursor-not-allowed rounded px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-amber-50">
+                                  className="cursor-not-allowed truncate rounded px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-amber-50"
+                                  title={t.custom_description || ""}>
                                   {t.custom_description || <span className="italic text-gray-300">—</span>}
                                 </div>
                               ) : (
@@ -1315,7 +1425,7 @@ export default function BankStatementPage() {
                                   onSave={v => updateTxn(t.id, { custom_description: v })}/>
                               )}
                             </td>
-                            <td className="px-2 py-1.5 text-center">
+                            <td className="border-r border-blue-100 bg-blue-50/20 px-2 py-1.5 text-center">
                               {t.is_settlement ? (
                                 <span onClick={() => setSettlementLockModal(true)}
                                   className="cursor-not-allowed rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 hover:bg-amber-50">
@@ -1343,11 +1453,11 @@ export default function BankStatementPage() {
                             </td>
                             <td className="px-2 py-1.5 text-center whitespace-nowrap">
                               {t.credit > 0 && !t.is_fee ? (
-                                <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-emerald-700">
+                                <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold font-mono text-emerald-700 ring-1 ring-emerald-200">
                                   120105
                                 </span>
                               ) : (t.debit > 0 || t.is_fee) && openStmt?.erp_account_code ? (
-                                <span className="rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold font-mono text-sky-700">
+                                <span className="rounded-md bg-sky-50 px-2 py-0.5 text-[11px] font-bold font-mono text-sky-700 ring-1 ring-sky-200">
                                   {openStmt.erp_account_code}
                                 </span>
                               ) : (
@@ -1360,9 +1470,12 @@ export default function BankStatementPage() {
                     </tbody>
                   </table>
                   {visibleTxns.length === 0 && (
-                    <div className="flex flex-col items-center py-12 text-gray-400">
-                      <Check size={28} className="mb-2 text-green-400"/>
-                      <p className="text-[12px]">Гүйлгээ байхгүй</p>
+                    <div className="flex flex-col items-center py-12 text-gray-400 gap-2">
+                      <div className="grid h-14 w-14 place-items-center rounded-2xl bg-emerald-50">
+                        <Check size={24} className="text-emerald-500"/>
+                      </div>
+                      <p className="text-[13px] font-semibold text-gray-600">Гүйлгээ байхгүй</p>
+                      <p className="text-[11px] text-gray-400">{showFees ? "Шимтгэлийн гүйлгээ илрээгүй" : "Бүх гүйлгээ боловсруулагдсан"}</p>
                     </div>
                   )}
                 </div>
