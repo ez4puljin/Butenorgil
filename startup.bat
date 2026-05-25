@@ -165,7 +165,26 @@ REM ---- Generate HTTPS self-signed cert + auto-install in Windows trust ----
 echo   Ensuring HTTPS cert exists...
 pushd "%ROOT%\backend"
 .venv\Scripts\python.exe -m app.generate_cert
+if errorlevel 1 (
+    echo   [!] generate_cert.py failed - check Python / cryptography library
+)
 popd
+
+REM ---- Verify cert files actually exist (fallback to HTTP if not) ----
+set "USE_HTTPS=1"
+if not exist "%ROOT%\backend\app\data\certs\server.key" set "USE_HTTPS=0"
+if not exist "%ROOT%\backend\app\data\certs\server.crt" set "USE_HTTPS=0"
+if "!USE_HTTPS!"=="0" (
+    echo.
+    echo   ============================================================
+    echo   [!] HTTPS CERT NOT FOUND - Starting in HTTP mode instead.
+    echo       App URL: http://!LAN_IP!:8000  ^(NOT https^)
+    echo       To enable HTTPS later:
+    echo         cd backend
+    echo         .venv\Scripts\python.exe -m app.generate_cert
+    echo   ============================================================
+    echo.
+)
 
 REM ---- Free port 8080 for the cert helper ----
 for /f "tokens=5" %%p in ('netstat -aon 2^>nul ^| findstr ":8080" ^| findstr "LISTENING"') do (
@@ -203,22 +222,33 @@ echo.
 
 :fw_done
 
-REM ---- Start backend (HTTPS) + cert helper (HTTP, cert download only) ----
+REM ---- Start backend + cert helper ----
 echo [4/4] Starting servers...
 echo.
-echo   App (HTTPS):       https://!LAN_IP!:8000
-echo   Setup helper (HTTP): http://!LAN_IP!:8080/
-echo.
-echo   First time on a phone:
-echo     1. Open  http://!LAN_IP!:8080/  in the phone's browser
-echo     2. Tap "rootCA.crt download" and install it as Trusted Root
-echo     3. Open the app, set Protocol=HTTPS, IP=!LAN_IP!, Port=8000
-echo.
+if "!USE_HTTPS!"=="1" (
+    echo   App ^(HTTPS^):         https://!LAN_IP!:8000
+    echo   Setup helper ^(HTTP^): http://!LAN_IP!:8080/
+    echo.
+    echo   First time on a phone:
+    echo     1. Open  http://!LAN_IP!:8080/  in the phone's browser
+    echo     2. Tap "rootCA.crt download" and install it as Trusted Root
+    echo     3. Open the app, set Protocol=HTTPS, IP=!LAN_IP!, Port=8000
+    echo.
+    start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile app/data/certs/server.key --ssl-certfile app/data/certs/server.crt"
+) else (
+    echo   App ^(HTTP^):  http://!LAN_IP!:8000
+    echo.
+    echo   NOTE: Running in HTTP mode because HTTPS cert is missing.
+    echo         Camera, microphone, geolocation features will be DISABLED
+    echo         on phones because they require HTTPS ^(secure context^).
+    echo.
+    start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+)
 
-start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile app/data/certs/server.key --ssl-certfile app/data/certs/server.crt"
-
-REM Helper for cert download (port 8080, plain HTTP)
-start "ERP-CertHelper" /D "%ROOT%\backend" /MIN cmd /k ".venv\Scripts\python.exe -m app.cert_helper_server"
+REM Helper for cert download (port 8080, plain HTTP) — only useful when HTTPS is on
+if "!USE_HTTPS!"=="1" (
+    start "ERP-CertHelper" /D "%ROOT%\backend" /MIN cmd /k ".venv\Scripts\python.exe -m app.cert_helper_server"
+)
 
 echo.
 echo =========================================================
