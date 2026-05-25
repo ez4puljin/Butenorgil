@@ -62,6 +62,26 @@ if not exist "%ROOT%\frontend\package.json" (
     goto :fail
 )
 
+REM ---- Verify backend Python dependencies are installed ----
+REM Critical libraries that must exist before continuing.
+echo   Verifying Python dependencies...
+"%ROOT%\backend\.venv\Scripts\python.exe" -c "import cryptography, fastapi, uvicorn, sqlalchemy, pandas, openpyxl" >nul 2>&1
+if errorlevel 1 (
+    echo   [!] Missing Python dependencies - installing from requirements.txt...
+    pushd "%ROOT%\backend"
+    .venv\Scripts\python.exe -m pip install -r requirements.txt --disable-pip-version-check
+    if errorlevel 1 (
+        echo   [X] pip install failed - check Python version compatibility.
+        echo       Python 3.14 is bleeding edge - try Python 3.12 or 3.13 instead.
+        popd
+        goto :fail
+    )
+    popd
+    echo   [OK] Dependencies installed.
+) else (
+    echo   [OK] All critical dependencies present.
+)
+
 REM ---- Auto-pull latest from git so users don't need to remember "git pull" ----
 echo [2/4] Pulling latest changes from git...
 where git >nul 2>&1
