@@ -74,11 +74,31 @@ if not exist "%ROOT%\.git" (
     goto :skip_pull
 )
 pushd "%ROOT%"
+REM npm-аас үүссэн lock file ялгаа байх нь түгээмэл — pull-ыг хаахаас сэргийлж discard хийнэ
+git checkout HEAD -- frontend/package-lock.json >nul 2>&1
+git checkout HEAD -- backend/requirements.txt >nul 2>&1
+REM Үлдсэн local change байвал stash хийнэ (pull дараа автомат буцаагдана)
+git diff --quiet
+if errorlevel 1 (
+    echo   Local changes detected - auto-stashing before pull...
+    git stash push -u -q -m "auto-stash-by-startup-%RANDOM%"
+    set "STASHED=1"
+) else (
+    set "STASHED=0"
+)
 git pull --ff-only
 if errorlevel 1 (
-    echo   [!] git pull failed ^(local changes / no internet / conflict^) - continuing with current code
+    echo   [!] git pull failed ^(no internet / merge conflict^) - continuing with current code
 ) else (
     echo   [OK] Local code is up to date.
+)
+REM Хэрвээ stash хийсэн бол — буцаагаад апплая
+if "!STASHED!"=="1" (
+    echo   Restoring auto-stashed local changes...
+    git stash pop -q >nul 2>&1
+    if errorlevel 1 (
+        echo   [!] Auto-stash pop failed - your changes are kept in 'git stash list'
+    )
 )
 popd
 :skip_pull
