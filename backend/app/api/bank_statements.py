@@ -1083,7 +1083,40 @@ def _apply_date_format(ws, col_letter: str, start_row: int, end_row: int) -> Non
         ws[f"{col_letter}{r}"].number_format = _DATE_FMT
 
 
-def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
+def _customer_name_to_code() -> dict[str, str]:
+    """{lower(name): code} map — Excel-аас уншсан харилцагчийн жагсаалт.
+
+    Хуучин гүйлгээний partner_code хоосон үед export үед нэрээр код олоход
+    ашиглана. Хайлт case-insensitive — Бяан Улаан / БЯАН УЛААН аль аль нь
+    тохирно.
+    """
+    out: dict[str, str] = {}
+    for r in _ensure_customers_loaded():
+        n = (r.get("name") or "").strip().lower()
+        c = (r.get("code") or "").strip()
+        if n and c and n not in out:
+            out[n] = c
+    return out
+
+
+def _resolve_partner_field(t, name_to_code: dict[str, str]) -> str:
+    """Гүйлгээний 'Харилцагч' баганад буух утга: код priority, дараа нь хайж олох."""
+    # 1) Хадгалагдсан код байвал тэр
+    code = (getattr(t, "partner_code", "") or "").strip()
+    if code:
+        return code
+    name = (t.partner_name or "").strip()
+    if not name:
+        return ""
+    # 2) Customer cache-аас нэрээр код хай
+    found = name_to_code.get(name.lower())
+    if found:
+        return found
+    # 3) Олдоогүй → нэр-ээ буцаана (хуучин бичлэгүүдийн backward-compat)
+    return name
+
+
+def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None) -> bytes:
     """Авлага өглөгийн гүйлгээ Excel (зөвхөн кредит гүйлгээ).
     SETTLEMENT pattern илрүүлбэл автомат бөглөнө:
       • Огноо       — bank_description-аас parse
@@ -1092,6 +1125,8 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
       • Харьцсан    — банкны ERP код (bank_erp_code)
       • Дансны код  — "120105"
     """
+    if name_to_code is None:
+        name_to_code = _customer_name_to_code()
     wb = Workbook()
     ws = wb.active
     ws.title = "Гүйлгээ"
@@ -1114,9 +1149,8 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
         else:
             action_val = ""
 
-        # "Харилцагч" багана: code priority, fallback to name
-        # (PartnerSearch-аар сонгосон үед код хадгалагдаж, гар хийн бичсэн үед нэр л үлдэнэ)
-        partner_field = (getattr(t, "partner_code", "") or "").strip() or (t.partner_name or "").strip()
+        # "Харилцагч" багана: код priority, нэрээр хайх, эс бөгөөс нэр (backward-compat)
+        partner_field = _resolve_partner_field(t, name_to_code)
 
         if is_pos:
             pos_date  = _extract_date_from_desc(bd)
@@ -1158,16 +1192,18 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
     return buf.getvalue()
 
 
-def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
+def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None) -> bytes:
     """Кассын / Харилцахын гүйлгээ Excel (дебит гүйлгээ)."""
+    if name_to_code is None:
+        name_to_code = _customer_name_to_code()
     wb = Workbook()
     ws = wb.active
     ws.title = "Гүйлгээ"
     ws.append(_KASS_HARILTSAH_HEADERS)
     for t in txns:
         desc = t.custom_description or t.bank_description or ""
-        # "Харилцагч" багана: код байвал тэр, эс бөгөөс нэр (хуучин бичлэгүүдийн backward-compat)
-        partner_field = (getattr(t, "partner_code", "") or "").strip() or (t.partner_name or "").strip()
+        # "Харилцагч" багана: код priority, нэрээр хайж олох, эс бөгөөс нэр
+        partner_field = _resolve_partner_field(t, name_to_code)
         ws.append([
             eff_date,                # Огноо — date object
             desc,                    # Гүйлгээний утга
@@ -1222,6 +1258,9 @@ def export_erkhet(
     ).first()
     bank_erp_code = (cfg.erp_account_code or "") if cfg else ""
 
+    # Customer name → code map — нэгэн ёсон бүх 3 export файлд ашиглана
+    name_to_code = _customer_name_to_code()
+
     txns = [t for t in stmt.transactions if not t.is_fee]
     credit_txns    = [t for t in txns if t.credit > 0]
     kass_txns      = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"]
@@ -1231,13 +1270,13 @@ def export_erkhet(
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         if credit_txns:
             zf.writestr("Авлага өглөгийн гүйлгээ.xlsx",
-                        _build_avlaga_excel(credit_txns, eff_date, bank_erp_code))
+                        _build_avlaga_excel(credit_txns, eff_date, bank_erp_code, name_to_code))
         if kass_txns:
             zf.writestr("Мөнгөн хөрөнгийн кассын гүйлгээ.xlsx",
-                        _build_kass_hariltsah_excel(kass_txns, eff_date, bank_erp_code))
+                        _build_kass_hariltsah_excel(kass_txns, eff_date, bank_erp_code, name_to_code))
         if hariltsah_txns:
             zf.writestr("Мөнгөн хөрөнгийн харилцахын гүйлгээ.xlsx",
-                        _build_kass_hariltsah_excel(hariltsah_txns, eff_date, bank_erp_code))
+                        _build_kass_hariltsah_excel(hariltsah_txns, eff_date, bank_erp_code, name_to_code))
 
     from urllib.parse import quote
     zip_buf.seek(0)
