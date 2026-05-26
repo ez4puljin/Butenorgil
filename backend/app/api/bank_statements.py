@@ -1228,7 +1228,7 @@ def export_erkhet(
                         _build_kass_hariltsah_excel(kass_txns, eff_date, bank_erp_code))
         if hariltsah_txns:
             zf.writestr("Мөнгөн хөрөнгийн харилцахын гүйлгээ.xlsx",
-                        _build_kass_hariltsah_excel(hariltsah_txns, eff_date))
+                        _build_kass_hariltsah_excel(hariltsah_txns, eff_date, bank_erp_code))
 
     from urllib.parse import quote
     zip_buf.seek(0)
