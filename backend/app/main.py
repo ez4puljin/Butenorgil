@@ -247,11 +247,13 @@ def ensure_bank_account_configs_schema():
             conn.execute(text("ALTER TABLE bank_account_configs ADD COLUMN erp_account_code VARCHAR(20) DEFAULT ''"))
 
 def ensure_bank_transactions_schema():
-    """bank_transactions-д export_type багана нэмнэ."""
+    """bank_transactions-д export_type, partner_code багана нэмнэ."""
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(bank_transactions)")).fetchall()]
         if cols and "export_type" not in cols:
             conn.execute(text("ALTER TABLE bank_transactions ADD COLUMN export_type VARCHAR(20) DEFAULT ''"))
+        if cols and "partner_code" not in cols:
+            conn.execute(text("ALTER TABLE bank_transactions ADD COLUMN partner_code VARCHAR(30) DEFAULT ''"))
 
 def ensure_admin_task_target_schema():
     """kpi_admin_daily_tasks-д target_employee_ids багана нэмнэ."""

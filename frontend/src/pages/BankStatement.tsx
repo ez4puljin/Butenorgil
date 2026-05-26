@@ -35,6 +35,7 @@ interface Txn {
   bank_counterpart: string;
   is_fee: boolean;
   partner_name: string;
+  partner_code: string;   // Эрхэт код (10101 г.м.) — export-д ашиглана
   partner_account: string;
   custom_description: string;
   action: string;
@@ -289,7 +290,8 @@ interface Customer {
 
 function PartnerSearch({ value, onSave, onClear }: {
   value: string;
-  onSave: (name: string, account: string) => void;
+  // (name, account, code) — code нь зөвхөн dropdown-аас сонгоход дамжина (гар хийн бичих үед "")
+  onSave: (name: string, account: string, code: string) => void;
   onClear?: () => void;
 }) {
   const [query,   setQuery]   = useState(value);
@@ -323,7 +325,7 @@ function PartnerSearch({ value, onSave, onClear }: {
   function select(c: Customer) {
     setQuery(c.name);
     setOpen(false);
-    onSave(c.name, c.account || "");
+    onSave(c.name, c.account || "", c.code || "");
   }
 
   function handleBlur() {
@@ -331,7 +333,8 @@ function PartnerSearch({ value, onSave, onClear }: {
     // onMouseDown-ы дараа blur ирдэг тул 150ms хүлээнэ
     setTimeout(() => {
       setOpen(false);
-      if (query.trim() !== value.trim()) onSave(query.trim(), "");
+      // Гар хийн бичсэн үед код "" — экспорт-д partner_name fallback ашиглана
+      if (query.trim() !== value.trim()) onSave(query.trim(), "", "");
     }, 150);
   }
 
@@ -340,7 +343,7 @@ function PartnerSearch({ value, onSave, onClear }: {
     setResults([]);
     setOpen(false);
     if (onClear) onClear();
-    else onSave("", "");
+    else onSave("", "", "");
   }
 
   return (
@@ -783,7 +786,12 @@ export default function BankStatementPage() {
   async function applyBulkEdit() {
     if (selectedTxns.size === 0 || !openStmt) return;
     const patch: Record<string, string> = {};
-    if (bulkForm.partner_name.trim())       patch.partner_name       = bulkForm.partner_name.trim();
+    if (bulkForm.partner_name.trim()) {
+      patch.partner_name = bulkForm.partner_name.trim();
+      // Гар хийн нэр бичих үед хуучин partner_code хүчингүй болно.
+      // Сонгож код хадгалах гэвэл тус бүр мөр дээр PartnerSearch ашиглах хэрэгтэй.
+      patch.partner_code = "";
+    }
     if (bulkForm.partner_account.trim())    patch.partner_account    = bulkForm.partner_account.trim();
     if (bulkForm.custom_description.trim()) patch.custom_description = bulkForm.custom_description.trim();
     if (bulkForm.action      !== null)      patch.action             = bulkForm.action;
@@ -1395,12 +1403,13 @@ export default function BankStatementPage() {
                               ) : (
                                 <PartnerSearch
                                   value={t.partner_name}
-                                  onSave={(name, account) => {
-                                    const patch: Partial<Txn> = { partner_name: name };
+                                  onSave={(name, account, code) => {
+                                    // partner_code-г үргэлж шинэчилнэ (нэр гар хийн бичих үед "")
+                                    const patch: Partial<Txn> = { partner_name: name, partner_code: code };
                                     if (account && !t.partner_account) patch.partner_account = account;
                                     updateTxn(t.id, patch);
                                   }}
-                                  onClear={() => updateTxn(t.id, { partner_name: "", partner_account: "" })}
+                                  onClear={() => updateTxn(t.id, { partner_name: "", partner_code: "", partner_account: "" })}
                                 />
                               )}
                             </td>

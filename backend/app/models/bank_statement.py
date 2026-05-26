@@ -46,6 +46,9 @@ class BankTransaction(Base):
 
     # ── Хэрэглэгчийн гараас оруулах ───────────────────────────────────
     partner_name: Mapped[str] = mapped_column(String(200), default="")
+    # Эрхэт дахь харилцагчийн код (10101 гэх мэт). PartnerSearch-аас сонгоход бөглөгдөнө.
+    # Export Excel-ийн "Харилцагч" багана энэ кодыг агуулна.
+    partner_code: Mapped[str] = mapped_column(String(30), default="")
     partner_account: Mapped[str] = mapped_column(String(100), default="")
     custom_description: Mapped[str] = mapped_column(String(500), default="")
     action: Mapped[str] = mapped_column(String(20), default="")        # "" | "close" | "create"

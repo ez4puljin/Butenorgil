@@ -311,6 +311,7 @@ def _ser_txn(t: BankTransaction) -> dict:
         "bank_counterpart":   t.bank_counterpart,
         "is_fee":             t.is_fee,
         "partner_name":       t.partner_name,
+        "partner_code":       getattr(t, "partner_code", "") or "",
         "partner_account":    t.partner_account,
         "custom_description": t.custom_description,
         "action":             t.action,
@@ -336,6 +337,7 @@ def _ser_acct(a: BankAccountConfig) -> dict:
 
 class TxnUpdate(BaseModel):
     partner_name:       Optional[str] = None
+    partner_code:       Optional[str] = None   # Эрхэт код (10101 г.м.). Export-д ашиглана.
     partner_account:    Optional[str] = None
     custom_description: Optional[str] = None
     action:             Optional[str] = None
@@ -1035,6 +1037,7 @@ def update_transaction(
         raise HTTPException(404, "Гүйлгээ олдсонгүй")
 
     if body.partner_name       is not None: t.partner_name       = body.partner_name
+    if body.partner_code       is not None: t.partner_code       = body.partner_code
     if body.partner_account    is not None: t.partner_account    = body.partner_account
     if body.custom_description is not None: t.custom_description = body.custom_description
     if body.action             is not None: t.action             = body.action
@@ -1111,10 +1114,14 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
         else:
             action_val = ""
 
+        # "Харилцагч" багана: code priority, fallback to name
+        # (PartnerSearch-аар сонгосон үед код хадгалагдаж, гар хийн бичсэн үед нэр л үлдэнэ)
+        partner_field = (getattr(t, "partner_code", "") or "").strip() or (t.partner_name or "").strip()
+
         if is_pos:
             pos_date  = _extract_date_from_desc(bd)
             row_date  = pos_date or eff_date
-            partner   = (t.partner_name or "").strip() or "30000"
+            partner   = partner_field or "30000"
             # SETTLEMENT POS — "Харьцсан данс" нь үргэлж банкны ERP код байна
             # (хэрэглэгчийн partner_account-ыг override хийнэ)
             cross     = bank_erp_code or (t.partner_account or "").strip()
@@ -1122,7 +1129,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "") -> bytes:
             desc_text = (t.custom_description or "").strip() or bd
         else:
             row_date  = eff_date
-            partner   = t.partner_name or ""
+            partner   = partner_field
             cross     = t.partner_account or ""
             desc_text = t.custom_description or bd
         # Авлага бүх кредит мөрийн "Дансны код" = 120105 (анхдагч авлагын данс)
@@ -1159,10 +1166,12 @@ def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "") -
     ws.append(_KASS_HARILTSAH_HEADERS)
     for t in txns:
         desc = t.custom_description or t.bank_description or ""
+        # "Харилцагч" багана: код байвал тэр, эс бөгөөс нэр (хуучин бичлэгүүдийн backward-compat)
+        partner_field = (getattr(t, "partner_code", "") or "").strip() or (t.partner_name or "").strip()
         ws.append([
             eff_date,                # Огноо — date object
             desc,                    # Гүйлгээний утга
-            t.partner_name or "",    # Харилцагч
+            partner_field,           # Харилцагч (код)
             t.partner_account or "", # Харьцсан данс
             "",                      # Харьцсан ялгаатай харилцагч (хоосон)
             "", "", "", "",          # НӨАТ 4 col
