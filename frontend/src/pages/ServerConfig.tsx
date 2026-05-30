@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Loader2, Server, Check, AlertCircle, Wifi } from "lucide-react";
+import { Loader2, Server, Check, AlertCircle, Wifi, Lock, ShieldAlert } from "lucide-react";
 import { setServerUrl, getServerUrl } from "../lib/serverConfig";
 import { setApiBaseUrl } from "../lib/api";
 
@@ -8,7 +8,8 @@ export default function ServerConfig() {
   const navigate = useNavigate();
   const [ip, setIp] = useState("192.168.");
   const [port, setPort] = useState("8000");
-  const [protocol, setProtocol] = useState<"http" | "https">("http");
+  // Зөвхөн HTTPS — аюулгүй холболт (камер, secure context шаардлагатай тул)
+  const protocol = "https" as const;
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -20,9 +21,8 @@ export default function ServerConfig() {
       if (saved) {
         try {
           const u = new URL(saved);
-          setProtocol(u.protocol === "https:" ? "https" : "http");
           setIp(u.hostname);
-          setPort(u.port || (u.protocol === "https:" ? "443" : "80"));
+          setPort(u.port || "8000");
         } catch {}
       }
     })();
@@ -100,17 +100,10 @@ export default function ServerConfig() {
           <div className="space-y-4">
             <div>
               <label className="mb-1.5 block text-xs font-semibold text-gray-600">Протокол</label>
-              <div className="flex gap-2">
-                {(["http", "https"] as const).map(p => (
-                  <button key={p} onClick={() => setProtocol(p)}
-                          className={`flex-1 rounded-xl border py-3 text-sm font-semibold transition-colors ${
-                            protocol === p
-                              ? "border-[#0071E3] bg-[#0071E3] text-white shadow-sm"
-                              : "border-gray-200 bg-white text-gray-700 active:bg-gray-50"
-                          }`}>
-                    {p.toUpperCase()}
-                  </button>
-                ))}
+              <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <Lock size={16} className="text-emerald-600"/>
+                <span className="text-sm font-semibold text-emerald-700">HTTPS</span>
+                <span className="ml-auto text-[11px] text-emerald-600/80">Аюулгүй холболт</span>
               </div>
             </div>
             <div>
@@ -138,6 +131,23 @@ export default function ServerConfig() {
             <div className="flex items-center gap-2 rounded-xl bg-gray-50 px-3 py-2.5 text-xs">
               <span className="text-gray-400">URL:</span>
               <span className="flex-1 truncate font-mono text-gray-700">{buildUrl()}</span>
+            </div>
+
+            {/* Шинэ утсанд cert суулгах санамж */}
+            <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-[11.5px] text-amber-800 ring-1 ring-inset ring-amber-100">
+              <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-600"/>
+              <div className="space-y-1">
+                <p className="font-semibold">Шинэ утас ашиглаж байна уу?</p>
+                <p className="leading-relaxed">
+                  HTTPS-ээр холбогдохын тулд эхлээд гэрчилгээ (rootCA.crt) татаж суулгах
+                  шаардлагатай. Утасныхаа хөтчөөр{" "}
+                  <span className="font-mono font-semibold">
+                    http://{ip.trim() || "<сервер-IP>"}:8080/
+                  </span>{" "}
+                  хаягаар орж <b>rootCA.crt</b> татаад, “Trusted Root / Итгэмжлэгдсэн”
+                  болгож суулгана уу. Үүний дараа энд HTTPS-ээр холбогдоно.
+                </p>
+              </div>
             </div>
 
             {error && (
