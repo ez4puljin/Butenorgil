@@ -8,36 +8,61 @@ import Shell from "./components/layout/Shell";
 import Login from "./pages/Login";
 import ServerConfig from "./pages/ServerConfig";
 
-// ── Lazy pages (route бүр өөрийн chunk-той — хэрэгцээтэй үед л татна) ──
-const Dashboard          = lazy(() => import("./pages/Dashboard"));
-const Imports            = lazy(() => import("./pages/Imports"));
-const Reports            = lazy(() => import("./pages/Reports"));
-const Admin              = lazy(() => import("./pages/Admin"));
-const AdminMinStock      = lazy(() => import("./pages/AdminMinStock"));
-const AuditLogPage       = lazy(() => import("./pages/AuditLog"));
-const OrderSupervisor    = lazy(() => import("./pages/OrderSupervisor"));
-const AccountsReceivable = lazy(() => import("./pages/AccountsReceivable"));
-const Suppliers          = lazy(() => import("./pages/Suppliers"));
-const Logistics          = lazy(() => import("./pages/Logistics"));
-const PurchaseOrderList   = lazy(() => import("./pages/PurchaseOrderList"));
-const PurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail"));
-const CalendarPage       = lazy(() => import("./pages/Calendar"));
-const KpiChecklist       = lazy(() => import("./pages/KpiChecklist"));
-const KpiApprovals       = lazy(() => import("./pages/KpiApprovals"));
-const KpiAdmin           = lazy(() => import("./pages/KpiAdmin"));
-const NewProduct         = lazy(() => import("./pages/NewProduct"));
-const SalesReportDetail  = lazy(() => import("./pages/SalesReportDetail"));
-const InventoryCount     = lazy(() => import("./pages/InventoryCount"));
-const OrderDashboard     = lazy(() => import("./pages/OrderDashboard"));
-const ErkhetAuto         = lazy(() => import("./pages/ErkhetAuto"));
-const ReceivingList      = lazy(() => import("./pages/ReceivingList"));
-const ReceivingDetail    = lazy(() => import("./pages/ReceivingDetail"));
-const BankStatement      = lazy(() => import("./pages/BankStatement"));
-const ExpirationTracking = lazy(() => import("./pages/ExpirationTracking"));
-const Documents          = lazy(() => import("./pages/Documents"));
-const ProductSalesImport = lazy(() => import("./pages/ProductSalesImport"));
-const Attendance         = lazy(() => import("./pages/Attendance"));
-const AttendanceAdmin    = lazy(() => import("./pages/AttendanceAdmin"));
+// ── Lazy pages (route бүр өөрийн chunk-той) + prefetch бүртгэл ──
+// page() нь lazy component буцаахын зэрэгцээ тухайн import thunk-ийг
+// _prefetchThunks-д бүртгэнэ. Апп нээгдсэний дараа бүх chunk-ийг background-д
+// урьдчилан ачаалснаар цэс шилжихэд "Loading" гарахгүй, агшин зуурын болно.
+const _prefetchThunks: Array<() => Promise<unknown>> = [];
+function page<T>(thunk: () => Promise<T>) {
+  _prefetchThunks.push(thunk);
+  return lazy(thunk as any);
+}
+
+const Dashboard          = page(() => import("./pages/Dashboard"));
+const Imports            = page(() => import("./pages/Imports"));
+const Reports            = page(() => import("./pages/Reports"));
+const Admin              = page(() => import("./pages/Admin"));
+const AdminMinStock      = page(() => import("./pages/AdminMinStock"));
+const AuditLogPage       = page(() => import("./pages/AuditLog"));
+const OrderSupervisor    = page(() => import("./pages/OrderSupervisor"));
+const AccountsReceivable = page(() => import("./pages/AccountsReceivable"));
+const Suppliers          = page(() => import("./pages/Suppliers"));
+const Logistics          = page(() => import("./pages/Logistics"));
+const PurchaseOrderList   = page(() => import("./pages/PurchaseOrderList"));
+const PurchaseOrderDetail = page(() => import("./pages/PurchaseOrderDetail"));
+const CalendarPage       = page(() => import("./pages/Calendar"));
+const KpiChecklist       = page(() => import("./pages/KpiChecklist"));
+const KpiApprovals       = page(() => import("./pages/KpiApprovals"));
+const KpiAdmin           = page(() => import("./pages/KpiAdmin"));
+const NewProduct         = page(() => import("./pages/NewProduct"));
+const SalesReportDetail  = page(() => import("./pages/SalesReportDetail"));
+const InventoryCount     = page(() => import("./pages/InventoryCount"));
+const OrderDashboard     = page(() => import("./pages/OrderDashboard"));
+const ErkhetAuto         = page(() => import("./pages/ErkhetAuto"));
+const ReceivingList      = page(() => import("./pages/ReceivingList"));
+const ReceivingDetail    = page(() => import("./pages/ReceivingDetail"));
+const BankStatement      = page(() => import("./pages/BankStatement"));
+const ExpirationTracking = page(() => import("./pages/ExpirationTracking"));
+const Documents          = page(() => import("./pages/Documents"));
+const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
+const Attendance         = page(() => import("./pages/Attendance"));
+const AttendanceAdmin    = page(() => import("./pages/AttendanceAdmin"));
+
+// Бүх хуудсыг сул зуур (idle) background-д урьдчилан ачаална.
+// Нэг нэгээр нь ачаалж эхний хуудасны ачаалалтай өрсөлдөхгүй.
+function prefetchAllPages() {
+  let i = 0;
+  const idle: (cb: () => void) => void =
+    (window as any).requestIdleCallback
+      ? (cb) => (window as any).requestIdleCallback(cb, { timeout: 1000 })
+      : (cb) => setTimeout(cb, 150);
+  const warm = () => {
+    if (i >= _prefetchThunks.length) return;
+    const thunk = _prefetchThunks[i++];
+    thunk().catch(() => {}).finally(() => idle(warm));
+  };
+  idle(warm);
+}
 import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
 import { api, setApiBaseUrl } from "./lib/api";
 import { registerBackButtonHandler } from "./lib/backButton";
@@ -146,6 +171,14 @@ export default function App() {
       });
     }).catch(() => { /* token хүчингүй болсон → logout дуудаад Login хуудас харуулна */ });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Нэвтэрсэн үед бүх хуудсыг background-д урьдчилан ачаална → цэс шилжихэд
+  // "Loading" гарахгүй, агшин зуурын болно (chunk аль хэдийн RAM-д байна).
+  useEffect(() => {
+    if (!token) return;
+    const t = setTimeout(prefetchAllPages, 500);
+    return () => clearTimeout(t);
+  }, [token]);
 
   // Page access: permissions array (from role DB) эсвэл baseRole fallback (хуучин session)
   const can = (pageKey: string) => {
