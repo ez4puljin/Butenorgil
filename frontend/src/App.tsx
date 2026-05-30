@@ -1,40 +1,43 @@
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuthStore } from "./store/authStore";
 import Shell from "./components/layout/Shell";
 
+// Эхний дэлгэцүүд (critical path) — eager. Бусад хуудсыг lazy-аар хувааж,
+// анхны ачаалал хөнгөн, утсан дээр хурдан, RAM бага зарцуулна.
 import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import Imports from "./pages/Imports";
-import Reports from "./pages/Reports";
-import Admin from "./pages/Admin";
-import AdminMinStock from "./pages/AdminMinStock";
-import AuditLogPage from "./pages/AuditLog";
-import ManagerOrders from "./pages/ManagerOrders";
-import OrderSupervisor from "./pages/OrderSupervisor";
-import AccountsReceivable from "./pages/AccountsReceivable";
-import Suppliers from "./pages/Suppliers";
-import Logistics from "./pages/Logistics";
-import PurchaseOrderList from "./pages/PurchaseOrderList";
-import PurchaseOrderDetail from "./pages/PurchaseOrderDetail";
-import CalendarPage from "./pages/Calendar";
-import KpiChecklist from "./pages/KpiChecklist";
-import KpiApprovals from "./pages/KpiApprovals";
-import KpiAdmin from "./pages/KpiAdmin";
-import NewProduct from "./pages/NewProduct";
-import SalesReportDetail from "./pages/SalesReportDetail";
-import InventoryCount from "./pages/InventoryCount";
-import OrderDashboard from "./pages/OrderDashboard";
-import ErkhetAuto from "./pages/ErkhetAuto";
-import ReceivingList from "./pages/ReceivingList";
-import ReceivingDetail from "./pages/ReceivingDetail";
-import BankStatement from "./pages/BankStatement";
-import ExpirationTracking from "./pages/ExpirationTracking";
-import Documents from "./pages/Documents";
-import ProductSalesImport from "./pages/ProductSalesImport";
-import Attendance from "./pages/Attendance";
-import AttendanceAdmin from "./pages/AttendanceAdmin";
 import ServerConfig from "./pages/ServerConfig";
-import { useEffect, useState } from "react";
+
+// ── Lazy pages (route бүр өөрийн chunk-той — хэрэгцээтэй үед л татна) ──
+const Dashboard          = lazy(() => import("./pages/Dashboard"));
+const Imports            = lazy(() => import("./pages/Imports"));
+const Reports            = lazy(() => import("./pages/Reports"));
+const Admin              = lazy(() => import("./pages/Admin"));
+const AdminMinStock      = lazy(() => import("./pages/AdminMinStock"));
+const AuditLogPage       = lazy(() => import("./pages/AuditLog"));
+const OrderSupervisor    = lazy(() => import("./pages/OrderSupervisor"));
+const AccountsReceivable = lazy(() => import("./pages/AccountsReceivable"));
+const Suppliers          = lazy(() => import("./pages/Suppliers"));
+const Logistics          = lazy(() => import("./pages/Logistics"));
+const PurchaseOrderList   = lazy(() => import("./pages/PurchaseOrderList"));
+const PurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail"));
+const CalendarPage       = lazy(() => import("./pages/Calendar"));
+const KpiChecklist       = lazy(() => import("./pages/KpiChecklist"));
+const KpiApprovals       = lazy(() => import("./pages/KpiApprovals"));
+const KpiAdmin           = lazy(() => import("./pages/KpiAdmin"));
+const NewProduct         = lazy(() => import("./pages/NewProduct"));
+const SalesReportDetail  = lazy(() => import("./pages/SalesReportDetail"));
+const InventoryCount     = lazy(() => import("./pages/InventoryCount"));
+const OrderDashboard     = lazy(() => import("./pages/OrderDashboard"));
+const ErkhetAuto         = lazy(() => import("./pages/ErkhetAuto"));
+const ReceivingList      = lazy(() => import("./pages/ReceivingList"));
+const ReceivingDetail    = lazy(() => import("./pages/ReceivingDetail"));
+const BankStatement      = lazy(() => import("./pages/BankStatement"));
+const ExpirationTracking = lazy(() => import("./pages/ExpirationTracking"));
+const Documents          = lazy(() => import("./pages/Documents"));
+const ProductSalesImport = lazy(() => import("./pages/ProductSalesImport"));
+const Attendance         = lazy(() => import("./pages/Attendance"));
+const AttendanceAdmin    = lazy(() => import("./pages/AttendanceAdmin"));
 import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
 import { api, setApiBaseUrl } from "./lib/api";
 import { registerBackButtonHandler } from "./lib/backButton";
@@ -77,6 +80,15 @@ function Protected(props: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
   if (!token) return <Navigate to="/login" replace />;
   return <>{props.children}</>;
+}
+
+// Lazy хуудас татагдах хооронд харагдах хөнгөн spinner (Suspense fallback)
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center py-24 text-gray-400">
+      <div className="h-7 w-7 animate-spin rounded-full border-[3px] border-gray-200 border-t-[#0071E3]" />
+    </div>
+  );
 }
 
 // Permissions-д тулгуурласан smart redirect
@@ -176,6 +188,7 @@ export default function App() {
         element={
           <Protected>
             <Shell>
+              <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route
                   path="/dashboard"
@@ -271,6 +284,7 @@ export default function App() {
                 />
                 <Route path="*" element={<DefaultRedirect />} />
               </Routes>
+              </Suspense>
             </Shell>
           </Protected>
         }

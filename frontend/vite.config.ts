@@ -12,6 +12,20 @@ const httpsOpts = !process.env.VITE_NO_HTTPS && fs.existsSync(KEY) && fs.existsS
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Vendor сангуудыг тусдаа chunk болгож browser cache-д удаан хадгалуулна
+    // (апп код өөрчлөгдөхөд vendor дахин татагдахгүй → шинэчлэлт хурдан).
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom", "zustand"],
+          "vendor-motion": ["framer-motion"],
+          "vendor-scan": ["html5-qrcode"],
+        },
+      },
+    },
+  },
   server: {
     host: "0.0.0.0",
     port: 3000,

@@ -11,6 +11,12 @@ node_modules/
 dist/
 .vite/
 
+# Android build output / APK (binary — git-д хадгалахгүй)
+*.apk
+frontend/android/app/build/
+frontend/android/build/
+frontend/android/.gradle/
+
 # Data & uploads
 backend/app/data/uploads/
 backend/app/data/outputs/
