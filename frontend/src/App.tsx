@@ -86,7 +86,7 @@ function DefaultRedirect() {
 }
 
 export default function App() {
-  const { role, baseRole, permissions, token, setAuth } = useAuthStore();
+  const { role, baseRole, permissions, universalPages, token, setAuth } = useAuthStore();
   const br = baseRole ?? role ?? "";
 
   // Native app (APK) — localStorage-г sync уншина. Background-т Preferences-ээс survive-ийг шалгана.
@@ -128,6 +128,7 @@ export default function App() {
         role: d.role,
         base_role: d.base_role,
         permissions: d.permissions ?? [],
+        universalPages: d.universal_pages ?? ["expiration_tracking", "attendance"],
         tagIds: d.tag_ids ?? [],
         userId: d.user_id,
       });
@@ -136,6 +137,8 @@ export default function App() {
 
   // Page access: permissions array (from role DB) эсвэл baseRole fallback (хуучин session)
   const can = (pageKey: string) => {
+    // Universal цэс — role/permission-аас үл хамааран бүх хэрэглэгчид нээлттэй
+    if (universalPages.includes(pageKey)) return true;
     if (permissions.length > 0) return permissions.includes(pageKey);
     // Permissions байхгүй (хуучин session) → baseRole-оор fallback
     const fallback: Record<string, string[]> = {

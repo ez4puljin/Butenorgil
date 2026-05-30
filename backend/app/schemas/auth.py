@@ -8,5 +8,6 @@ class TokenOut(BaseModel):
     username: str
     nickname: str = ""
     permissions: list[str] = []
+    universal_pages: list[str] = []
     tag_ids: list[int]
     user_id: int = 0

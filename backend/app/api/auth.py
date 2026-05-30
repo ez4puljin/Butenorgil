@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user, parse_tag_ids
 from app.core.security import verify_password, create_access_token
+from app.core.permissions import get_universal_pages
 from app.models.user import User
 from app.models.role import Role
 from app.schemas.auth import TokenOut
@@ -37,6 +38,7 @@ def get_me(
         username=u.username,
         nickname=u.nickname or "",
         permissions=permissions,
+        universal_pages=get_universal_pages(),
         tag_ids=parse_tag_ids(u.tag_ids),
         user_id=u.id,
     )
@@ -63,6 +65,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         username=u.username,
         nickname=u.nickname or "",
         permissions=permissions,
+        universal_pages=get_universal_pages(),
         tag_ids=parse_tag_ids(u.tag_ids),
         user_id=u.id,
     )

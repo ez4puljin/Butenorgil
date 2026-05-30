@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.api.deps import get_db, parse_tag_ids, require_role
-from app.core.permissions import PERMISSION_MANIFEST, ALL_PERMISSION_KEY_SET
+from app.core.permissions import (
+    PERMISSION_MANIFEST, ALL_PERMISSION_KEY_SET,
+    get_universal_pages, set_universal_pages,
+)
 from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.models.role import Role
@@ -53,6 +56,9 @@ class RoleEditPayload(BaseModel):
     color: str | None = None
     base_role: str | None = None
     permissions: list[str] | None = None
+
+class UniversalPagesPayload(BaseModel):
+    keys: list[str] = []
 
 SYSTEM_ROLES = {"admin", "supervisor", "manager", "warehouse_clerk", "accountant"}
 
@@ -97,6 +103,18 @@ def list_permission_keys(_=Depends(require_role("admin"))):
     """Тохиргооны UI-д харуулах бүх цэсний key + нэр (нэгдсэн манифест).
     Шинэ цэс нэмэхэд энд автоматаар орно — Admin.tsx-д гар хийн засах хэрэггүй."""
     return PERMISSION_MANIFEST
+
+
+@router.get("/universal-pages", response_model=dict)
+def get_universal(_=Depends(require_role("admin"))):
+    """Бүх хэрэглэгчид role-оос үл хамааран харагдах (universal) цэснүүд."""
+    return {"keys": get_universal_pages()}
+
+
+@router.put("/universal-pages", response_model=dict)
+def put_universal(payload: UniversalPagesPayload, _=Depends(require_role("admin"))):
+    """Universal цэснүүдийг тохируулах (manifest-аар шүүгдэнэ)."""
+    return {"keys": set_universal_pages(payload.keys)}
 
 
 @router.get("/roles", response_model=list[dict])

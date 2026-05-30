@@ -41,5 +41,37 @@ PERMISSION_MANIFEST = [
 ALL_PERMISSION_KEYS = [p["key"] for p in PERMISSION_MANIFEST]
 ALL_PERMISSION_KEY_SET = set(ALL_PERMISSION_KEYS)
 
-# role/permission-аас үл хамааран үргэлж харагдах key-нүүд
-UNIVERSAL_KEYS = {p["key"] for p in PERMISSION_MANIFEST if p.get("universal")}
+# role/permission-аас үл хамааран үргэлж харагдах ДЕФОЛТ key-нүүд (анхны утга).
+# Бодит утга нь universal_pages.json-д хадгалагдаж, админ UI-аас өөрчлөгдөнө.
+DEFAULT_UNIVERSAL_KEYS = [p["key"] for p in PERMISSION_MANIFEST if p.get("universal")]
+UNIVERSAL_KEYS = set(DEFAULT_UNIVERSAL_KEYS)  # backward-compat
+
+
+# ── Universal pages config (admin-аар өөрчлөгддөг) ───────────────────────────
+import os as _os
+import json as _json
+
+_UNIVERSAL_FILE = _os.path.join(
+    _os.path.dirname(_os.path.dirname(__file__)), "data", "universal_pages.json"
+)
+
+
+def get_universal_pages() -> list[str]:
+    """Одоогийн universal цэснүүд. Файл байхгүй бол manifest-ийн default-ыг буцаана."""
+    try:
+        if _os.path.exists(_UNIVERSAL_FILE):
+            with open(_UNIVERSAL_FILE, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return [k for k in data if k in ALL_PERMISSION_KEY_SET]
+    except Exception:
+        pass
+    return list(DEFAULT_UNIVERSAL_KEYS)
+
+
+def set_universal_pages(keys: list[str]) -> list[str]:
+    """Universal цэснүүдийг хадгална (manifest-аар шүүж). Шинэ жагсаалтыг буцаана."""
+    valid = sorted({k for k in (keys or []) if k in ALL_PERMISSION_KEY_SET})
+    _os.makedirs(_os.path.dirname(_UNIVERSAL_FILE), exist_ok=True)
+    with open(_UNIVERSAL_FILE, "w", encoding="utf-8") as f:
+        _json.dump(valid, f, ensure_ascii=False, indent=2)
+    return valid

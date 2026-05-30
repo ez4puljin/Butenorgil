@@ -44,15 +44,11 @@ const navItems: NavItem[] = [
   { to: "/documents",          label: "Бичиг баримт",        icon: FileText,       pageKey: "documents" },
 ];
 
-// Бүх нэвтэрсэн хэрэглэгчид role/permission-аас үл хамааран ҮРГЭЛЖ харагдах цэснүүд.
-// (Backend endpoint-ууд нь аль хэдийн зөвхөн нэвтрэлт шаарддаг тул аюулгүй.)
-const UNIVERSAL_PAGES = new Set<string>(["expiration_tracking", "attendance"]);
-
 const BOTTOM_NAV_MAX = 4;
 
 export default function Shell(props: { children: React.ReactNode }) {
   const loc = useLocation();
-  const { role, baseRole, permissions, logout, username, nickname } = useAuthStore();
+  const { role, baseRole, permissions, universalPages, logout, username, nickname } = useAuthStore();
   const displayName = nickname || username;
   const effectiveRole = baseRole || role;
 
@@ -106,8 +102,9 @@ export default function Shell(props: { children: React.ReactNode }) {
     effectiveRole === "warehouse_clerk" ? "Агуулахын нярав" :
     effectiveRole === "accountant"      ? "Нягтлан" : (role ?? "-");
 
+  // Universal цэс (админ тохируулдаг) эсвэл role-ийн permission-д байгаа цэс харагдана
   const visible = navItems.filter(
-    n => UNIVERSAL_PAGES.has(n.pageKey) || permissions.includes(n.pageKey)
+    n => universalPages.includes(n.pageKey) || permissions.includes(n.pageKey)
   );
   const bottomItems = visible.slice(0, BOTTOM_NAV_MAX);
 

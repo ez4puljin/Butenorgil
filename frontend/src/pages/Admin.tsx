@@ -7,6 +7,7 @@ import {
   Package, Download, Pencil, Trash2,
   Plus, Users, UserCheck, UserX, Search, MoreHorizontal,
   ShieldCheck, Briefcase, Settings as SettingsIcon, Shield, Filter,
+  Globe, Save,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,6 +194,10 @@ export default function Admin() {
   const [roles, setRoles] = useState<RoleT[]>([]);
   // Цэсний жагсаалт — backend manifest-аас динамик (шинэ цэс автомат орно)
   const [pageKeys, setPageKeys] = useState<{ key: string; label: string }[]>(FALLBACK_PAGE_KEYS);
+  // Universal цэснүүд (role-оос үл хамааран бүгдэд харагдах) — админ тохируулна
+  const [universalSel, setUniversalSel] = useState<string[]>([]);
+  const [universalSaving, setUniversalSaving] = useState(false);
+  const [universalMsg, setUniversalMsg] = useState<Msg | null>(null);
   const [showRoleCreate, setShowRoleCreate] = useState(false);
   const [roleForm, setRoleForm] = useState({ value: "", label: "", color: "bg-gray-100 text-gray-600", base_role: "manager", permissions: [] as string[] });
   const [roleCreateLoading, setRoleCreateLoading] = useState(false);
@@ -258,10 +263,31 @@ export default function Admin() {
     } catch { /* fallback хэвээр */ }
   };
 
+  const loadUniversal = async () => {
+    try {
+      const res = await api.get("/admin/universal-pages");
+      setUniversalSel(res.data?.keys ?? []);
+    } catch { /* silent */ }
+  };
+
+  const saveUniversal = async () => {
+    setUniversalSaving(true); setUniversalMsg(null);
+    try {
+      const res = await api.put("/admin/universal-pages", { keys: universalSel });
+      setUniversalSel(res.data?.keys ?? universalSel);
+      setUniversalMsg({ ok: true, text: "Хадгалагдлаа. Хэрэглэгч дараагийн ачаалалтад шинэ цэсийг харна." });
+    } catch (e: any) {
+      setUniversalMsg({ ok: false, text: e?.response?.data?.detail ?? "Хадгалахад алдаа гарлаа" });
+    } finally {
+      setUniversalSaving(false);
+      setTimeout(() => setUniversalMsg(null), 4000);
+    }
+  };
+
   const load = async () => {
     setLoading(true); setLoadError(null);
     try {
-      const [usersRes] = await Promise.all([api.get("/admin/users"), loadRoles(), loadPageKeys()]);
+      const [usersRes] = await Promise.all([api.get("/admin/users"), loadRoles(), loadPageKeys(), loadUniversal()]);
       setUsers(usersRes.data);
     } catch (e: any) {
       setLoadError(e?.response?.data?.detail ?? "Хэрэглэгчдийг ачаалахад алдаа гарлаа");
@@ -615,6 +641,35 @@ export default function Admin() {
       {/* ═══════════════════════════ ROLES TAB ═══════════════════════════ */}
       {tab === "roles" && (
         <div className="mt-5 space-y-5">
+          {/* ── Universal цэс тохиргоо ── */}
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="flex items-center gap-2 text-[14px] font-semibold text-gray-900">
+                  <Globe size={15} className="text-amber-600"/> Нийтийн цэс (Universal)
+                </h3>
+                <p className="mt-0.5 text-[12px] text-gray-600">
+                  Эдгээр цэс нь <b>role/эрхээс үл хамааран бүх хэрэглэгчид</b> харагдана. Сонгож, өөрчилж болно.
+                </p>
+              </div>
+              <button onClick={saveUniversal} disabled={universalSaving}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3.5 py-2 text-[12.5px] font-semibold text-white hover:bg-amber-700 disabled:opacity-50">
+                {universalSaving ? <RefreshCw size={13} className="animate-spin"/> : <Save size={13}/>} Хадгалах
+              </button>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-4">
+              {pageKeys.map((p) => (
+                <label key={p.key} className="flex cursor-pointer items-center gap-2 rounded-lg bg-white px-2.5 py-1.5 text-[12px] text-gray-700 ring-1 ring-gray-200 hover:ring-amber-300">
+                  <input type="checkbox" className="h-3.5 w-3.5 rounded accent-amber-600"
+                    checked={universalSel.includes(p.key)}
+                    onChange={() => setUniversalSel((prev) => prev.includes(p.key) ? prev.filter((k) => k !== p.key) : [...prev, p.key])} />
+                  {p.label}
+                </label>
+              ))}
+            </div>
+            {universalMsg && <div className="mt-3"><StatusMsg msg={universalMsg} /></div>}
+          </div>
+
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-[15px] font-semibold text-gray-900">Албан тушаал ба эрх</h3>
