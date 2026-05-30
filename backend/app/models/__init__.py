@@ -11,3 +11,4 @@ from app.models.kpi import KpiTaskGroup, KpiTaskTemplate, KpiEmployeeTaskConfig,
 from app.models.expiration_item import ExpirationItem
 from app.models.document import DocumentGroup, DocumentFile
 from app.models.product_monthly_sales import ProductMonthlySales
+from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule

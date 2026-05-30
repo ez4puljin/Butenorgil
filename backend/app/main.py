@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, attendance_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -21,6 +21,8 @@ from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrand
 from app.models.min_stock_rule import MinStockRule  # noqa: F401 – registers table
 from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig, SettlementConfig, CrossAccountPreset, FeeConfig  # noqa: F401 – registers tables
 from app.models.audit_log import AuditLog  # noqa: F401 – registers table
+from app.models.product_monthly_sales import ProductMonthlySales  # noqa: F401 – registers table
+from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
 
@@ -78,8 +80,8 @@ def ensure_users_schema():
             conn.execute(text("UPDATE users SET base_role = role WHERE base_role = '' OR base_role IS NULL"))
 
 _ROLE_PERMISSIONS = {
-    "admin":           "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,admin_panel,min_stock,audit_log,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking,documents",
-    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking",
+    "admin":           "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,admin_panel,min_stock,audit_log,kpi_checklist,kpi_approvals,kpi_admin,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking,documents,attendance_admin",
+    "supervisor":      "dashboard,imports,reports,accounts_receivable,order,receivings,suppliers,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,erkhet_auto,bank_statements,expiration_tracking,attendance_admin",
     "manager":         "dashboard,imports,reports,order,receivings,logistics,calendar,kpi_checklist,kpi_approvals,new_product,sales_report,inventory_count,expiration_tracking",
     "warehouse_clerk": "order,receivings,calendar,kpi_checklist,kpi_approvals,expiration_tracking",
     "accountant":      "dashboard,reports,accounts_receivable,order,receivings,calendar,kpi_checklist,kpi_approvals,sales_report,bank_statements,expiration_tracking",
@@ -119,6 +121,13 @@ def ensure_new_permissions_backfill():
             # role-д автомат нэмнэ. Custom admin role үүсгэвэл мөн.
             if (r.value == "admin" or (r.base_role or "").lower() == "admin") and "documents" not in perms:
                 perms.add("documents")
+                changed = True
+            # 2026-05: Цаг бүртгэлийн админ хяналт — admin + supervisor role-д нэмнэ.
+            # (Self-service 'attendance' нь universal тул permission шаардахгүй.)
+            _br = (r.base_role or "").lower()
+            if (r.value in ("admin", "supervisor") or _br in ("admin", "supervisor")) \
+                    and "attendance_admin" not in perms:
+                perms.add("attendance_admin")
                 changed = True
             if changed:
                 # Sort-аар тогтвортой дараалал хадгалах
@@ -217,6 +226,28 @@ def ensure_product_monthly_sales_schema():
     import os
     pms_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "monthly_sales")
     os.makedirs(pms_dir, exist_ok=True)
+
+
+def ensure_attendance_schema():
+    """Цаг бүртгэл (attendance_*) — шинэ table бол create_all() үүсгэнэ.
+    Глобал default ажлын хуваарь (employee_id=NULL) байхгүй бол үүсгэнэ."""
+    from app.models.attendance import AttendanceSchedule
+    db = SessionLocal()
+    try:
+        has_default = db.query(AttendanceSchedule).filter(
+            AttendanceSchedule.employee_id.is_(None)
+        ).first()
+        if not has_default:
+            db.add(AttendanceSchedule(
+                employee_id=None,
+                work_days="0,1,2,3,4,5",   # Дав–Бямба
+                work_start="09:00",
+                work_end="18:00",
+                grace_minutes=10,
+            ))
+            db.commit()
+    finally:
+        db.close()
 
 def ensure_po_lines_schema():
     with engine.begin() as conn:
@@ -699,6 +730,7 @@ def startup():
     ensure_expiration_items_schema()
     ensure_documents_schema()
     ensure_product_monthly_sales_schema()
+    ensure_attendance_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()
     ensure_bank_transactions_schema()
@@ -786,6 +818,7 @@ app.include_router(bank_statements_router)
 app.include_router(expiration_router)
 app.include_router(documents_router)
 app.include_router(product_monthly_sales_router)
+app.include_router(attendance_router)
 
 @app.get("/health")
 def health():

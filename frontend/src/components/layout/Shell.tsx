@@ -6,6 +6,7 @@ import {
   FileText, Building2, Truck, X, CalendarDays, CheckSquare,
   BadgeCheck, Settings2, Sparkles, BarChart3, MoreHorizontal,
   ChevronRight, User, Menu, ClipboardCheck, Bot, PackageCheck, Landmark, History, Timer,
+  Clock, CalendarClock,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 
@@ -38,12 +39,14 @@ const navItems: NavItem[] = [
   { to: "/erkhet-auto",         label: "Erkhet автомат",     icon: Bot,            pageKey: "erkhet_auto" },
   { to: "/bank-statements",    label: "Тооцоо хаах",        icon: Landmark,       pageKey: "bank_statements" },
   { to: "/expiration",         label: "Хугацааны хяналт",    icon: Timer,          pageKey: "expiration_tracking" },
+  { to: "/attendance",         label: "Цаг бүртгэл",         icon: Clock,          pageKey: "attendance" },
+  { to: "/attendance/admin",   label: "Цаг бүртгэл (Админ)", icon: CalendarClock,  pageKey: "attendance_admin" },
   { to: "/documents",          label: "Бичиг баримт",        icon: FileText,       pageKey: "documents" },
 ];
 
 // Бүх нэвтэрсэн хэрэглэгчид role/permission-аас үл хамааран ҮРГЭЛЖ харагдах цэснүүд.
 // (Backend endpoint-ууд нь аль хэдийн зөвхөн нэвтрэлт шаарддаг тул аюулгүй.)
-const UNIVERSAL_PAGES = new Set<string>(["expiration_tracking"]);
+const UNIVERSAL_PAGES = new Set<string>(["expiration_tracking", "attendance"]);
 
 const BOTTOM_NAV_MAX = 4;
 

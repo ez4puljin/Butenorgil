@@ -31,6 +31,8 @@ import BankStatement from "./pages/BankStatement";
 import ExpirationTracking from "./pages/ExpirationTracking";
 import Documents from "./pages/Documents";
 import ProductSalesImport from "./pages/ProductSalesImport";
+import Attendance from "./pages/Attendance";
+import AttendanceAdmin from "./pages/AttendanceAdmin";
 import ServerConfig from "./pages/ServerConfig";
 import { useEffect, useState } from "react";
 import { isNativeApp, bootstrapServerUrlIntoLocalStorage, getServerUrlSync } from "./lib/serverConfig";
@@ -61,6 +63,8 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "bank_statements",     path: "/bank-statements" },
   { key: "expiration_tracking", path: "/expiration" },
   { key: "documents",           path: "/documents" },
+  { key: "attendance",          path: "/attendance" },
+  { key: "attendance_admin",    path: "/attendance/admin" },
 ];
 
 // Permissions-аас эхний зөвшөөрөгдсөн хуудасны замыг олно
@@ -249,6 +253,14 @@ export default function App() {
                 <Route
                   path="/expiration"
                   element={<ExpirationTracking />}
+                />
+                <Route
+                  path="/attendance"
+                  element={<Attendance />}
+                />
+                <Route
+                  path="/attendance/admin"
+                  element={can("attendance_admin") ? <AttendanceAdmin /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/documents"
