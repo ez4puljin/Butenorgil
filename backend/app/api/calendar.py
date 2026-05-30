@@ -32,8 +32,8 @@ class EventUpdateIn(BaseModel):
     date: Optional[date_type] = None   # 2026-05: drag-and-drop reschedule
 
 
-def _serialize(ev: CalendarEvent, db: Session) -> dict:
-    creator = db.query(User).filter(User.id == ev.created_by_user_id).first()
+def _row_dict(ev: CalendarEvent, creator) -> dict:
+    """Урьдчилан татсан creator-аас event dict бүтээнэ (N+1-гүй)."""
     return {
         "id": ev.id,
         "date": ev.date.isoformat(),
@@ -44,6 +44,24 @@ def _serialize(ev: CalendarEvent, db: Session) -> dict:
         "created_by_username": creator.username if creator else "",
         "created_at": ev.created_at.isoformat() if ev.created_at else None,
     }
+
+
+def _serialize(ev: CalendarEvent, db: Session) -> dict:
+    """Ганц event (create/update хариунд)."""
+    creator = (
+        db.query(User).filter(User.id == ev.created_by_user_id).first()
+        if ev.created_by_user_id else None
+    )
+    return _row_dict(ev, creator)
+
+
+def _serialize_many(events: list, db: Session) -> list:
+    """Сарын event-уудыг batch serialize — creator-уудыг нэг л query-ээр (N+1-гүй)."""
+    if not events:
+        return []
+    uids = {e.created_by_user_id for e in events if e.created_by_user_id}
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(uids)).all()} if uids else {}
+    return [_row_dict(e, users.get(e.created_by_user_id)) for e in events]
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -66,7 +84,7 @@ def list_events(
         .order_by(CalendarEvent.date, CalendarEvent.created_at)
         .all()
     )
-    return [_serialize(e, db) for e in events]
+    return _serialize_many(events, db)
 
 
 @router.post("/events")
