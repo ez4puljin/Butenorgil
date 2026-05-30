@@ -1242,6 +1242,27 @@ def set_lines(
     # Build lookup map for existing lines
     line_map = {l.product_id: l for l in po.lines}
 
+    # ── Брэнд тус бүрийн захиалгын нийт тоог (өмнө) хадгална — "брэнд 0 болгосон"
+    #    үйлдлийг илрүүлж audit-д бичихэд ашиглана ──
+    _line_prod = {
+        p.id: p for p in db.query(Product).filter(
+            Product.id.in_([l.product_id for l in po.lines])
+        ).all()
+    } if po.lines else {}
+
+    def _brand_totals() -> dict[str, list]:
+        """{brand: [нийт_qty_box, мөрийн_тоо]}"""
+        out: dict[str, list] = {}
+        for l in po.lines:
+            pr = _line_prod.get(l.product_id)
+            br = (pr.brand if pr else "") or "(брэндгүй)"
+            agg = out.setdefault(br, [0.0, 0])
+            agg[0] += float(l.order_qty_box or 0)
+            agg[1] += 1
+        return out
+
+    brand_before = _brand_totals()
+
     # Audit log хадгалах: өөрчлөгдсөн line бүрт өмнөх ба шинэ snapshot
     audit_entries: list[dict] = []
 
@@ -1329,6 +1350,24 @@ def set_lines(
                     "brand": p.brand or "",
                     "effective_status": effective_st,
                 },
+            })
+
+    # ── Брэнд 0 болгосон эсэхийг илрүүлж audit-д бичих ──
+    # Тухайн брэндийн захиалгын нийт тоо >0 байснаа 0 болсон бол (бүх барааны
+    # тоог тэглэсэн) тусдаа "po_brand_zeroed" бүртгэл үүсгэнэ.
+    brand_after = _brand_totals()
+    for br, (before_qty, n_lines) in brand_before.items():
+        after_qty = brand_after.get(br, [0.0, 0])[0]
+        if before_qty > 0 and after_qty == 0:
+            audit_entries.append({
+                "action": "po_brand_zeroed",
+                "entity_type": "purchase_order",
+                "entity_id": int(po.id),
+                "parent_type": "purchase_order",
+                "parent_id": int(po.id),
+                "before": {"brand": br, "total_order_qty_box": round(before_qty, 2), "line_count": n_lines},
+                "after":  {"brand": br, "total_order_qty_box": 0.0, "line_count": n_lines},
+                "extra":  {"brand": br, "order_date": str(po.order_date) if po.order_date else ""},
             })
 
     # Audit row-уудыг үндсэн commit-ийн өмнө нэмнэ — ингэснээр transaction

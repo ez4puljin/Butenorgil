@@ -33,38 +33,61 @@ type AuditRow = {
 };
 
 const ACTION_LABEL: Record<string, string> = {
-  // Purchase order
-  po_set_lines: "PO мөр шинэчлэх",
-  po_delete: "PO устгах",
-  po_delete_line: "PO мөр устгах",
-  po_archive: "PO архивлах",
-  po_unarchive: "PO архиваас буцаах",
-  po_force_status_brand: "Брэндийн статус албадан",
-  po_force_status_all: "Бүх статус албадан",
-  po_brand_advance: "Брэндийн статус ахиулах",
-  // Receiving
-  receiving_set_status: "Тулгалт статус солих",
-  receiving_archive: "Тулгалт архивлах",
-  receiving_unarchive: "Тулгалт архиваас буцаах",
-  receiving_delete: "Тулгалт session устгах",
-  receiving_delete_line: "Тулгалт мөр устгах",
-  receiving_unmatch_brand: "Брэнд тулгалт буцаах",
+  // Захиалга (Purchase order)
+  po_set_lines: "Захиалга — тоо шинэчлэх",
+  po_brand_zeroed: "Захиалга — брэндийн тоог 0 болгосон",
+  po_delete: "Захиалга устгах",
+  po_delete_line: "Захиалга — мөр устгах",
+  po_archive: "Захиалга архивлах",
+  po_unarchive: "Захиалга архиваас буцаах",
+  po_force_status_brand: "Захиалга — брэндийн статус албадан солих",
+  po_force_status_all: "Захиалга — бүх статус албадан солих",
+  po_brand_advance: "Захиалга — брэндийн статус ахиулах",
+  // Бараа тулгаж авах (Receiving)
+  receiving_set_status: "Бараа тулгаж авах — статус солих",
+  receiving_archive: "Бараа тулгаж авах — архивлах",
+  receiving_unarchive: "Бараа тулгаж авах — архиваас буцаах",
+  receiving_delete: "Бараа тулгаж авах — бүртгэл устгах",
+  receiving_delete_line: "Бараа тулгаж авах — мөр устгах",
+  receiving_unmatch_brand: "Бараа тулгаж авах — брэнд тулгалт буцаах",
+  // Бичиг баримт (Documents)
+  document_group_delete: "Бичиг баримт — бүлэг устгах",
+  document_file_delete: "Бичиг баримт — файл устгах",
+  // Цаг бүртгэл (Attendance)
+  attendance_punch_in: "Цаг бүртгэл — ирсэн",
+  attendance_punch_out: "Цаг бүртгэл — явсан",
+  attendance_adjustment_approved: "Цаг бүртгэл — нөхөн бүртгэл зөвшөөрсөн",
+  attendance_adjustment_rejected: "Цаг бүртгэл — нөхөн бүртгэл татгалзсан",
+  attendance_schedule_set: "Цаг бүртгэл — ажлын хуваарь тохируулсан",
+  // Сарын борлуулалт (Product monthly sales)
+  product_monthly_sales_import: "Сарын борлуулалт — импорт",
+  product_monthly_sales_delete: "Сарын борлуулалт — устгах",
+  // Тооцоо хаах (Bank)
+  bank_statement_swap_debit_credit: "Тооцоо хаах — Дебит/Кредит солих",
 };
 
 const PARENT_LABEL: Record<string, string> = {
   purchase_order: "Захиалга",
-  receiving_session: "Тулгалт",
+  receiving_session: "Бараа тулгаж авах",
+  document_group: "Бичиг баримт",
+  attendance_punch: "Цаг бүртгэл",
+  attendance_adjustment: "Цаг бүртгэл",
+  attendance_schedule: "Цаг бүртгэл",
+  product_monthly_sales: "Сарын борлуулалт",
 };
 
+/** created_at нь сервер дээр UTC (naive, Z-гүй) хадгалагддаг.
+ *  Үүнийг UTC гэж үзээд Улаанбаатарын цаг (UTC+8) руу хөрвүүлж харуулна.
+ *  (Гар утасны runtime-аас үл хамаарахын тулд +8ц-ийг гараар нэмж тооцов.) */
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";
   try {
-    const d = new Date(iso);
-    // UTC → Ulaanbaatar timezone (+08)
-    return d.toLocaleString("mn-MN", {
-      year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit",
-    });
+    const utc = /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + "Z";
+    const d = new Date(utc);
+    if (isNaN(d.getTime())) return iso;
+    const ub = new Date(d.getTime() + 8 * 3600 * 1000);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${ub.getUTCFullYear()}-${p(ub.getUTCMonth() + 1)}-${p(ub.getUTCDate())} ${p(ub.getUTCHours())}:${p(ub.getUTCMinutes())}:${p(ub.getUTCSeconds())}`;
   } catch {
     return iso;
   }
@@ -340,7 +363,7 @@ export default function AuditLogPage() {
                                 <Activity size={11}/> Мэдээлэл
                               </div>
                               <div className="space-y-1 text-[11px]">
-                                <div className="flex items-center gap-1.5"><Clock size={11} className="text-gray-400"/> <span className="text-gray-500">UTC:</span> <span className="font-mono">{r.created_at}</span></div>
+                                <div className="flex items-center gap-1.5"><Clock size={11} className="text-gray-400"/> <span className="text-gray-500">Цаг (УБ):</span> <span className="font-mono">{fmtTime(r.created_at)}</span></div>
                                 <div className="flex items-center gap-1.5"><User size={11} className="text-gray-400"/> <span className="text-gray-500">User:</span> {r.username} (id={r.user_id}, role={r.role || "—"})</div>
                                 <div className="flex items-center gap-1.5"><Globe size={11} className="text-gray-400"/> <span className="text-gray-500">IP:</span> <span className="font-mono">{r.ip_address || "—"}</span></div>
                                 <div className="flex items-center gap-1.5"><Hash size={11} className="text-gray-400"/> <span className="text-gray-500">Entity:</span> {r.entity_type} #{r.entity_id}</div>
