@@ -11,6 +11,7 @@ from sqlalchemy import func
 
 from app.api.deps import get_db, get_current_user, require_role, parse_tag_ids
 from app.core.audit import audit
+from app.core import dashboard_cache
 from app.models.purchase_order import (
     PurchaseOrder, PurchaseOrderLine, PurchaseOrderBrandVehicle,
     PurchaseOrderBrandStatus, OrderExtraLine, POShipment, POShipmentLine,
@@ -726,12 +727,8 @@ def set_order_vehicle(
     }
 
 
-@router.get("/dashboard-stats")
-def purchase_order_dashboard_stats(
-    db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    """Хяналтын самбарт харуулах захиалгын хураангуй статистик."""
+def _compute_po_dashboard_stats(db: Session) -> dict:
+    """Захиалгын хураангуй статистик (cache-д тооцоолох цөм)."""
     orders = db.query(PurchaseOrder).order_by(PurchaseOrder.order_date.desc()).all()
 
     by_status: dict[str, int] = {s: 0 for s in STATUS_SEQUENCE}
@@ -775,6 +772,17 @@ def purchase_order_dashboard_stats(
         "transit_boxes":  round(transit_boxes, 0),
         "latest_active":  latest_active,
     }
+
+
+dashboard_cache.register("po_dashboard_stats", _compute_po_dashboard_stats)
+
+
+@router.get("/dashboard-stats")
+def purchase_order_dashboard_stats(
+    _: User = Depends(get_current_user),
+):
+    """Захиалгын хураангуй статистик — cache-аас шууд (бэлэн snapshot)."""
+    return dashboard_cache.cached("po_dashboard_stats")
 
 
 @router.get("/master-check")

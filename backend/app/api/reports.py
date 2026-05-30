@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 
 from app.api.deps import get_db, require_role
+from app.core import dashboard_cache
 from app.models.order import Order, OrderLine
 from app.models.product import Product
 from app.schemas.order import SupervisorOverrideIn
@@ -27,16 +28,32 @@ TYPE_FOLDER_MAP = {
     7: "Дарагдсан барааны тайлан",
 }
 
-@router.get("/warehouse-stats")
-def warehouse_stats(_=Depends(require_role("admin", "supervisor", "manager"))):
-    """Done.py-тай ижил логикоор Үлдэгдэл тайлан файлаас агуулахын хураангуй буцаана."""
-    folder = UPLOAD_DIR / TYPE_FOLDER_MAP[5]  # Үлдэгдэл тайлан
+def _warehouse_folder():
+    return UPLOAD_DIR / TYPE_FOLDER_MAP[5]  # Үлдэгдэл тайлан
+
+
+def _warehouse_latest_file():
+    folder = _warehouse_folder()
     if not folder.exists():
-        return {"available": False}
+        return None
     files = sorted(folder.glob("*.xl*"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not files:
+    return files[0] if files else None
+
+
+def _warehouse_sig():
+    """Хамгийн сүүлийн Үлдэгдэл файлын mtime — шинэ файл орвол snapshot хуучирна."""
+    f = _warehouse_latest_file()
+    try:
+        return f.stat().st_mtime if f else 0
+    except Exception:
+        return 0
+
+
+def _compute_warehouse_stats(db=None) -> dict:
+    """Үлдэгдэл тайлан файлаас агуулахын хураангуй (cache-д тооцоолох цөм)."""
+    latest = _warehouse_latest_file()
+    if not latest:
         return {"available": False}
-    latest = files[0]
     try:
         from app.scripts.ulailt_report import get_stats
         stats = get_stats(str(latest))
@@ -47,6 +64,15 @@ def warehouse_stats(_=Depends(require_role("admin", "supervisor", "manager"))):
         return stats
     except Exception as e:
         return {"available": False, "error": str(e)}
+
+
+dashboard_cache.register("warehouse_stats", _compute_warehouse_stats, _warehouse_sig)
+
+
+@router.get("/warehouse-stats")
+def warehouse_stats(_=Depends(require_role("admin", "supervisor", "manager"))):
+    """Агуулахын хураангуй — cache-аас шууд (бэлэн snapshot)."""
+    return dashboard_cache.cached("warehouse_stats")
 
 
 @router.get("/status")

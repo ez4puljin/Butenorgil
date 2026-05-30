@@ -9,6 +9,7 @@ import urllib.request
 import base64
 
 from app.api.deps import require_role
+from app.core import dashboard_cache
 
 router = APIRouter(prefix="/accounts-receivable", tags=["accounts-receivable"])
 
@@ -191,9 +192,8 @@ def send_sms(
 
 # ── AR Dashboard stats endpoint ───────────────────────────────────────────────
 
-@router.get("/dashboard-stats")
-def ar_dashboard_stats(_=Depends(require_role("admin", "supervisor", "accountant"))):
-    """Lightweight summary for the main Dashboard page."""
+def _compute_ar_dashboard_stats(db=None) -> dict:
+    """Авлага/өглөгийн хураангуй (cache-д тооцоолох цөм)."""
     ar_file = _latest(AR_DIR)
     ci_file = _latest(CI_DIR)
 
@@ -251,6 +251,26 @@ def ar_dashboard_stats(_=Depends(require_role("admin", "supervisor", "accountant
 
     except Exception as e:
         return {"available": False, "error": str(e)}
+
+
+def _ar_sig():
+    """AR + CI файлуудын mtime — аль нэг нь шинэчлэгдвэл snapshot хуучирна."""
+    sig = []
+    for f in (_latest(AR_DIR), _latest(CI_DIR)):
+        try:
+            sig.append(f.stat().st_mtime if f else 0)
+        except Exception:
+            sig.append(0)
+    return tuple(sig)
+
+
+dashboard_cache.register("ar_dashboard_stats", _compute_ar_dashboard_stats, _ar_sig)
+
+
+@router.get("/dashboard-stats")
+def ar_dashboard_stats(_=Depends(require_role("admin", "supervisor", "accountant"))):
+    """Авлага/өглөгийн хураангуй — cache-аас шууд (бэлэн snapshot)."""
+    return dashboard_cache.cached("ar_dashboard_stats")
 
 
 # ── Merged data endpoint ──────────────────────────────────────────────────────

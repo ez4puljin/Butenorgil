@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.api.deps import get_db, parse_tag_ids, require_role
+from app.core import dashboard_cache
 from app.core.permissions import (
     PERMISSION_MANIFEST, ALL_PERMISSION_KEY_SET,
     get_universal_pages, set_universal_pages,
@@ -347,9 +348,8 @@ def download_master(_=Depends(require_role("admin", "supervisor", "manager"))):
     )
 
 
-@router.get("/dashboard-stats", response_model=dict)
-def dashboard_stats(_=Depends(require_role("admin", "supervisor", "manager"))):
-    """Master нэгтгэлийн мэдээллийн чанарын шинжилгээ."""
+def _compute_dashboard_stats(db=None) -> dict:
+    """Master нэгтгэлийн мэдээллийн чанарын шинжилгээ (cache-д тооцоолох цөм)."""
     if not MASTER_FILE.exists():
         return {"available": False, "rows": []}
 
@@ -421,6 +421,23 @@ def dashboard_stats(_=Depends(require_role("admin", "supervisor", "manager"))):
         "barcode_col_exists": "Баркод" in df.columns,
         "rows": rows,
     }
+
+
+def _master_file_sig():
+    """MASTER_FILE-ийн mtime — файл өөрчлөгдвөл snapshot хуучирна."""
+    try:
+        return MASTER_FILE.stat().st_mtime if MASTER_FILE.exists() else 0
+    except Exception:
+        return 0
+
+
+dashboard_cache.register("admin_dashboard_stats", _compute_dashboard_stats, _master_file_sig)
+
+
+@router.get("/dashboard-stats", response_model=dict)
+def dashboard_stats(_=Depends(require_role("admin", "supervisor", "manager"))):
+    """Master нэгтгэлийн чанарын шинжилгээ — cache-аас шууд (бэлэн snapshot)."""
+    return dashboard_cache.cached("admin_dashboard_stats")
 
 
 @router.get("/dashboard-products", response_model=dict)

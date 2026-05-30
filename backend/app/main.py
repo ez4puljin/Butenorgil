@@ -815,6 +815,27 @@ async def schedule_hourly_backup():
     asyncio.create_task(_hourly_backup_loop())
 
 
+async def _dashboard_warm_loop():
+    """Хянах самбарын snapshot-уудыг урьдчилан бэлдэж, тогтмол шинэ байлгана.
+    Ингэснээр аль ч төхөөрөмж Хянах самбар нээхэд бэлэн өгөгдөл шууд очно
+    (хүнд тооцоолол background-д л явна). Эх файл өөрчлөгдвөл автомат шинэчилнэ."""
+    from app.core import dashboard_cache
+    # Server бүрэн босох хүртэл түр хүлээгээд эхний warm хийнэ
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await asyncio.to_thread(dashboard_cache.warm_all)
+        except Exception as e:
+            print(f"[dashboard] warm алдаа: {e}")
+        await asyncio.sleep(60)  # 60с тутамд snapshot-уудыг шинэ байлгана
+
+
+@app.on_event("startup")
+async def schedule_dashboard_warm():
+    """Хянах самбарын cache-ийг урьдчилан халаах background loop."""
+    asyncio.create_task(_dashboard_warm_loop())
+
+
 def ensure_calendar_labels_seeded():
     """Calendar label default-уудыг суулгана (зөвхөн хоосон үед).
 
