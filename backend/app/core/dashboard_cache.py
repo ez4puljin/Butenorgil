@@ -134,6 +134,42 @@ def cached(key: str) -> Any:
     return data
 
 
+def cached_dynamic(key: str, compute_fn: Callable, sig: Any) -> Any:
+    """Параметрт endpoint-д зориулсан cache (урьдчилан register шаардахгүй).
+
+    key  — caller параметрээ оруулж бүтээсэн өвөрмөц түлхүүр
+           (жишээ: f"sales_dash:{region}:{year}:{month}").
+    compute_fn(db) -> data — тооцоолох функц (cache шинэ session нээж дуудна).
+    sig  — caller-ийн тооцоолсон "хувилбар" (жишээ нь импортын лог id + файл mtime).
+           sig өөрчлөгдвөл snapshot хуучирна.
+
+    Stale-while-revalidate: хуучин snapshot-ыг ШУУД буцаагаад шинийг
+    background-д тооцоолно. Эхний удаа л синхрон.
+    """
+    with _lock:
+        entry = _cache.get(key)
+        cur_ver = _version
+        fresh = bool(entry and entry["version"] == cur_ver and entry["sig"] == sig)
+        spawn = False
+        if entry and not fresh and key not in _recomputing:
+            _recomputing.add(key)
+            spawn = True
+
+    if entry and fresh:
+        return entry["data"]
+
+    if entry is not None:
+        if spawn:
+            threading.Thread(
+                target=_bg_recompute, args=(key, compute_fn, cur_ver, sig), daemon=True
+            ).start()
+        return entry["data"]
+
+    data = _compute(compute_fn)
+    _store(key, data, cur_ver, sig)
+    return data
+
+
 def warm(key: str) -> None:
     """Нэг snapshot-ыг шаардлагатай бол (дахин) тооцоолно — startup/warmer-д.
     Аль хэдийн шинэ (файл өөрчлөгдөөгүй) бол алгасна — дэмий ачаалал үүсгэхгүй."""

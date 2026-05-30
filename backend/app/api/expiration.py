@@ -67,11 +67,8 @@ class ItemUpdateIn(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _serialize(it: ExpirationItem, db: Session) -> dict:
-    p = db.query(Product).filter(Product.id == it.product_id).first()
-    creator = db.query(User).filter(User.id == it.created_by_id).first() if it.created_by_id else None
-    archiver = db.query(User).filter(User.id == it.archived_by_id).first() if it.archived_by_id else None
-    today = date_type.today()
+def _row_dict(it: ExpirationItem, p, creator, archiver, today) -> dict:
+    """Урьдчилан татсан Product/User объектуудаас мөрийн dict бүтээнэ (N+1-гүй)."""
     days_left = (it.expiration_date - today).days if it.expiration_date else 0
     total_qty = (it.qty_floor or 0) + (it.qty_warehouse or 0)
     return {
@@ -100,6 +97,35 @@ def _serialize(it: ExpirationItem, db: Session) -> dict:
         "created_by_username": creator.username if creator else "",
         "updated_at": it.updated_at.isoformat() if it.updated_at else None,
     }
+
+
+def _serialize(it: ExpirationItem, db: Session) -> dict:
+    """Ганц item serialize (create/update/status зэрэг ганц мөрийн хариунд)."""
+    p = db.query(Product).filter(Product.id == it.product_id).first()
+    creator = db.query(User).filter(User.id == it.created_by_id).first() if it.created_by_id else None
+    archiver = db.query(User).filter(User.id == it.archived_by_id).first() if it.archived_by_id else None
+    return _row_dict(it, p, creator, archiver, date_type.today())
+
+
+def _serialize_many(items: list, db: Session) -> list:
+    """Жагсаалтыг batch-аар serialize — Product/User-ийг нэг л query-ээр татна (N+1-гүй)."""
+    if not items:
+        return []
+    pids = {it.product_id for it in items if it.product_id}
+    uids: set = set()
+    for it in items:
+        if it.created_by_id:
+            uids.add(it.created_by_id)
+        if it.archived_by_id:
+            uids.add(it.archived_by_id)
+    prods = {p.id: p for p in db.query(Product).filter(Product.id.in_(pids)).all()} if pids else {}
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(uids)).all()} if uids else {}
+    today = date_type.today()
+    return [
+        _row_dict(it, prods.get(it.product_id), users.get(it.created_by_id),
+                  users.get(it.archived_by_id), today)
+        for it in items
+    ]
 
 
 def _join_csv(values) -> str:
@@ -168,7 +194,7 @@ def list_items(
         )
 
     items = q.order_by(ExpirationItem.expiration_date.asc(), ExpirationItem.id.desc()).all()
-    return [_serialize(it, db) for it in items]
+    return _serialize_many(items, db)
 
 
 @router.post("/items")
@@ -362,21 +388,24 @@ def get_stats(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Top-level статистик — header card-д хэрэглэхэд."""
+    """Top-level статистик — header card-д хэрэглэхэд.
+    Бүх мөрийг Python-д ачаалахын оронд DB-side COUNT ашиглана (хурдан, index-тэй)."""
     today = date_type.today()
     soon_end = today + timedelta(days=30)
-    all_items = db.query(ExpirationItem).filter(ExpirationItem.status != "archived").all()
-    expired = sum(1 for i in all_items if i.expiration_date and i.expiration_date < today)
-    expiring_soon = sum(
-        1 for i in all_items
-        if i.expiration_date and today <= i.expiration_date <= soon_end
-    )
-    by_status = {}
-    for s in ("review", "city_return", "internal_sale"):
-        by_status[s] = sum(1 for i in all_items if i.status == s)
+    active = db.query(ExpirationItem).filter(ExpirationItem.status != "archived")
+    total_active = active.count()
+    expired = active.filter(ExpirationItem.expiration_date < today).count()
+    expiring_soon = active.filter(
+        ExpirationItem.expiration_date >= today,
+        ExpirationItem.expiration_date <= soon_end,
+    ).count()
+    by_status = {
+        s: db.query(ExpirationItem).filter(ExpirationItem.status == s).count()
+        for s in ("review", "city_return", "internal_sale")
+    }
     archived_count = db.query(ExpirationItem).filter(ExpirationItem.status == "archived").count()
     return {
-        "total_active": len(all_items),
+        "total_active": total_active,
         "expired": expired,
         "expiring_soon": expiring_soon,
         "by_status": by_status,

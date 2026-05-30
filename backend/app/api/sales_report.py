@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from collections import defaultdict
 
 from app.api.deps import get_current_user, get_db, require_role
+from app.core import dashboard_cache
+from app.core.db import SessionLocal
 from app.models.user import User
 from app.models.sales_report import SalesImportLog, SalesCacheRow
 from app.services.sales_report_parser import parse_and_store
@@ -279,15 +281,8 @@ def latest_imports(
 
 # ── Dashboard ──────────────────────────────────────────────────
 
-@router.get("/dashboard")
-def get_dashboard(
-    region: str | None = None,
-    year:   int | None = None,
-    month:  int | None = None,
-    db: Session = Depends(get_db),
-    _: User     = Depends(get_current_user),
-):
-    """Return pre-computed aggregates from sales_cache_rows for the dashboard."""
+def _compute_sales_dashboard(db: Session, region, year, month) -> dict:
+    """sales_cache_rows-аас dashboard aggregate тооцоолох цөм (cache-д ашиглана)."""
     q = db.query(SalesCacheRow)
     if region:
         q = q.filter(SalesCacheRow.region == region)
@@ -412,6 +407,62 @@ def get_dashboard(
         "customer_ranks":  customer_ranks,
         "brand_ranks":     brand_ranks,
     }
+
+
+def _sales_sig(db: Session):
+    """Борлуулалтын өгөгдлийн 'хувилбар' — импорт хийгдвэл өөрчлөгдөнө.
+    (импортын лог тоо + хамгийн сүүлийн id) + excluded-brands файлын mtime."""
+    from sqlalchemy import func as _func
+    try:
+        n, mx = db.query(_func.count(SalesImportLog.id), _func.max(SalesImportLog.id)).one()
+    except Exception:
+        n, mx = 0, 0
+    try:
+        excl_m = EXCLUDED_BRANDS_FILE.stat().st_mtime if EXCLUDED_BRANDS_FILE.exists() else 0
+    except Exception:
+        excl_m = 0
+    return (n, mx, excl_m)
+
+
+def _sales_sig_noarg():
+    """register()-д зориулсан (өөрийн session нээдэг) sig wrapper."""
+    db = SessionLocal()
+    try:
+        return _sales_sig(db)
+    finally:
+        db.close()
+
+
+# Default (шүүлтгүй, бүх өгөгдөл) combo — frontend-ийн анхны ачаалал. Хамгийн хүнд
+# тул startup + 60с warmer-аар урьдчилан бэлдэж, эхний хэрэглэгч ч хүлээхгүй.
+dashboard_cache.register(
+    "sales_dashboard_all",
+    lambda db: _compute_sales_dashboard(db, None, None, None),
+    _sales_sig_noarg,
+)
+
+
+@router.get("/dashboard")
+def get_dashboard(
+    region: str | None = None,
+    year:   int | None = None,
+    month:  int | None = None,
+    db: Session = Depends(get_db),
+    _: User     = Depends(get_current_user),
+):
+    """sales_cache_rows-аас dashboard aggregate — cache-аас шууд (бэлэн snapshot).
+    547K мөрийн хүнд тооцоолол зөвхөн импорт өөрчлөгдөхөд background-д дахин хийгдэнэ."""
+    # Шүүлтгүй default — урьдчилан халаасан snapshot (хамгийн түгээмэл, хамгийн хүнд)
+    if not region and not year and not month:
+        return dashboard_cache.cached("sales_dashboard_all")
+    # Шүүлттэй — dynamic cache (combo бүр өөрийн snapshot, lazy)
+    sig = _sales_sig(db)
+    key = f"sales_dash:{region or ''}:{year or ''}:{month or ''}"
+    return dashboard_cache.cached_dynamic(
+        key,
+        lambda cdb: _compute_sales_dashboard(cdb, region, year, month),
+        sig,
+    )
 
 
 # ── Instructions ───────────────────────────────────────────────
