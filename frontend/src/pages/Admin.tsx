@@ -51,7 +51,9 @@ const COLOR_OPTIONS = [
   { value: "bg-gray-100 text-gray-600",       label: "Саарал" },
 ];
 
-const PAGE_KEYS = [
+// Fallback — backend /admin/permission-keys ажиллахгүй үед ашиглана.
+// Үндсэн эх сурвалж нь backend manifest (core/permissions.py).
+const FALLBACK_PAGE_KEYS = [
   { key: "order",               label: "Захиалга" },
   { key: "receivings",          label: "Бараа тулгаж авах" },
   { key: "kpi_checklist",       label: "Өдрийн даалгавар" },
@@ -73,6 +75,8 @@ const PAGE_KEYS = [
   { key: "erkhet_auto",         label: "Erkhet автомат" },
   { key: "bank_statements",     label: "Тооцоо хаах" },
   { key: "expiration_tracking", label: "Хугацааны хяналт" },
+  { key: "attendance",          label: "Цаг бүртгэл" },
+  { key: "attendance_admin",    label: "Цаг бүртгэл (Админ)" },
   { key: "documents",           label: "Бичиг баримт" },
 ];
 
@@ -187,6 +191,8 @@ export default function Admin() {
 
   // Roles
   const [roles, setRoles] = useState<RoleT[]>([]);
+  // Цэсний жагсаалт — backend manifest-аас динамик (шинэ цэс автомат орно)
+  const [pageKeys, setPageKeys] = useState<{ key: string; label: string }[]>(FALLBACK_PAGE_KEYS);
   const [showRoleCreate, setShowRoleCreate] = useState(false);
   const [roleForm, setRoleForm] = useState({ value: "", label: "", color: "bg-gray-100 text-gray-600", base_role: "manager", permissions: [] as string[] });
   const [roleCreateLoading, setRoleCreateLoading] = useState(false);
@@ -243,10 +249,19 @@ export default function Admin() {
     try { const res = await api.get("/admin/roles"); setRoles(res.data); } catch {}
   };
 
+  const loadPageKeys = async () => {
+    try {
+      const res = await api.get("/admin/permission-keys");
+      if (Array.isArray(res.data) && res.data.length > 0) {
+        setPageKeys(res.data.map((p: any) => ({ key: p.key, label: p.label })));
+      }
+    } catch { /* fallback хэвээр */ }
+  };
+
   const load = async () => {
     setLoading(true); setLoadError(null);
     try {
-      const [usersRes] = await Promise.all([api.get("/admin/users"), loadRoles()]);
+      const [usersRes] = await Promise.all([api.get("/admin/users"), loadRoles(), loadPageKeys()]);
       setUsers(usersRes.data);
     } catch (e: any) {
       setLoadError(e?.response?.data?.detail ?? "Хэрэглэгчдийг ачаалахад алдаа гарлаа");
@@ -812,7 +827,7 @@ export default function Admin() {
                 <div>
                   <label className="mb-1.5 block text-xs font-medium text-gray-600">Харагдах цэс</label>
                   <div className="mt-1 grid grid-cols-2 gap-1.5 rounded-xl border border-gray-200 bg-gray-50 p-3">
-                    {PAGE_KEYS.map((p) => (
+                    {pageKeys.map((p) => (
                       <label key={p.key} className="flex cursor-pointer items-center gap-2 text-xs text-gray-700">
                         <input type="checkbox" className="h-3.5 w-3.5 rounded accent-indigo-600"
                           checked={roleForm.permissions.includes(p.key)}
@@ -875,7 +890,7 @@ export default function Admin() {
                 <div>
                   <label className="mb-1.5 block text-xs font-medium text-gray-600">Харагдах цэс</label>
                   <div className="mt-1 grid grid-cols-2 gap-1.5 rounded-xl border border-gray-200 bg-gray-50 p-3">
-                    {PAGE_KEYS.map((p) => (
+                    {pageKeys.map((p) => (
                       <label key={p.key} className="flex cursor-pointer items-center gap-2 text-xs text-gray-700">
                         <input type="checkbox" className="h-3.5 w-3.5 rounded accent-indigo-600"
                           checked={editRoleForm.permissions.includes(p.key)}

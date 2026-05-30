@@ -88,53 +88,97 @@ _ROLE_PERMISSIONS = {
 }
 
 
+def _known_keys_path():
+    import os
+    return os.path.join(os.path.dirname(__file__), "data", "known_permission_keys.json")
+
+
+def _load_known_keys() -> set:
+    import os, json as _json
+    p = _known_keys_path()
+    if not os.path.exists(p):
+        return set()
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return set(_json.load(f))
+    except Exception:
+        return set()
+
+
+def _save_known_keys(keys: set) -> None:
+    import os, json as _json
+    p = _known_keys_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            _json.dump(sorted(keys), f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def ensure_new_permissions_backfill():
-    """Хэрэв одоо байгаа role-ууд хуучин 'order' / 'admin_panel' permission-тай боловч
-    шинэ задлагдсан permission (receivings/min_stock/audit_log/expiration_tracking)
-    гүй бол автоматаар нэмнэ. Энэ нь backward-compat хадгалах зорилготой."""
+    """Permission key-нүүдийг role-уудад автомат нэмэх — ГЭХДЭЭ админы гар хийн
+    тохиргоог ДАРАХГҮЙ.
+
+    Зарчим (admin тохиргоо restart-д хадгалагдахын тулд):
+      • Эхний удаа (known_permission_keys.json байхгүй): хуучин split-permission
+        migration-уудыг нэг удаа гүйцэтгэж, тухайн үеийн БҮХ key-г "мэдэгдсэн" гэж
+        тэмдэглэнэ. Энэ нь хуучин DB-ийн backward-compat хадгална.
+      • Дараагийн restart бүрт: ЗӨВХӨН шинэ нэмэгдсэн key (manifest-д орсон ч өмнө
+        мэдэгдээгүй) -ийг ЗӨВХӨН admin role-д нэмнэ. Бусад role-д НЭМЭХГҮЙ —
+        админ UI-аас өөрөө хуваарилна. Ингэснээр аливаа гар хийн засвар хэвээр үлдэнэ.
+    """
     from app.models.role import Role as RoleModel
+    from app.core.permissions import ALL_PERMISSION_KEY_SET
+
+    known = _load_known_keys()
+    first_run = len(known) == 0
+
     db = SessionLocal()
     try:
         roles = db.query(RoleModel).all()
-        for r in roles:
-            perms = set((r.permissions or "").split(","))
-            perms.discard("")
-            changed = False
-            # 'order' permission-той role-уудад 'receivings'-ыг нэмэх
-            if "order" in perms and "receivings" not in perms:
-                perms.add("receivings")
-                changed = True
-            # 'admin_panel'-той role-уудад 'min_stock' болон 'audit_log'-ыг нэмэх
-            if "admin_panel" in perms:
-                if "min_stock" not in perms:
-                    perms.add("min_stock")
-                    changed = True
-                if "audit_log" not in perms:
-                    perms.add("audit_log")
-                    changed = True
-            # 2026-05: Хугацааны хяналт permission-ыг БҮХ role-д автомат нэмэх
-            # (бүх ажилчид ашиглах гэж user requirement-д тодорхойлсон).
-            if "expiration_tracking" not in perms:
-                perms.add("expiration_tracking")
-                changed = True
-            # 2026-05: Бичиг баримт permission — ЗӨВХӨН admin (base_role=admin)
-            # role-д автомат нэмнэ. Custom admin role үүсгэвэл мөн.
-            if (r.value == "admin" or (r.base_role or "").lower() == "admin") and "documents" not in perms:
-                perms.add("documents")
-                changed = True
-            # 2026-05: Цаг бүртгэлийн админ хяналт — admin + supervisor role-д нэмнэ.
-            # (Self-service 'attendance' нь universal тул permission шаардахгүй.)
-            _br = (r.base_role or "").lower()
-            if (r.value in ("admin", "supervisor") or _br in ("admin", "supervisor")) \
-                    and "attendance_admin" not in perms:
-                perms.add("attendance_admin")
-                changed = True
-            if changed:
-                # Sort-аар тогтвортой дараалал хадгалах
-                r.permissions = ",".join(sorted(perms))
-        db.commit()
+
+        if first_run:
+            # ── Нэг удаагийн legacy migration (хуучин DB-д key-нүүд дутуу байж болзошгүй) ──
+            for r in roles:
+                perms = set((r.permissions or "").split(","))
+                perms.discard("")
+                changed = False
+                if "order" in perms and "receivings" not in perms:
+                    perms.add("receivings"); changed = True
+                if "admin_panel" in perms:
+                    if "min_stock" not in perms:
+                        perms.add("min_stock"); changed = True
+                    if "audit_log" not in perms:
+                        perms.add("audit_log"); changed = True
+                if "expiration_tracking" not in perms:
+                    perms.add("expiration_tracking"); changed = True
+                _br = (r.base_role or "").lower()
+                _is_admin = (r.value == "admin" or _br == "admin")
+                if _is_admin and "documents" not in perms:
+                    perms.add("documents"); changed = True
+                if (r.value in ("admin", "supervisor") or _br in ("admin", "supervisor")) \
+                        and "attendance_admin" not in perms:
+                    perms.add("attendance_admin"); changed = True
+                if changed:
+                    r.permissions = ",".join(sorted(perms))
+            db.commit()
+        else:
+            # ── Зөвхөн шинэ key → admin role-д (бусдыг хөндөхгүй, засвар хадгална) ──
+            new_keys = ALL_PERMISSION_KEY_SET - known
+            if new_keys:
+                for r in roles:
+                    if r.value == "admin" or (r.base_role or "").lower() == "admin":
+                        perms = set((r.permissions or "").split(","))
+                        perms.discard("")
+                        perms |= new_keys
+                        r.permissions = ",".join(sorted(perms))
+                db.commit()
     finally:
         db.close()
+
+    # Мэдэгдсэн key-нүүдийг шинэчилнэ (manifest + одоо байгаа бүх key)
+    _save_known_keys(known | ALL_PERMISSION_KEY_SET)
 
 def ensure_roles_schema():
     """Add permissions column to roles table if missing."""
@@ -144,7 +188,12 @@ def ensure_roles_schema():
             conn.execute(text("ALTER TABLE roles ADD COLUMN permissions VARCHAR(500) DEFAULT ''"))
 
 def ensure_roles_seeded():
-    """Seed the 5 system roles and ensure permissions are set."""
+    """5 системийн role-ийг ЗӨВХӨН эхний удаа (DB хоосон үед) seed хийнэ.
+
+    ВАЖНА: Системийн role-ийн permission-ийг restart бүрт ДАХИН ДАРАХГҮЙ.
+    Өмнө нь энд `r.permissions = _ROLE_PERMISSIONS[...]` гэж бичээд админы UI-аас
+    хийсэн засвар restart хийхэд алга болдог байсан. Одоо засвар хадгалагдана.
+    Шинэ цэс нэмэгдвэл `ensure_new_permissions_backfill()` зөвхөн admin-д нэмнэ."""
     from app.models.role import Role as RoleModel
     db = SessionLocal()
     try:
@@ -159,11 +208,24 @@ def ensure_roles_seeded():
             db.add_all(system_roles)
             db.commit()
         else:
-            # Always sync system role permissions with _ROLE_PERMISSIONS
-            for r in db.query(RoleModel).filter(RoleModel.is_system == True).all():
-                if r.value in _ROLE_PERMISSIONS:
-                    r.permissions = _ROLE_PERMISSIONS[r.value]
-            db.commit()
+            # Системийн role байхгүй бол (custom-аас өмнө) дутуу системийн role-ийг
+            # нэмж seed хийнэ — гэхдээ байгаа role-ийн permission-ийг ХӨНДӨХГҮЙ.
+            existing = {r.value for r in db.query(RoleModel).all()}
+            seeds = {
+                "admin":           ("Админ", "bg-rose-100 text-rose-700"),
+                "supervisor":      ("Хянагч", "bg-blue-100 text-blue-700"),
+                "manager":         ("Менежер", "bg-emerald-100 text-emerald-700"),
+                "warehouse_clerk": ("Агуулахын нярав", "bg-orange-100 text-orange-700"),
+                "accountant":      ("Нягтлан", "bg-violet-100 text-violet-700"),
+            }
+            added = False
+            for val, (lbl, color) in seeds.items():
+                if val not in existing:
+                    db.add(RoleModel(value=val, label=lbl, color=color, base_role=val,
+                                     permissions=_ROLE_PERMISSIONS.get(val, ""), is_system=True))
+                    added = True
+            if added:
+                db.commit()
     finally:
         db.close()
 

@@ -16,6 +16,7 @@ backend/app/data/uploads/
 backend/app/data/outputs/
 backend/app/data/backups/
 backend/app/uploaded_documents/
+backend/app/data/known_permission_keys.json
 *.db
 *.db-shm
 *.db-wal

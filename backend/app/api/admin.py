@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.api.deps import get_db, parse_tag_ids, require_role
+from app.core.permissions import PERMISSION_MANIFEST, ALL_PERMISSION_KEY_SET
 from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.models.role import Role
@@ -56,6 +57,17 @@ class RoleEditPayload(BaseModel):
 SYSTEM_ROLES = {"admin", "supervisor", "manager", "warehouse_clerk", "accountant"}
 
 
+def _clean_permissions(keys: list[str], role_value: str = "", base_role: str = "") -> list[str]:
+    """Permission key-нүүдийг manifest-аар шүүж (тодорхойгүй key хасах), admin role-д
+    'admin_panel'-ыг заавал үлдээнэ (админ өөрийгөө удирдлагын хуудаснаас түгжихээс сэргийлж)."""
+    valid = [k for k in (keys or []) if k in ALL_PERMISSION_KEY_SET]
+    is_admin = (role_value == "admin") or ((base_role or "").lower() == "admin")
+    if is_admin and "admin_panel" not in valid:
+        valid.append("admin_panel")
+    # давхардлыг арилгах, тогтвортой дараалал
+    return sorted(set(valid))
+
+
 @router.get("/users", response_model=list[dict])
 def list_users(db: Session = Depends(get_db), _=Depends(require_role("admin"))):
     rows = db.query(User).order_by(User.id.asc()).all()
@@ -80,6 +92,13 @@ def _role_dict(r: Role) -> dict:
     }
 
 
+@router.get("/permission-keys", response_model=list[dict])
+def list_permission_keys(_=Depends(require_role("admin"))):
+    """Тохиргооны UI-д харуулах бүх цэсний key + нэр (нэгдсэн манифест).
+    Шинэ цэс нэмэхэд энд автоматаар орно — Admin.tsx-д гар хийн засах хэрэггүй."""
+    return PERMISSION_MANIFEST
+
+
 @router.get("/roles", response_model=list[dict])
 def list_roles(db: Session = Depends(get_db), _=Depends(require_role("admin"))):
     rows = db.query(Role).order_by(Role.id.asc()).all()
@@ -95,8 +114,9 @@ def create_role(payload: RoleCreatePayload, db: Session = Depends(get_db), _=Dep
         raise HTTPException(400, "Энэ утга аль хэдийн бүртгэлтэй байна")
     if payload.base_role not in SYSTEM_ROLES:
         raise HTTPException(400, "Эрхийн түвшин буруу байна")
+    perms = _clean_permissions(payload.permissions, role_value=value, base_role=payload.base_role)
     r = Role(value=value, label=payload.label.strip(), color=payload.color,
-             base_role=payload.base_role, permissions=",".join(payload.permissions), is_system=False)
+             base_role=payload.base_role, permissions=",".join(perms), is_system=False)
     db.add(r)
     db.commit()
     db.refresh(r)
@@ -118,7 +138,8 @@ def edit_role(role_id: int, payload: RoleEditPayload, db: Session = Depends(get_
         if not r.is_system:
             r.base_role = payload.base_role
     if payload.permissions is not None:
-        r.permissions = ",".join(payload.permissions)
+        perms = _clean_permissions(payload.permissions, role_value=r.value, base_role=r.base_role)
+        r.permissions = ",".join(perms)
     db.commit()
     db.refresh(r)
     return _role_dict(r)
