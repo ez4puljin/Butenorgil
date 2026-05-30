@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -6,6 +6,7 @@ import {
   ChevronRight, Calendar, Package, Trash2,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { useLiveRefresh } from "../lib/liveEvents";
 import { useAuthStore } from "../store/authStore";
 
 type Session = {
@@ -167,6 +168,14 @@ export default function ReceivingList() {
   };
 
   useEffect(() => { load(); }, [tab, archiveMode]);
+
+  // ── Real-time: өөр хэрэглэгч бараа тулгах session үүсгэх/засах/статус ахиулахад
+  //    жагсаалт автомат шинэчлэгдэнэ (400ms debounce).
+  const recvTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useLiveRefresh(["receivings"], () => {
+    if (recvTimer.current) clearTimeout(recvTimer.current);
+    recvTimer.current = setTimeout(() => load(), 400);
+  });
 
   const create = async () => {
     setCreating(true);

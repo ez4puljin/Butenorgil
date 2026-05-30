@@ -45,6 +45,8 @@ def refresh_products_from_master(db: Session, master_xlsx_path: str):
 
     updated = 0
     inserted = 0
+    processed = 0
+    BATCH = 500  # энэ тоо тутамд commit хийж write lock-ийг чөлөөлнө (бусад хэрэглэгч хүлээхгүй)
     for _, r in df.iterrows():
         code = str(r.get("item_code", "")).strip()
         if not code:
@@ -119,6 +121,13 @@ def refresh_products_from_master(db: Session, master_xlsx_path: str):
                 barcode=barcode,
             ))
             inserted += 1
+
+        # ── Batch commit: BATCH мөр тутамд commit хийж write lock-ийг богино
+        #    хугацаанд барина. Олон хэрэглэгч зэрэг ажиллах үед import нь бусдыг
+        #    удаан блоклохгүй. expire_on_commit дараа attribute set хийх нь аюулгүй.
+        processed += 1
+        if processed % BATCH == 0:
+            db.commit()
 
     # Master-д байхгүй хуучин бараа → устгахгүй (PO line reference хадгална)
     # Хэрэв устгах шаардлагатай бол тусдаа cleanup хийнэ

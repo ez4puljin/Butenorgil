@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -7,6 +7,7 @@ import {
   PlusCircle, Pencil, ArrowRight, Weight, Trash2,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { useLiveRefresh } from "../lib/liveEvents";
 import { STATUS_COLOR, STATUS_LABEL } from "../store/purchaseOrderStore";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -110,6 +111,7 @@ export default function OrderDashboard() {
   const [addingVehicle, setAddingVehicle] = useState(false);
   const [assignBusy, setAssignBusy] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const dashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showFlash = (msg: string, ok = true) => { setFlash({ msg, ok }); setTimeout(() => setFlash(null), 3000); };
 
@@ -151,6 +153,16 @@ export default function OrderDashboard() {
   };
 
   useEffect(() => { load(); }, [id]);
+
+  // ── Real-time: өөр хэрэглэгч ачилт/хуваарилалт/статус өөрчлөхөд шууд шинэчилнэ.
+  //    Зөвхөн энэ захиалгын event-д хариу үзүүлнэ (order_id таарвал эсвэл тодорхойгүй).
+  useLiveRefresh(["purchase-orders"], (e) => {
+    const oid = (e.data as any)?.order_id;
+    if (oid == null || String(oid) === String(id)) {
+      if (dashTimer.current) clearTimeout(dashTimer.current);
+      dashTimer.current = setTimeout(() => load(), 400);
+    }
+  });
 
   if (loading || !data) {
     return (

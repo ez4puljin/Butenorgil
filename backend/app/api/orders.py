@@ -202,25 +202,46 @@ def supervisor_consolidated(
     if not orders:
         return {"lines": [], "orders": []}
 
+    # ── Bulk-load: N+1 query-аас зайлсхийнэ (өмнө захиалга × мөр × бараа = олон зуун query) ──
+    order_ids = [o.id for o in orders]
+    order_map = {o.id: o for o in orders}
+
+    # Бүх мөрийг 1 query-ээр (захиалгаар бүлэглэсэн дараалал хадгална)
+    all_lines = (
+        db.query(OrderLine)
+        .filter(OrderLine.order_id.in_(order_ids))
+        .order_by(OrderLine.order_id.asc(), OrderLine.id.asc())
+        .all()
+    )
+
+    # Бүх барааг 1 query-ээр → dict
+    product_ids = {l.product_id for l in all_lines}
+    products = {
+        p.id: p
+        for p in db.query(Product).filter(Product.id.in_(product_ids)).all()
+    } if product_ids else {}
+
     lines_out = []
-    for o in orders:
-        for l in db.query(OrderLine).filter(OrderLine.order_id == o.id).all():
-            p = db.query(Product).filter(Product.id == l.product_id).first()
-            if not p:
-                continue
-            lines_out.append(
-                {
-                    "orderId": o.id,
-                    "warehouseTagId": o.warehouse_tag_id,
-                    "brand": o.brand,
-                    "itemCode": p.item_code,
-                    "name": p.name,
-                    "unitWeight": p.unit_weight,
-                    "orderQtyBox": l.order_qty_box,
-                    "orderQtyPcs": l.order_qty_pcs,
-                    "computedWeight": l.computed_weight,
-                }
-            )
+    for l in all_lines:
+        p = products.get(l.product_id)
+        if not p:
+            continue
+        o = order_map.get(l.order_id)
+        if not o:
+            continue
+        lines_out.append(
+            {
+                "orderId": o.id,
+                "warehouseTagId": o.warehouse_tag_id,
+                "brand": o.brand,
+                "itemCode": p.item_code,
+                "name": p.name,
+                "unitWeight": p.unit_weight,
+                "orderQtyBox": l.order_qty_box,
+                "orderQtyPcs": l.order_qty_pcs,
+                "computedWeight": l.computed_weight,
+            }
+        )
 
     return {
         "orders": [

@@ -32,6 +32,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Auto-publish real-time events on any successful mutation ─────────────────
+# Олон хэрэглэгч (утас) зэрэг ажиллахад нэг хүний өөрчлөлт бусдад realtime
+# харагдахын тулд: POST/PATCH/PUT/DELETE амжилттай болсон route бүрд тохирох
+# SSE topic-руу push хийнэ. Ингэснээр endpoint бүрд гар хийн publish дуудах
+# шаардлагагүй — шинэ endpoint нэмэгдсэн ч автомат хамаарна.
+import re as _re
+from app.core.event_bus import publish as _bus_publish
+
+# Зөвхөн Захиалга (purchase-orders, orders) — Receivings нь өөрөө session_id-тай
+# explicit publish хийдэг тул энд оруулахгүй (давхар reload-аас сэргийлнэ).
+_ORDER_PATH_RX = _re.compile(r"/(?:purchase-orders|orders)(?:/|$)")
+_ORDER_ID_RX   = _re.compile(r"/(?:purchase-orders|orders)/(\d+)")
+
+@app.middleware("http")
+async def _auto_publish_events(request, call_next):
+    response = await call_next(request)
+    try:
+        if request.method in ("POST", "PATCH", "PUT", "DELETE") and response.status_code < 400:
+            path = request.url.path or ""
+            if _ORDER_PATH_RX.search(path):
+                m = _ORDER_ID_RX.search(path)
+                oid = int(m.group(1)) if m else None
+                _bus_publish("purchase-orders", path=path, order_id=oid, method=request.method)
+    except Exception:
+        pass
+    return response
+
 def ensure_import_logs_schema():
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(import_logs)")).fetchall()]

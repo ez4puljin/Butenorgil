@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Download, Pencil, Building2, Truck, AlertCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
+import { useLiveRefresh } from "../lib/liveEvents";
 import { useSupervisorStore } from "../store/supervisorStore";
 
 type BrandSummary = {
@@ -21,6 +22,7 @@ export default function OrderSupervisor() {
 
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"brand" | "supplier">("brand");
+  const supRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load brand lines
   const loadBrands = async () => {
@@ -51,6 +53,15 @@ export default function OrderSupervisor() {
   useEffect(() => {
     if (tab === "supplier") loadSuppliers();
   }, [tab]);
+
+  // ── Real-time: менежерүүд захиалга илгээх/засахад нэгтгэл шууд шинэчлэгдэнэ.
+  useLiveRefresh(["purchase-orders"], () => {
+    if (supRefreshTimer.current) clearTimeout(supRefreshTimer.current);
+    supRefreshTimer.current = setTimeout(() => {
+      if (tab === "supplier") loadSuppliers();
+      else loadBrands();
+    }, 500);
+  });
 
   const brandSummaries: BrandSummary[] = useMemo(() => {
     const map = new Map<string, { sum: number; missing: boolean; n: number }>();

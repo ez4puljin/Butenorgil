@@ -7,6 +7,7 @@ import {
   Truck, RotateCcw, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { useLiveRefresh } from "../lib/liveEvents";
 import { useAuthStore } from "../store/authStore";
 import {
   usePurchaseOrderStore,
@@ -31,6 +32,11 @@ export default function PurchaseOrderDetail() {
   const [saving, setSaving] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  // Real-time: өөр хэрэглэгч энэ захиалгыг шинэчлэхэд banner харуулна (auto-reload
+  // хийхгүй — бичиж байгаа тоо алдагдахаас сэргийлж). Өөрийн өөрчлөлтийг үл тоомсорлоход
+  // localActionAt-ийг ашиглана (loadOrder бүрт шинэчлэгдэнэ).
+  const [liveUpdatePending, setLiveUpdatePending] = useState(false);
+  const localActionAt = useRef<number>(0);
   const [showPDFModal, setShowPDFModal] = useState(false);
   const [showERPModal, setShowERPModal] = useState(false);
 
@@ -298,6 +304,8 @@ export default function PurchaseOrderDetail() {
 
   const loadOrder = async () => {
     if (!id) return;
+    localActionAt.current = Date.now();  // өөрийн reload — дараагийн 3с дотор ирэх echo event-ийг үл тоомсорлоно
+    setLiveUpdatePending(false);
     setLoading(true);
     setLoadError(null);
     try {
@@ -357,6 +365,16 @@ export default function PurchaseOrderDetail() {
     loadOrder();
     return () => store.setCurrentOrder(null);
   }, [id]);
+
+  // ── Real-time: өөр хэрэглэгч энэ захиалгыг өөрчлөхөд banner харуулна.
+  //    Auto-reload хийхгүй — хэрэглэгчийн бичиж байгаа тоо хэмжээ алдагдахаас сэргийлнэ.
+  //    Өөрийн хадгалалтын echo-г (loadOrder-аас хойш 3с) үл тоомсорлоно.
+  useLiveRefresh(["purchase-orders"], (e) => {
+    const oid = (e.data as any)?.order_id;
+    if (oid != null && String(oid) !== String(id)) return;  // өөр захиалга
+    if (Date.now() - localActionAt.current < 3000) return;    // өөрийн өөрчлөлт
+    setLiveUpdatePending(true);
+  });
 
   const order = store.currentOrder;
 
@@ -741,6 +759,34 @@ export default function PurchaseOrderDetail() {
           >
             {msg.ok ? <CheckCheck size={15} className="shrink-0"/> : <AlertCircle size={15} className="shrink-0"/>}
             <span className="min-w-0 break-words">{msg.text}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Real-time update banner (өөр хэрэглэгч өөрчилсөн) ── */}
+      <AnimatePresence>
+        {liveUpdatePending && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="mb-3 flex items-center gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800"
+          >
+            <AlertCircle size={16} className="shrink-0 text-amber-600" />
+            <span className="min-w-0 flex-1">Өөр хэрэглэгч энэ захиалгыг шинэчиллээ. Хамгийн сүүлийн мэдээллийг харъя.</span>
+            <button
+              onClick={loadOrder}
+              className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+            >
+              <RefreshCw size={12} className="mr-1 inline" />Дахин ачаалах
+            </button>
+            <button
+              onClick={() => setLiveUpdatePending(false)}
+              className="shrink-0 rounded-lg p-1 text-amber-500 hover:bg-amber-100"
+              title="Хаах"
+            >
+              <X size={14} />
+            </button>
           </motion.div>
         )}
       </AnimatePresence>

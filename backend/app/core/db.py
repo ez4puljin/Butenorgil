@@ -9,11 +9,19 @@ engine = create_engine(
     pool_pre_ping=True,
 )
 
-# WAL mode — backup болон бусад reader-тай зэрэг write хийх боломжтой болно
+# WAL mode — backup болон бусад reader-тай зэрэг write хийх боломжтой болно.
+# Олон хэрэглэгч (утас) WiFi-аар зэрэг ажиллахад зориулсан тааруулга:
+#   • journal_mode=WAL   — reader-ууд writer-ийг блоклохгүй (зэрэг унших+бичих)
+#   • busy_timeout=30s   — lock чөлөөлөгдөхийг хүлээнэ ("database is locked" шидэхгүй)
+#   • synchronous=NORMAL — WAL дээр аюулгүй; fsync дуудлага цөөрч бичилт хурдасна
+#                          (LAN орчинд тохиромжтой, өгөгдөл алдагдахгүй)
 @event.listens_for(engine, "connect")
 def _set_wal_mode(dbapi_conn, _):
-    dbapi_conn.execute("PRAGMA journal_mode=WAL")
-    dbapi_conn.execute("PRAGMA busy_timeout=30000")
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=30000")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import {
@@ -18,6 +18,7 @@ import {
   ArchiveRestore,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { useLiveRefresh } from "../lib/liveEvents";
 import { useAuthStore } from "../store/authStore";
 import {
   usePurchaseOrderStore,
@@ -94,6 +95,7 @@ export default function PurchaseOrderList() {
 
   const store = usePurchaseOrderStore();
   const navigate = useNavigate();
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("");
@@ -298,6 +300,16 @@ export default function PurchaseOrderList() {
     if (isShipmentView) loadShipments();
     else loadOrders();
   }, [activeTab, archiveMode]);
+
+  // ── Real-time: өөр хэрэглэгч захиалга үүсгэх/засах/статус ахиулахад жагсаалт
+  //    автомат шинэчлэгдэнэ. Олон event дараалбал 400ms debounce-аар нэгтгэнэ.
+  useLiveRefresh(["purchase-orders"], () => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      if (isShipmentView) loadShipments();
+      else loadOrders();
+    }, 400);
+  });
 
   const createOrder = async () => {
     if (!createForm.order_date) {
