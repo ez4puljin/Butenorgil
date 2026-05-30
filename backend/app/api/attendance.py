@@ -64,6 +64,18 @@ def _parse_hm(s: str) -> Optional[int]:
         return None
 
 
+def _parse_day_hours(raw: str) -> dict:
+    """day_hours JSON-ийг dict болгоно: {"0":["08:00","15:00"], ...}. Алдаатай бол {}."""
+    if not raw:
+        return {}
+    try:
+        import json as _json
+        data = _json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _minutes_of(dt: datetime) -> int:
     return dt.hour * 60 + dt.minute
 
@@ -111,10 +123,18 @@ def _day_summary(emp_id: int, d: date_type, punches: list, sched: AttendanceSche
     last_out = outs[-1].punch_at if outs else None
 
     work_days = [int(x) for x in (sched.work_days or "").split(",") if x.strip().isdigit()]
-    is_work_day = d.weekday() in work_days
+    wd = d.weekday()
+    is_work_day = wd in work_days
 
-    start_min = _parse_hm(sched.work_start) or 540
-    end_min = _parse_hm(sched.work_end) or 1080
+    # Гариг бүрийн өөр цаг байвал түүнийг, үгүй бол default work_start/work_end
+    dh = _parse_day_hours(getattr(sched, "day_hours", "") or "")
+    day_ovr = dh.get(str(wd))
+    if day_ovr and len(day_ovr) == 2:
+        start_min = _parse_hm(day_ovr[0]) or 540
+        end_min = _parse_hm(day_ovr[1]) or 1080
+    else:
+        start_min = _parse_hm(sched.work_start) or 540
+        end_min = _parse_hm(sched.work_end) or 1080
     grace = sched.grace_minutes or 0
 
     late_min = 0
@@ -179,6 +199,8 @@ class ScheduleIn(BaseModel):
     work_start: str = "09:00"
     work_end: str = "18:00"
     grace_minutes: int = 10
+    # Гариг бүрийн өөр цаг (заавал биш): {"0":["08:00","15:00"], "1":["11:00","19:00"]}
+    day_hours: Optional[dict] = None
 
 
 # ── Self-service: punch ────────────────────────────────────────────────────────
@@ -568,6 +590,7 @@ def _serialize_sched(s: AttendanceSchedule, name: str = "") -> dict:
         "work_start": s.work_start or "",
         "work_end": s.work_end or "",
         "grace_minutes": s.grace_minutes or 0,
+        "day_hours": _parse_day_hours(getattr(s, "day_hours", "") or ""),
     }
 
 
@@ -576,22 +599,59 @@ def list_schedules(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor")),
 ):
+    from app.models.role import Role
     per_emp, default = _schedule_map(db)
     employees = _active_employees(db)
     name_map = {e.id: (e.nickname or e.username) for e in employees}
+    # Role value → монгол label
+    roles = db.query(Role).order_by(Role.id.asc()).all()
+    role_label = {r.value: (r.label or r.value) for r in roles}
     return {
         "default": _serialize_sched(default),
+        # Бүх role-ийн жагсаалт (dropdown-д + монгол нэр харуулахад)
+        "roles": [{"value": r.value, "label": r.label or r.value} for r in roles],
         "employees": [
             {
                 "id": e.id,
                 "name": e.nickname or e.username,
-                "role": e.role,
+                "role": e.role,                                  # систем утга (value)
+                "role_label": role_label.get(e.role, e.role),    # монгол нэр
                 "schedule": (_serialize_sched(per_emp[e.id], name_map.get(e.id, ""))
                              if e.id in per_emp else None),
             }
             for e in employees
         ],
     }
+
+
+class EmployeeRoleIn(BaseModel):
+    role: str
+
+
+@router.put("/employees/{employee_id}/role")
+def set_employee_role(
+    employee_id: int,
+    body: EmployeeRoleIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),   # role өөрчлөх нь эмзэг — зөвхөн admin
+):
+    """Ажилтны role-ийг хуваарийн хуудаснаас шууд солих (зөвхөн admin)."""
+    from app.models.role import Role
+    target = db.query(User).filter(User.id == employee_id).first()
+    if not target:
+        raise HTTPException(404, "Ажилтан олдсонгүй.")
+    role_obj = db.query(Role).filter(Role.value == body.role).first()
+    if not role_obj:
+        raise HTTPException(400, "Тушаал олдсонгүй.")
+    old_role = target.role
+    target.role = role_obj.value
+    target.base_role = role_obj.base_role or role_obj.value
+    db.commit()
+    audit(db, request, u, action="employee_role_changed",
+          entity_type="user", entity_id=target.id,
+          before={"role": old_role}, after={"role": role_obj.value}, autocommit=True)
+    return {"ok": True, "id": target.id, "role": role_obj.value, "role_label": role_obj.label or role_obj.value}
 
 
 @router.put("/schedules/{employee_id}")
@@ -614,6 +674,14 @@ def set_schedule(
     s.work_start = (body.work_start or "09:00").strip()
     s.work_end = (body.work_end or "18:00").strip()
     s.grace_minutes = max(0, int(body.grace_minutes or 0))
+    # Гариг бүрийн цаг — зөвхөн зөв форматтай (HH:MM 2 элемент) утгуудыг хадгална
+    import json as _json
+    clean_dh = {}
+    if body.day_hours:
+        for k, v in body.day_hours.items():
+            if str(k).isdigit() and isinstance(v, (list, tuple)) and len(v) == 2 and v[0] and v[1]:
+                clean_dh[str(k)] = [str(v[0]), str(v[1])]
+    s.day_hours = _json.dumps(clean_dh) if clean_dh else ""
     db.commit()
     db.refresh(s)
     audit(db, request, u, action="attendance_schedule_set",

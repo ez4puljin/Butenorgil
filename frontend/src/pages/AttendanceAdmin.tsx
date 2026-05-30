@@ -5,6 +5,11 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useLiveRefresh } from "../lib/liveEvents";
+import { useAuthStore } from "../store/authStore";
+
+type DayHours = Record<string, [string, string]>;  // {"0":["08:00","15:00"], ...}
+type SchedData = { work_days: string; work_start: string; work_end: string; grace_minutes: number; day_hours?: DayHours };
+type RoleOpt = { value: string; label: string };
 
 type Row = {
   employee_id: number;
@@ -35,7 +40,8 @@ type SchedRow = {
   id: number;
   name: string;
   role: string;
-  schedule: null | { work_days: string; work_start: string; work_end: string; grace_minutes: number };
+  role_label?: string;
+  schedule: null | SchedData;
 };
 
 const STATUS_PILL: Record<string, { label: string; cls: string }> = {
@@ -44,7 +50,6 @@ const STATUS_PILL: Record<string, { label: string; cls: string }> = {
   absent:  { label: "Тасалсан", cls: "bg-rose-50 text-rose-700 ring-rose-200" },
   off:     { label: "Амралт",   cls: "bg-gray-50 text-gray-400 ring-gray-200" },
 };
-const WEEKDAYS = ["Дав", "Мяг", "Лха", "Пүр", "Баа", "Бям", "Ням"];
 
 function todayStr() {
   const n = new Date();
@@ -60,6 +65,8 @@ function fmtWorked(min: number): string {
 }
 
 export default function AttendanceAdmin() {
+  const { role, baseRole } = useAuthStore();
+  const isAdmin = (baseRole ?? role) === "admin";  // role өөрчлөх зөвхөн admin
   const [tab, setTab] = useState<"summary" | "requests" | "schedules">("summary");
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
@@ -82,6 +89,7 @@ export default function AttendanceAdmin() {
   // Schedules
   const [defaultSched, setDefaultSched] = useState<any>(null);
   const [schedRows, setSchedRows] = useState<SchedRow[]>([]);
+  const [roles, setRoles] = useState<RoleOpt[]>([]);
 
   const sumTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -110,7 +118,18 @@ export default function AttendanceAdmin() {
       const r = await api.get("/attendance/schedules");
       setDefaultSched(r.data.default);
       setSchedRows(r.data.employees ?? []);
+      setRoles(r.data.roles ?? []);
     } catch { /* silent */ }
+  };
+
+  const changeRole = async (employeeId: number, newRole: string) => {
+    try {
+      await api.put(`/attendance/employees/${employeeId}/role`, { role: newRole });
+      flash("Тушаал шинэчлэгдлээ ✓");
+      await loadSchedules();
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? "Тушаал солиход алдаа гарлаа");
+    }
   };
 
   useEffect(() => { loadSummary(); loadPending(); }, []);
@@ -367,7 +386,9 @@ export default function AttendanceAdmin() {
             <div className="divide-y divide-gray-50">
               {schedRows.map((e) => (
                 <EmployeeScheduleRow key={e.id} emp={e} defaultSched={defaultSched}
-                  onSave={(s) => saveSchedule(e.id, s)} onClear={() => clearSchedule(e.id)} />
+                  roles={roles} isAdmin={isAdmin}
+                  onSave={(s) => saveSchedule(e.id, s)} onClear={() => clearSchedule(e.id)}
+                  onChangeRole={(rv) => changeRole(e.id, rv)} />
               ))}
             </div>
           </div>
@@ -386,50 +407,82 @@ function Tile({ label, value, color }: { label: string; value: any; color: strin
   );
 }
 
-function ScheduleEditor({ init, onSave, compact }: {
-  init: { work_days: string; work_start: string; work_end: string; grace_minutes: number };
-  onSave: (s: { work_days: string; work_start: string; work_end: string; grace_minutes: number }) => void;
-  compact?: boolean;
+const WEEKDAYS_FULL = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"];
+
+function ScheduleEditor({ init, onSave }: {
+  init: SchedData;
+  onSave: (s: SchedData) => void;
 }) {
-  const [days, setDays] = useState<Set<number>>(new Set(
-    (init.work_days || "").split(",").filter((x) => x.trim() !== "").map(Number)
-  ));
-  const [start, setStart] = useState(init.work_start || "09:00");
-  const [end, setEnd] = useState(init.work_end || "18:00");
+  const defStart = init.work_start || "09:00";
+  const defEnd = init.work_end || "18:00";
+  const initDays = new Set((init.work_days || "").split(",").filter((x) => x.trim() !== "").map(Number));
+  const initDh: DayHours = init.day_hours || {};
+
+  // Гариг бүрийн төлөв: идэвхтэй эсэх + эхлэх/дуусах цаг
+  const [rows, setRows] = useState(() =>
+    WEEKDAYS_FULL.map((_, i) => {
+      const ovr = initDh[String(i)];
+      return {
+        on: initDays.has(i),
+        start: ovr ? ovr[0] : defStart,
+        end: ovr ? ovr[1] : defEnd,
+      };
+    })
+  );
   const [grace, setGrace] = useState(init.grace_minutes ?? 10);
 
-  const toggle = (d: number) => {
-    setDays((prev) => {
-      const n = new Set(prev);
-      n.has(d) ? n.delete(d) : n.add(d);
-      return n;
+  const setRow = (i: number, patch: Partial<{ on: boolean; start: string; end: string }>) =>
+    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  const save = () => {
+    const workDays: number[] = [];
+    const dayHours: DayHours = {};
+    rows.forEach((r, i) => {
+      if (r.on) {
+        workDays.push(i);
+        dayHours[String(i)] = [r.start, r.end];
+      }
+    });
+    // work_start/work_end-д эхний ажлын өдрийн цагийг default болгож хадгална
+    const firstOn = rows.find((r) => r.on);
+    onSave({
+      work_days: workDays.join(","),
+      work_start: firstOn ? firstOn.start : defStart,
+      work_end: firstOn ? firstOn.end : defEnd,
+      grace_minutes: grace,
+      day_hours: dayHours,
     });
   };
-  const save = () => onSave({
-    work_days: [...days].sort((a, b) => a - b).join(","),
-    work_start: start, work_end: end, grace_minutes: grace,
-  });
 
   return (
-    <div className={compact ? "flex flex-wrap items-center gap-2" : "space-y-3"}>
-      <div className="flex flex-wrap gap-1">
-        {WEEKDAYS.map((w, i) => (
-          <button key={i} onClick={() => toggle(i)}
-            className={`h-7 w-9 rounded-md text-[11px] font-semibold transition-colors ${
-              days.has(i) ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-400 hover:bg-gray-200"
-            }`}>{w}</button>
+    <div className="space-y-3">
+      <div className="space-y-1.5">
+        {rows.map((r, i) => (
+          <div key={i} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 ${r.on ? "bg-blue-50/60" : "bg-gray-50"}`}>
+            <label className="flex w-24 cursor-pointer items-center gap-1.5">
+              <input type="checkbox" className="h-3.5 w-3.5 rounded accent-blue-600"
+                checked={r.on} onChange={(e) => setRow(i, { on: e.target.checked })} />
+              <span className={`text-[12px] font-medium ${r.on ? "text-gray-800" : "text-gray-400"}`}>{WEEKDAYS_FULL[i]}</span>
+            </label>
+            {r.on ? (
+              <div className="flex items-center gap-1.5 text-[12px]">
+                <input type="time" value={r.start} onChange={(e) => setRow(i, { start: e.target.value })}
+                  className="rounded-md border border-gray-200 px-2 py-1 outline-none focus:border-blue-400" />
+                <span className="text-gray-400">–</span>
+                <input type="time" value={r.end} onChange={(e) => setRow(i, { end: e.target.value })}
+                  className="rounded-md border border-gray-200 px-2 py-1 outline-none focus:border-blue-400" />
+              </div>
+            ) : (
+              <span className="text-[11px] text-gray-400">Амралт</span>
+            )}
+          </div>
         ))}
       </div>
       <div className="flex items-center gap-1.5 text-[12px]">
-        <input type="time" value={start} onChange={(e) => setStart(e.target.value)}
-          className="rounded-md border border-gray-200 px-2 py-1 outline-none focus:border-blue-400" />
-        <span className="text-gray-400">–</span>
-        <input type="time" value={end} onChange={(e) => setEnd(e.target.value)}
-          className="rounded-md border border-gray-200 px-2 py-1 outline-none focus:border-blue-400" />
-        <span className="ml-1 text-gray-500">Тэвчээр</span>
+        <span className="text-gray-500">Хоцролтын тэвчээр</span>
         <input type="number" min={0} value={grace} onChange={(e) => setGrace(Number(e.target.value))}
-          className="w-14 rounded-md border border-gray-200 px-2 py-1 text-right outline-none focus:border-blue-400" />
-        <span className="text-gray-400">мин</span>
+          className="w-16 rounded-md border border-gray-200 px-2 py-1 text-right outline-none focus:border-blue-400" />
+        <span className="text-gray-400">минут</span>
       </div>
       <button onClick={save}
         className="rounded-lg bg-blue-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-blue-700">Хадгалах</button>
@@ -448,22 +501,31 @@ function ScheduleCard({ title, sched, onSave }: {
   );
 }
 
-function EmployeeScheduleRow({ emp, defaultSched, onSave, onClear }: {
-  emp: SchedRow; defaultSched: any;
-  onSave: (s: any) => void; onClear: () => void;
+function EmployeeScheduleRow({ emp, defaultSched, roles, isAdmin, onSave, onClear, onChangeRole }: {
+  emp: SchedRow; defaultSched: any; roles: RoleOpt[]; isAdmin: boolean;
+  onSave: (s: any) => void; onClear: () => void; onChangeRole: (roleValue: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const hasCustom = !!emp.schedule;
   const init = emp.schedule || defaultSched || { work_days: "0,1,2,3,4,5", work_start: "09:00", work_end: "18:00", grace_minutes: 10 };
   return (
     <div className="px-4 py-2.5">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium text-gray-800">{emp.name}</span>
-        <span className="text-[11px] text-gray-400">{emp.role}</span>
-        {hasCustom ? (
-          <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700 ring-1 ring-blue-200">Хувийн</span>
+        {/* Role — admin бол dropdown-оор шууд засна, эс бол монгол нэрээр харуулна */}
+        {isAdmin ? (
+          <select value={emp.role} onChange={(e) => onChangeRole(e.target.value)}
+            className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[11px] text-gray-700 outline-none hover:border-blue-300 focus:border-blue-400 cursor-pointer"
+            title="Тушаал солих">
+            {roles.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
         ) : (
-          <span className="text-[11px] text-gray-300">(default)</span>
+          <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{emp.role_label || emp.role}</span>
+        )}
+        {hasCustom ? (
+          <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700 ring-1 ring-blue-200">Хувийн хуваарь</span>
+        ) : (
+          <span className="text-[11px] text-gray-300">(default хуваарь)</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {hasCustom && (
@@ -471,7 +533,7 @@ function EmployeeScheduleRow({ emp, defaultSched, onSave, onClear }: {
           )}
           <button onClick={() => setOpen((v) => !v)}
             className="rounded-md border border-gray-200 px-2.5 py-1 text-[12px] font-medium text-gray-600 hover:bg-gray-50">
-            {open ? "Хаах" : "Тохируулах"}
+            {open ? "Хаах" : "Хуваарь тохируулах"}
           </button>
         </div>
       </div>

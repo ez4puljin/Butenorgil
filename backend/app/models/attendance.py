@@ -69,8 +69,11 @@ class AttendanceSchedule(Base):
     employee_id = Column(Integer, ForeignKey("users.id"), nullable=True, unique=True, index=True)
 
     work_days: Mapped[str] = mapped_column(String(20), default="0,1,2,3,4,5")   # 0=Дав .. 6=Ням
-    work_start: Mapped[str] = mapped_column(String(5), default="09:00")
-    work_end: Mapped[str] = mapped_column(String(5), default="18:00")
+    work_start: Mapped[str] = mapped_column(String(5), default="09:00")         # default эхлэх цаг
+    work_end: Mapped[str] = mapped_column(String(5), default="18:00")           # default дуусах цаг
     grace_minutes: Mapped[int] = mapped_column(Integer, default=10)             # хоцролтын тэвчээр (мин)
+    # Гариг бүрийн өөр цаг (JSON): {"0":["08:00","15:00"], "1":["11:00","19:00"]}
+    # Тухайн гаригт байвал түүнийг, үгүй бол work_start/work_end-ийг ашиглана.
+    day_hours: Mapped[str] = mapped_column(String(500), default="")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
