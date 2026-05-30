@@ -248,7 +248,7 @@ export default function App() {
                 />
                 <Route
                   path="/expiration"
-                  element={can("expiration_tracking") ? <ExpirationTracking /> : <DefaultRedirect />}
+                  element={<ExpirationTracking />}
                 />
                 <Route
                   path="/documents"
