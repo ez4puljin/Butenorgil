@@ -22,7 +22,7 @@ from app.models.min_stock_rule import MinStockRule  # noqa: F401 – registers t
 from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig, SettlementConfig, CrossAccountPreset, FeeConfig  # noqa: F401 – registers tables
 from app.models.audit_log import AuditLog  # noqa: F401 – registers table
 from app.models.product_monthly_sales import ProductMonthlySales  # noqa: F401 – registers table
-from app.models.product_yearly_movement import ProductYearlyMovement  # noqa: F401 – registers table
+from app.models.movement_file import MovementFile  # noqa: F401 – registers table
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
@@ -292,17 +292,12 @@ def ensure_product_monthly_sales_schema():
 
 
 def ensure_product_yearly_movement_schema():
-    """Барааны жилийн хөдөлгөөн (product_yearly_movement) — шинэ table бол
-    create_all() үүсгэнэ. Хуучин үед үүссэн хувилбарт qty_main,
-    qty_liquor баганыг шалгаж, дутуу бол ALTER хийнэ."""
+    """Хөдөлгөөний файл (movement_files) — шинэ table бол create_all() үүсгэнэ.
+    Хуучин parse-загварын product_yearly_movement table-ыг (хэрэв байгаа бол)
+    устгана — одоо түүхий файлыг хадгалах загвар руу шилжсэн."""
     with engine.begin() as conn:
-        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(product_yearly_movement)")).fetchall()]
-        if not cols:
-            return  # create_all() үүсгэнэ
-        if "qty_main" not in cols:
-            conn.execute(text("ALTER TABLE product_yearly_movement ADD COLUMN qty_main FLOAT NOT NULL DEFAULT 0"))
-        if "qty_liquor" not in cols:
-            conn.execute(text("ALTER TABLE product_yearly_movement ADD COLUMN qty_liquor FLOAT NOT NULL DEFAULT 0"))
+        # Хуучин хувилбарын parse-table (хоосон, ашиглагдахгүй болсон) — устгана
+        conn.execute(text("DROP TABLE IF EXISTS product_yearly_movement"))
     # Хадгалах хавтсыг хангах
     import os
     pym_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "yearly_movement")

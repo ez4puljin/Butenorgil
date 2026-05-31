@@ -3,21 +3,40 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft, UploadCloud, RefreshCw, Check, AlertCircle, Store, Wine, Trash2,
-  Settings2, ChevronDown, ChevronRight, Save, X,
+  Download, X, FileSpreadsheet,
 } from "lucide-react";
 import { api } from "../lib/api";
 
+type FileInfo = {
+  filename: string;
+  size_bytes: number;
+  row_count: number;
+  uploaded_at: string | null;
+  uploaded_by: string;
+};
 type SlotInfo = {
   year: number;
-  count: number;
   has_main: boolean;
   has_liquor: boolean;
+  main: FileInfo | null;
+  liquor: FileInfo | null;
 };
 type Kind = "main" | "liquor";
 
 const KIND_LABEL: Record<Kind, string> = { main: "Үндсэн заал", liquor: "Архи заал" };
-// Excel баганын үсэг (0=A, 1=B, ...). 12 багана хангалттай.
-const COLS = Array.from({ length: 12 }, (_, i) => ({ idx: i, letter: String.fromCharCode(65 + i) }));
+
+function fmtSize(b: number): string {
+  if (!b) return "";
+  if (b < 1024) return `${b}B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)}KB`;
+  return `${(b / 1024 / 1024).toFixed(1)}MB`;
+}
+function fmtDate(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(`${iso}Z`);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("mn-MN", { year: "2-digit", month: "2-digit", day: "2-digit" });
+}
 
 export default function ProductMovementImport() {
   const now = new Date();
@@ -28,13 +47,6 @@ export default function ProductMovementImport() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  // Баганын тохиргоо
-  const [cfgOpen, setCfgOpen] = useState(false);
-  const [codeCol, setCodeCol] = useState(0);
-  const [qtyCol, setQtyCol] = useState(1);
-  const [cfgSaving, setCfgSaving] = useState(false);
-
-  // Нэг далд file input — target-аар чиглүүлнэ
   const fileRef = useRef<HTMLInputElement | null>(null);
   const targetRef = useRef<{ year: number; kind: Kind } | null>(null);
 
@@ -46,15 +58,8 @@ export default function ProductMovementImport() {
       setError(e?.response?.data?.detail ?? "Жагсаалт татаж чадсангүй.");
     }
   };
-  const loadConfig = async () => {
-    try {
-      const r = await api.get("/product-yearly-movement/config");
-      setCodeCol(r.data?.code_col ?? 0);
-      setQtyCol(r.data?.qty_col ?? 1);
-    } catch { /* default */ }
-  };
 
-  useEffect(() => { loadSlots(); loadConfig(); }, []);
+  useEffect(() => { loadSlots(); }, []);
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(""), 3500); };
 
@@ -77,8 +82,8 @@ export default function ProductMovementImport() {
       fd.append("kind", t.kind);
       const r = await api.post("/product-yearly-movement/import", fd);
       const d = r.data ?? {};
-      flash(`${t.year} он · ${KIND_LABEL[t.kind]}: ${d.rows_upserted ?? 0} бараа` +
-        (d.rows_skipped ? ` (${d.rows_skipped} алгассан)` : ""));
+      flash(`${t.year} он · ${KIND_LABEL[t.kind]}: ${d.filename ?? "файл"} хадгалагдлаа` +
+        (d.row_count ? ` (~${d.row_count} мөр)` : ""));
       await loadSlots();
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Файл оруулахад алдаа гарлаа.");
@@ -88,8 +93,27 @@ export default function ProductMovementImport() {
     }
   };
 
+  const onDownload = async (year: number, kind: Kind, filename: string) => {
+    try {
+      const r = await api.get("/product-yearly-movement/download", {
+        params: { year, kind },
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(new Blob([r.data], { type: "application/octet-stream" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || `${KIND_LABEL[kind]}_${year}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "Татахад алдаа гарлаа.");
+    }
+  };
+
   const onDelete = async (year: number, kind: Kind) => {
-    if (!confirm(`${year} он — ${KIND_LABEL[kind]}-ийн хөдөлгөөн устгах уу?`)) return;
+    if (!confirm(`${year} он — ${KIND_LABEL[kind]}-ийн хөдөлгөөний файл устгах уу?`)) return;
     try {
       await api.delete(`/product-yearly-movement/${year}/${kind}`);
       flash("Устгалаа.");
@@ -97,17 +121,6 @@ export default function ProductMovementImport() {
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Устгахад алдаа гарлаа.");
     }
-  };
-
-  const saveConfig = async () => {
-    if (codeCol === qtyCol) { setError("Код ба тоо багана өөр байх ёстой."); return; }
-    setCfgSaving(true); setError("");
-    try {
-      await api.put("/product-yearly-movement/config", { code_col: codeCol, qty_col: qtyCol });
-      flash("Баганын тохиргоо хадгалагдлаа ✓");
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? "Хадгалахад алдаа гарлаа.");
-    } finally { setCfgSaving(false); }
   };
 
   // Харуулах он жил: одоо + сүүлийн 4 он + дата орсон бүх он, буурахаар
@@ -126,7 +139,7 @@ export default function ProductMovementImport() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="px-4 py-3 sm:px-6 sm:py-4">
-      <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
+      <input ref={fileRef} type="file" className="hidden"
         onChange={(e) => { onFileChosen(e.target.files?.[0]); e.currentTarget.value = ""; }} />
 
       {/* Toast */}
@@ -150,49 +163,8 @@ export default function ProductMovementImport() {
         </Link>
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Хөдөлгөөний файл оруулалт</h1>
-          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Үндсэн заал + Архи заалны хөдөлгөөнийг <b>зөвхөн оноор</b> оруулна. Сар бүрийн задаргаа байхгүй.</p>
+          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Үндсэн заал + Архи заалны хөдөлгөөнийг <b>зөвхөн оноор</b> оруулна. Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална.</p>
         </div>
-      </div>
-
-      {/* ── Баганын тохиргоо (хураагдсан) ── */}
-      <div className="mt-4 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50/40">
-        <button onClick={() => setCfgOpen((v) => !v)}
-          className="flex w-full items-center gap-2.5 px-4 py-3 text-left hover:bg-amber-50">
-          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber-100 text-amber-700"><Settings2 size={15} /></div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-semibold text-gray-800">Тохиргоо — Excel баганын байршил</div>
-            <div className="text-[11px] text-gray-600">Одоо: Код = <b>{COLS[codeCol]?.letter ?? "?"}</b> багана, Тоо = <b>{COLS[qtyCol]?.letter ?? "?"}</b> багана</div>
-          </div>
-          {cfgOpen ? <ChevronDown size={16} className="text-amber-500" /> : <ChevronRight size={16} className="text-amber-500" />}
-        </button>
-        {cfgOpen && (
-          <div className="border-t border-amber-200 px-4 py-3">
-            <p className="mb-3 text-[12px] text-gray-600">
-              Оруулах Excel файлын <b>аль багана нь барааны код</b>, <b>аль багана нь хөдөлгөөний тоо</b> болохыг сонгоно.
-            </p>
-            <div className="flex flex-wrap items-end gap-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-gray-500">Барааны код</label>
-                <select value={codeCol} onChange={(e) => setCodeCol(Number(e.target.value))}
-                  className="mt-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400">
-                  {COLS.map((c) => <option key={c.idx} value={c.idx}>{c.letter} багана</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-gray-500">Хөдөлгөөний тоо</label>
-                <select value={qtyCol} onChange={(e) => setQtyCol(Number(e.target.value))}
-                  className="mt-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400">
-                  {COLS.map((c) => <option key={c.idx} value={c.idx}>{c.letter} багана</option>)}
-                </select>
-              </div>
-              <button onClick={saveConfig} disabled={cfgSaving}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-amber-700 disabled:opacity-50">
-                {cfgSaving ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />} Хадгалах
-              </button>
-            </div>
-            <p className="mt-2 text-[11px] text-gray-400">Эхний мөр гарчиг (текст) бол автоматаар алгасна. Нэг бараа олон мөр байвал нийлүүлж тооцно.</p>
-          </div>
-        )}
       </div>
 
       {/* ── Статист + сэргээх ── */}
@@ -211,18 +183,20 @@ export default function ProductMovementImport() {
           const isFuture = y > curYear;
           return (
             <div key={y} className={`rounded-2xl border bg-white p-3.5 shadow-sm ${isFuture ? "border-gray-100 opacity-60" : "border-gray-200"}`}>
-              <div className="mb-2.5 flex items-center justify-between">
+              <div className="mb-2 flex items-center justify-between">
                 <span className="text-[15px] font-bold text-gray-900">{y} он</span>
-                {s && (s.has_main || s.has_liquor) && (
-                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">{s.count} бараа</span>
-                )}
               </div>
               <KindRow icon={<Store size={13} />} label="Үндсэн заал" color="blue"
-                has={!!s?.has_main} busy={busy === `${y}-main`}
-                onUpload={() => pickFile(y, "main")} onDelete={() => onDelete(y, "main")} />
+                info={s?.main ?? null} busy={busy === `${y}-main`}
+                onUpload={() => pickFile(y, "main")}
+                onDownload={(fn) => onDownload(y, "main", fn)}
+                onDelete={() => onDelete(y, "main")} />
+              <div className="my-2 border-t border-dashed border-gray-100" />
               <KindRow icon={<Wine size={13} />} label="Архи заал" color="amber"
-                has={!!s?.has_liquor} busy={busy === `${y}-liquor`}
-                onUpload={() => pickFile(y, "liquor")} onDelete={() => onDelete(y, "liquor")} />
+                info={s?.liquor ?? null} busy={busy === `${y}-liquor`}
+                onUpload={() => pickFile(y, "liquor")}
+                onDownload={(fn) => onDownload(y, "liquor", fn)}
+                onDelete={() => onDelete(y, "liquor")} />
             </div>
           );
         })}
@@ -231,38 +205,57 @@ export default function ProductMovementImport() {
   );
 }
 
-function KindRow({ icon, label, color, has, busy, onUpload, onDelete }: {
+function KindRow({ icon, label, color, info, busy, onUpload, onDownload, onDelete }: {
   icon: React.ReactNode; label: string; color: "blue" | "amber";
-  has: boolean; busy: boolean; onUpload: () => void; onDelete: () => void;
+  info: FileInfo | null; busy: boolean;
+  onUpload: () => void; onDownload: (filename: string) => void; onDelete: () => void;
 }) {
   const c = color === "blue"
     ? { tx: "text-blue-700", bg: "bg-blue-50", ring: "ring-blue-200" }
     : { tx: "text-amber-700", bg: "bg-amber-50", ring: "ring-amber-200" };
+  const meta = info
+    ? [fmtSize(info.size_bytes), info.row_count ? `~${info.row_count} мөр` : "", fmtDate(info.uploaded_at)]
+        .filter(Boolean).join(" · ")
+    : "";
   return (
-    <div className="flex items-center gap-2 py-1">
-      <span className={`inline-flex items-center gap-1 text-[12px] font-medium ${c.tx}`}>{icon}{label}</span>
-      <div className="ml-auto flex items-center gap-1">
-        {has ? (
-          <>
+    <div>
+      <div className="flex items-center gap-2">
+        <span className={`inline-flex items-center gap-1 text-[12px] font-medium ${c.tx}`}>{icon}{label}</span>
+        <div className="ml-auto flex items-center gap-1">
+          {info ? (
             <span className={`inline-flex items-center gap-1 rounded-md ${c.bg} px-2 py-0.5 text-[11px] font-semibold ${c.tx} ring-1 ${c.ring}`}>
               <Check size={11} /> Орсон
             </span>
-            <button onClick={onUpload} disabled={busy} title="Дахин оруулах"
-              className="grid h-6 w-6 place-items-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50">
-              {busy ? <RefreshCw size={11} className="animate-spin" /> : <UploadCloud size={12} />}
+          ) : (
+            <button onClick={onUpload} disabled={busy}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+              {busy ? <RefreshCw size={11} className="animate-spin" /> : <UploadCloud size={11} />} Оруулах
             </button>
-            <button onClick={onDelete} title="Устгах"
-              className="grid h-6 w-6 place-items-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-500">
-              <Trash2 size={11} />
-            </button>
-          </>
-        ) : (
-          <button onClick={onUpload} disabled={busy}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">
-            {busy ? <RefreshCw size={11} className="animate-spin" /> : <UploadCloud size={11} />} Оруулах
-          </button>
-        )}
+          )}
+        </div>
       </div>
+
+      {info && (
+        <div className="mt-1 flex items-center gap-1.5">
+          <FileSpreadsheet size={12} className="shrink-0 text-gray-400" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[11px] font-medium text-gray-700" title={info.filename}>{info.filename}</div>
+            {meta && <div className="text-[10px] text-gray-400">{meta}</div>}
+          </div>
+          <button onClick={() => onDownload(info.filename)} title="Татах"
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-gray-400 hover:bg-emerald-50 hover:text-emerald-600">
+            <Download size={12} />
+          </button>
+          <button onClick={onUpload} disabled={busy} title="Дахин оруулах"
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50">
+            {busy ? <RefreshCw size={11} className="animate-spin" /> : <UploadCloud size={12} />}
+          </button>
+          <button onClick={onDelete} title="Устгах"
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-500">
+            <Trash2 size={11} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

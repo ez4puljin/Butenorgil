@@ -1,36 +1,35 @@
-"""Барааны жилийн хөдөлгөөний API.
+"""Хөдөлгөөний файлын API — он жил + төрлөөр нь ТҮҮХИЙ файл хадгална.
+
+⚠️ ЯМАР Ч ШАЛГУУРГҮЙ: оруулсан файлыг боловсруулахгүй, шүүхгүй, хэвээр нь
+хадгална. (year, kind) тус бүрд хамгийн сүүлд оруулсан файл хадгалагдана.
+Файлыг хэрхэн ашиглахыг хожим тусдаа зааврын дагуу нэмнэ.
 
 Endpoint-ууд:
   POST   /product-yearly-movement/import          — multipart upload (year, kind, file)
-  GET    /product-yearly-movement/slots           — бүх жилийн товч төлөв (grid-д)
-  GET    /product-yearly-movement/list?year=      — тухайн жилийн бараа + qty жагсаалт
-  GET    /product-yearly-movement/config          — Excel баганын тохиргоо
-  PUT    /product-yearly-movement/config          — баганын тохиргоо хадгалах
+  GET    /product-yearly-movement/slots           — бүх жилийн төлөв (grid-д)
+  GET    /product-yearly-movement/download         — ?year=&kind= → хадгалсан файлыг татах
   DELETE /product-yearly-movement/{year}/{kind}   — admin only
-
-ЗӨВХӨН ОНООР — сар бүрийн задаргаа байхгүй.
 """
 from __future__ import annotations
 
-import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db, require_role
+from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
-from app.models.product_yearly_movement import (
-    ProductYearlyMovement,
+from app.models.movement_file import (
+    MovementFile,
     PYM_KIND_MAIN,
     PYM_KIND_LIQUOR,
     PYM_KINDS,
 )
-from app.services.product_yearly_movement_parser import parse_and_upsert
 
 
 router = APIRouter(prefix="/product-yearly-movement", tags=["product-yearly-movement"])
@@ -38,36 +37,27 @@ router = APIRouter(prefix="/product-yearly-movement", tags=["product-yearly-move
 UPLOAD_DIR = Path("app/data/uploads/yearly_movement")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Баганын тохиргоо (Excel-ийн аль багана код/тоо вэ) ──────────────────────
-_CONFIG_FILE = Path("app/data/movement_config.json")
-_DEFAULT_CONFIG = {"code_col": 0, "qty_col": 1}   # A=код, B=тоо (0-based)
 
-
-def get_mv_config() -> dict:
-    """Excel баганын тохиргоо: {"code_col": int, "qty_col": int} (0-based)."""
+def _safe_row_count(path: Path) -> int:
+    """Файлын мөрийн тоог best-effort-оор тоолно. Алдвал 0 буцаана —
+    импортыг ХЭЗЭЭ Ч зогсоохгүй (зөвхөн мэдээллийн зорилгоор)."""
     try:
-        if _CONFIG_FILE.exists():
-            d = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            return {
-                "code_col": max(0, int(d.get("code_col", 0))),
-                "qty_col": max(0, int(d.get("qty_col", 1))),
-            }
+        import pandas as pd
+        name = str(path).lower()
+        order = ["xlrd", "openpyxl"] if name.endswith(".xls") else ["openpyxl", "xlrd"]
+        for eng in order:
+            try:
+                df = pd.read_excel(path, header=None, dtype=str, engine=eng)
+                return int(len(df))
+            except Exception:
+                continue
     except Exception:
         pass
-    return dict(_DEFAULT_CONFIG)
+    return 0
 
-
-def set_mv_config(code_col: int, qty_col: int) -> dict:
-    cfg = {"code_col": max(0, int(code_col)), "qty_col": max(0, int(qty_col))}
-    _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    return cfg
-
-
-# ── Endpoints ───────────────────────────────────────────────────────────────
 
 @router.post("/import")
-def import_excel(
+def import_file(
     request: Request,
     year: int = Form(...),
     kind: str = Form(...),
@@ -75,20 +65,29 @@ def import_excel(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Excel файлыг (item_code + qty) парс хийгээд upsert хийнэ."""
+    """Файлыг ямар ч шалгуургүйгээр хэвээр нь хадгална. (year, kind) хослолд
+    өмнө нь файл байсан бол солино."""
     if kind not in PYM_KINDS:
         raise HTTPException(400, f"kind нь '{PYM_KIND_MAIN}' эсвэл '{PYM_KIND_LIQUOR}' байх ёстой.")
-    if year < 2000 or year > 2100:
-        raise HTTPException(400, "year буруу байна.")
-    if not (file.filename or "").lower().endswith((".xlsx", ".xls")):
-        raise HTTPException(400, "Зөвхөн Excel (.xlsx, .xls) файл хүлээн авна.")
+    year = int(year)
 
-    # Файлыг хадгална (audit-д ашиглах)
-    slot_dir = UPLOAD_DIR / kind / str(year)
-    slot_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    safe_name = (file.filename or "upload.xlsx").replace("\\", "_").replace("/", "_")
-    saved_path = slot_dir / f"{ts}_{safe_name}"
+    # Өргөтгөлийг хадгална (буцааж татахад зөв нээгдэхийн тулд) — гэхдээ ШААРДАХГҮЙ
+    orig_name = (file.filename or "upload").replace("\\", "_").replace("/", "_")
+    ext = os.path.splitext(orig_name)[1] or ".xlsx"
+    stored_name = f"{kind}_{year}{ext}"
+    saved_path = UPLOAD_DIR / stored_name
+
+    # Хуучин файлыг (өөр өргөтгөлтэй байсан бол) цэвэрлэнэ
+    prev = db.query(MovementFile).filter(
+        MovementFile.year == year, MovementFile.kind == kind
+    ).first()
+    if prev and prev.stored_filename and prev.stored_filename != stored_name:
+        try:
+            (UPLOAD_DIR / prev.stored_filename).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # Файлыг хадгална
     try:
         with open(saved_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
@@ -98,33 +97,51 @@ def import_excel(
         except Exception:
             pass
 
-    cfg = get_mv_config()
-    try:
-        result = parse_and_upsert(saved_path, year=year, kind=kind, db=db,
-                                  code_col=cfg["code_col"], qty_col=cfg["qty_col"])
-    except Exception as e:
-        raise HTTPException(400, f"Файлыг боловсруулахад алдаа гарлаа: {e}")
+    size_bytes = saved_path.stat().st_size if saved_path.exists() else 0
+    row_count = _safe_row_count(saved_path)
+    now = datetime.utcnow()
+
+    if prev:
+        prev.original_filename = orig_name
+        prev.stored_filename = stored_name
+        prev.size_bytes = size_bytes
+        prev.row_count = row_count
+        prev.uploaded_by_id = int(getattr(u, "id", 0) or 0)
+        prev.uploaded_by_name = str(getattr(u, "username", "") or "")
+        prev.uploaded_at = now
+    else:
+        db.add(MovementFile(
+            year=year, kind=kind,
+            original_filename=orig_name, stored_filename=stored_name,
+            size_bytes=size_bytes, row_count=row_count,
+            uploaded_by_id=int(getattr(u, "id", 0) or 0),
+            uploaded_by_name=str(getattr(u, "username", "") or ""),
+            uploaded_at=now,
+        ))
+    db.commit()
 
     audit(
         db, request, u,
         action="product_yearly_movement_import",
-        entity_type="product_yearly_movement",
-        extra={
-            "year": year, "kind": kind,
-            "filename": file.filename, "rows_parsed": result["parsed"],
-            "rows_upserted": result["upserted"], "rows_skipped": result["skipped"],
-        },
+        entity_type="movement_file",
+        extra={"year": year, "kind": kind, "filename": orig_name,
+               "size_bytes": size_bytes, "row_count": row_count},
         autocommit=True,
     )
 
     return {
-        "ok": True,
-        "year": year,
-        "kind": kind,
-        "rows_parsed": result["parsed"],
-        "rows_upserted": result["upserted"],
-        "rows_skipped": result["skipped"],
-        "examples": result["examples"],
+        "ok": True, "year": year, "kind": kind,
+        "filename": orig_name, "size_bytes": size_bytes, "row_count": row_count,
+    }
+
+
+def _file_info(r: MovementFile) -> dict:
+    return {
+        "filename": r.original_filename,
+        "size_bytes": r.size_bytes or 0,
+        "row_count": r.row_count or 0,
+        "uploaded_at": (r.uploaded_at.isoformat() if r.uploaded_at else None),
+        "uploaded_by": r.uploaded_by_name or "",
     }
 
 
@@ -133,82 +150,45 @@ def list_slots(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Бүх жилийн товчилсон төлөв — UI-ийн grid-д хэрэглэнэ."""
-    rows = db.query(
-        ProductYearlyMovement.year,
-        ProductYearlyMovement.qty_main,
-        ProductYearlyMovement.qty_liquor,
-    ).all()
-
+    """Бүх жилийн төлөв — UI-ийн grid-д хэрэглэнэ."""
+    rows = db.query(MovementFile).all()
     by_year: dict[int, dict] = {}
-    for y, qm, ql in rows:
-        info = by_year.setdefault(y, {"count": 0, "has_main": False, "has_liquor": False})
-        info["count"] += 1
-        if (qm or 0.0) > 0:
+    for r in rows:
+        y = int(r.year)
+        info = by_year.setdefault(y, {"year": y, "has_main": False, "has_liquor": False,
+                                       "main": None, "liquor": None})
+        if r.kind == PYM_KIND_MAIN:
             info["has_main"] = True
-        if (ql or 0.0) > 0:
+            info["main"] = _file_info(r)
+        elif r.kind == PYM_KIND_LIQUOR:
             info["has_liquor"] = True
-
-    return [
-        {"year": y, "count": info["count"], "has_main": info["has_main"], "has_liquor": info["has_liquor"]}
-        for y, info in sorted(by_year.items(), reverse=True)
-    ]
+            info["liquor"] = _file_info(r)
+    return [by_year[y] for y in sorted(by_year.keys(), reverse=True)]
 
 
-@router.get("/list")
-def list_year(
-    year: int,
+@router.get("/download")
+def download_file(
+    year: int = Query(...),
+    kind: str = Query(...),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Тухайн жилийн бүх бараа + qty жагсаалт."""
-    rows = db.query(
-        ProductYearlyMovement.item_code,
-        ProductYearlyMovement.qty_main,
-        ProductYearlyMovement.qty_liquor,
-        ProductYearlyMovement.updated_at,
-    ).filter(
-        ProductYearlyMovement.year == year,
-    ).order_by(ProductYearlyMovement.item_code).all()
-
-    return {
-        "year": year,
-        "count": len(rows),
-        "items": [
-            {
-                "item_code": code,
-                "qty_main": qm or 0.0,
-                "qty_liquor": ql or 0.0,
-                "qty_total": (qm or 0.0) + (ql or 0.0),
-                "updated_at": (updated.isoformat() if updated else None),
-            }
-            for code, qm, ql, updated in rows
-        ],
-    }
-
-
-class ConfigIn(BaseModel):
-    code_col: int = 0
-    qty_col: int = 1
-
-
-@router.get("/config")
-def get_config(u: User = Depends(require_role("admin", "supervisor", "manager"))):
-    """Excel баганын тохиргоо (код/тоо багана)."""
-    return get_mv_config()
-
-
-@router.put("/config")
-def put_config(
-    body: ConfigIn,
-    request: Request,
-    db: Session = Depends(get_db),
-    u: User = Depends(require_role("admin", "supervisor", "manager")),
-):
-    cfg = set_mv_config(body.code_col, body.qty_col)
-    audit(db, request, u, action="product_yearly_movement_config",
-          entity_type="product_yearly_movement", extra=cfg, autocommit=True)
-    return cfg
+    """Тухайн (year, kind)-д хадгалсан түүхий файлыг буцааж татна."""
+    if kind not in PYM_KINDS:
+        raise HTTPException(400, "kind буруу.")
+    r = db.query(MovementFile).filter(
+        MovementFile.year == int(year), MovementFile.kind == kind
+    ).first()
+    if not r or not r.stored_filename:
+        raise HTTPException(404, "Файл олдсонгүй.")
+    path = UPLOAD_DIR / r.stored_filename
+    if not path.exists():
+        raise HTTPException(404, "Хадгалсан файл байхгүй байна.")
+    return FileResponse(
+        path=str(path),
+        filename=r.original_filename or r.stored_filename,
+        media_type="application/octet-stream",
+    )
 
 
 @router.delete("/{year}/{kind}")
@@ -219,37 +199,26 @@ def delete_slot(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin")),
 ):
-    """Тухайн жилийн kind талын qty-г 0 болгоно. Хэрэв нөгөө тал нь ч 0 бол мөрийг устгана."""
+    """Тухайн (year, kind)-ийн файл + метадатаг устгана."""
     if kind not in PYM_KINDS:
         raise HTTPException(400, "kind буруу.")
-
-    rows = db.query(ProductYearlyMovement).filter(
-        ProductYearlyMovement.year == year,
-    ).all()
-
-    affected = 0
-    removed = 0
-    for r in rows:
-        if kind == PYM_KIND_MAIN:
-            if (r.qty_main or 0.0) <= 0:
-                continue
-            r.qty_main = 0.0
-        else:
-            if (r.qty_liquor or 0.0) <= 0:
-                continue
-            r.qty_liquor = 0.0
-        affected += 1
-        if (r.qty_main or 0.0) <= 0 and (r.qty_liquor or 0.0) <= 0:
-            db.delete(r)
-            removed += 1
+    r = db.query(MovementFile).filter(
+        MovementFile.year == int(year), MovementFile.kind == kind
+    ).first()
+    if not r:
+        return {"ok": True, "removed": 0}
+    if r.stored_filename:
+        try:
+            (UPLOAD_DIR / r.stored_filename).unlink(missing_ok=True)
+        except Exception:
+            pass
+    db.delete(r)
     db.commit()
-
     audit(
         db, request, u,
         action="product_yearly_movement_delete",
-        entity_type="product_yearly_movement",
-        extra={"year": year, "kind": kind, "affected": affected, "removed": removed},
+        entity_type="movement_file",
+        extra={"year": int(year), "kind": kind},
         autocommit=True,
     )
-
-    return {"ok": True, "affected": affected, "removed": removed}
+    return {"ok": True, "removed": 1}
