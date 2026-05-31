@@ -70,6 +70,9 @@ const ACTION_LABEL: Record<string, string> = {
   // Орлогын файл (Income file)
   income_file_import: "Орлого — файл оруулах",
   income_file_delete: "Орлого — файл устгах",
+  // Үлдэгдлийн файл (Balance file)
+  balance_file_import: "Үлдэгдэл — файл оруулах",
+  balance_file_delete: "Үлдэгдэл — файл устгах",
   // Тооцоо хаах (Bank)
   bank_statement_swap_debit_credit: "Тооцоо хаах — Дебит/Кредит солих",
 };

@@ -47,6 +47,7 @@ const Documents          = page(() => import("./pages/Documents"));
 const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
 const ProductMovementImport = page(() => import("./pages/ProductMovementImport"));
 const IncomeFileImport   = page(() => import("./pages/IncomeFileImport"));
+const BalanceFileImport  = page(() => import("./pages/BalanceFileImport"));
 const Attendance         = page(() => import("./pages/Attendance"));
 const AttendanceAdmin    = page(() => import("./pages/AttendanceAdmin"));
 
@@ -233,6 +234,7 @@ export default function App() {
                 <Route path="/imports/product-monthly-sales" element={<ProductSalesImport />} />
                 <Route path="/imports/product-movement" element={<ProductMovementImport />} />
                 <Route path="/imports/income-file" element={<IncomeFileImport />} />
+                <Route path="/imports/balance-file" element={<BalanceFileImport />} />
                 <Route path="/reports" element={<Reports />} />
                 <Route
                   path="/order"
