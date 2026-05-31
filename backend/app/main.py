@@ -294,11 +294,13 @@ def ensure_attendance_schema():
     """Цаг бүртгэл (attendance_*) — шинэ table бол create_all() үүсгэнэ.
     Глобал default ажлын хуваарь (employee_id=NULL) байхгүй бол үүсгэнэ."""
     from app.models.attendance import AttendanceSchedule
-    # Гариг бүрийн цаг (day_hours) багана нэмэх (хуучин DB-д)
+    # Хуучин DB-д шинэ багана нэмэх
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(attendance_schedules)")).fetchall()]
         if cols and "day_hours" not in cols:
             conn.execute(text("ALTER TABLE attendance_schedules ADD COLUMN day_hours VARCHAR(500) DEFAULT ''"))
+        if cols and "role_value" not in cols:
+            conn.execute(text("ALTER TABLE attendance_schedules ADD COLUMN role_value VARCHAR(50) DEFAULT ''"))
     db = SessionLocal()
     try:
         has_default = db.query(AttendanceSchedule).filter(

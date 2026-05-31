@@ -5,11 +5,10 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useLiveRefresh } from "../lib/liveEvents";
-import { useAuthStore } from "../store/authStore";
 
 type DayHours = Record<string, [string, string]>;  // {"0":["08:00","15:00"], ...}
 type SchedData = { work_days: string; work_start: string; work_end: string; grace_minutes: number; day_hours?: DayHours };
-type RoleOpt = { value: string; label: string };
+type RoleSched = { value: string; label: string; employee_count: number; schedule: SchedData | null };
 
 type Row = {
   employee_id: number;
@@ -65,8 +64,6 @@ function fmtWorked(min: number): string {
 }
 
 export default function AttendanceAdmin() {
-  const { role, baseRole } = useAuthStore();
-  const isAdmin = (baseRole ?? role) === "admin";  // role өөрчлөх зөвхөн admin
   const [tab, setTab] = useState<"summary" | "requests" | "schedules">("summary");
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
@@ -89,7 +86,7 @@ export default function AttendanceAdmin() {
   // Schedules
   const [defaultSched, setDefaultSched] = useState<any>(null);
   const [schedRows, setSchedRows] = useState<SchedRow[]>([]);
-  const [roles, setRoles] = useState<RoleOpt[]>([]);
+  const [roleScheds, setRoleScheds] = useState<RoleSched[]>([]);
 
   const sumTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -118,18 +115,25 @@ export default function AttendanceAdmin() {
       const r = await api.get("/attendance/schedules");
       setDefaultSched(r.data.default);
       setSchedRows(r.data.employees ?? []);
-      setRoles(r.data.roles ?? []);
+      setRoleScheds(r.data.roles ?? []);
     } catch { /* silent */ }
   };
 
-  const changeRole = async (employeeId: number, newRole: string) => {
+  const saveRoleSchedule = async (roleValue: string, s: SchedData) => {
     try {
-      await api.put(`/attendance/employees/${employeeId}/role`, { role: newRole });
-      flash("Тушаал шинэчлэгдлээ ✓");
+      await api.put(`/attendance/schedules/role/${roleValue}`, s);
+      flash("Тушаалын хуваарь хадгалагдлаа ✓");
       await loadSchedules();
     } catch (e: any) {
-      setErr(e?.response?.data?.detail ?? "Тушаал солиход алдаа гарлаа");
+      setErr(e?.response?.data?.detail ?? "Хадгалахад алдаа гарлаа");
     }
+  };
+  const clearRoleSchedule = async (roleValue: string) => {
+    try {
+      await api.delete(`/attendance/schedules/role/${roleValue}`);
+      flash("Тушаалын хуваарь устгагдлаа");
+      await loadSchedules();
+    } catch { setErr("Алдаа гарлаа"); }
   };
 
   useEffect(() => { loadSummary(); loadPending(); }, []);
@@ -376,19 +380,36 @@ export default function AttendanceAdmin() {
         <div className="mt-4 space-y-4">
           {defaultSched && (
             <ScheduleCard
-              title="Глобал default (хувийн хуваарьгүй бүх ажилтанд)"
+              title="Глобал default (хуваарьгүй бүх ажилтанд)"
               sched={defaultSched}
               onSave={(s) => saveSchedule(0, s)}
             />
           )}
+
+          {/* ── Тушаалаар хуваарь — адилхан тушаалтай бүх ажилтанд хамаарна ── */}
           <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-            <div className="border-b border-gray-100 px-4 py-3 text-[13px] font-semibold text-gray-700">Ажилтны хувийн хуваарь</div>
+            <div className="border-b border-gray-100 px-4 py-3">
+              <div className="text-[13px] font-semibold text-gray-700">Тушаалаар хуваарь</div>
+              <div className="mt-0.5 text-[11px] text-gray-500">Адилхан тушаалтай бүх ажилтан ижил цагийн хуваарьтай болно</div>
+            </div>
+            <div className="divide-y divide-gray-50">
+              {roleScheds.map((r) => (
+                <RoleScheduleRow key={r.value} role={r} defaultSched={defaultSched}
+                  onSave={(s) => saveRoleSchedule(r.value, s)} onClear={() => clearRoleSchedule(r.value)} />
+              ))}
+            </div>
+          </div>
+
+          {/* ── Ажилтны хувийн хуваарь (онцгой тохиолдолд override) ── */}
+          <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+            <div className="border-b border-gray-100 px-4 py-3">
+              <div className="text-[13px] font-semibold text-gray-700">Ажилтны хувийн хуваарь</div>
+              <div className="mt-0.5 text-[11px] text-gray-500">Зөвхөн онцгой ажилтанд — тушаалынхаас давуу. Тушаалыг энд засахгүй.</div>
+            </div>
             <div className="divide-y divide-gray-50">
               {schedRows.map((e) => (
                 <EmployeeScheduleRow key={e.id} emp={e} defaultSched={defaultSched}
-                  roles={roles} isAdmin={isAdmin}
-                  onSave={(s) => saveSchedule(e.id, s)} onClear={() => clearSchedule(e.id)}
-                  onChangeRole={(rv) => changeRole(e.id, rv)} />
+                  onSave={(s) => saveSchedule(e.id, s)} onClear={() => clearSchedule(e.id)} />
               ))}
             </div>
           </div>
@@ -501,31 +522,22 @@ function ScheduleCard({ title, sched, onSave }: {
   );
 }
 
-function EmployeeScheduleRow({ emp, defaultSched, roles, isAdmin, onSave, onClear, onChangeRole }: {
-  emp: SchedRow; defaultSched: any; roles: RoleOpt[]; isAdmin: boolean;
-  onSave: (s: any) => void; onClear: () => void; onChangeRole: (roleValue: string) => void;
+function RoleScheduleRow({ role, defaultSched, onSave, onClear }: {
+  role: RoleSched; defaultSched: any;
+  onSave: (s: SchedData) => void; onClear: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const hasCustom = !!emp.schedule;
-  const init = emp.schedule || defaultSched || { work_days: "0,1,2,3,4,5", work_start: "09:00", work_end: "18:00", grace_minutes: 10 };
+  const hasCustom = !!role.schedule;
+  const init = role.schedule || defaultSched || { work_days: "0,1,2,3,4,5", work_start: "09:00", work_end: "18:00", grace_minutes: 10 };
   return (
     <div className="px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium text-gray-800">{emp.name}</span>
-        {/* Role — admin бол dropdown-оор шууд засна, эс бол монгол нэрээр харуулна */}
-        {isAdmin ? (
-          <select value={emp.role} onChange={(e) => onChangeRole(e.target.value)}
-            className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[11px] text-gray-700 outline-none hover:border-blue-300 focus:border-blue-400 cursor-pointer"
-            title="Тушаал солих">
-            {roles.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-          </select>
-        ) : (
-          <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{emp.role_label || emp.role}</span>
-        )}
+        <span className="font-semibold text-gray-800">{role.label}</span>
+        <span className="text-[11px] text-gray-400">{role.employee_count} ажилтан</span>
         {hasCustom ? (
-          <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700 ring-1 ring-blue-200">Хувийн хуваарь</span>
+          <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">Хуваарьтай</span>
         ) : (
-          <span className="text-[11px] text-gray-300">(default хуваарь)</span>
+          <span className="text-[11px] text-gray-300">(default ашиглана)</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {hasCustom && (
@@ -534,6 +546,43 @@ function EmployeeScheduleRow({ emp, defaultSched, roles, isAdmin, onSave, onClea
           <button onClick={() => setOpen((v) => !v)}
             className="rounded-md border border-gray-200 px-2.5 py-1 text-[12px] font-medium text-gray-600 hover:bg-gray-50">
             {open ? "Хаах" : "Хуваарь тохируулах"}
+          </button>
+        </div>
+      </div>
+      {open && (
+        <div className="mt-3 rounded-xl bg-gray-50 p-3">
+          <ScheduleEditor init={init} onSave={(s) => { onSave(s); setOpen(false); }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmployeeScheduleRow({ emp, defaultSched, onSave, onClear }: {
+  emp: SchedRow; defaultSched: any;
+  onSave: (s: any) => void; onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const hasCustom = !!emp.schedule;
+  const init = emp.schedule || defaultSched || { work_days: "0,1,2,3,4,5", work_start: "09:00", work_end: "18:00", grace_minutes: 10 };
+  return (
+    <div className="px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-gray-800">{emp.name}</span>
+        {/* Тушаал — зөвхөн харуулна (монгол нэр), энд засахгүй */}
+        <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{emp.role_label || emp.role}</span>
+        {hasCustom ? (
+          <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700 ring-1 ring-blue-200">Хувийн хуваарь</span>
+        ) : (
+          <span className="text-[11px] text-gray-300">(тушаалынхаар)</span>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          {hasCustom && (
+            <button onClick={onClear} className="rounded-md px-2 py-1 text-[11px] text-gray-400 hover:bg-gray-100 hover:text-rose-600">Тушаалынхаар</button>
+          )}
+          <button onClick={() => setOpen((v) => !v)}
+            className="rounded-md border border-gray-200 px-2.5 py-1 text-[12px] font-medium text-gray-600 hover:bg-gray-50">
+            {open ? "Хаах" : "Хувийн хуваарь"}
           </button>
         </div>
       </div>

@@ -65,8 +65,12 @@ class AttendanceSchedule(Base):
     __tablename__ = "attendance_schedules"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # NULL → глобал default. Бусад → тухайн ажилтны хувийн хуваарь.
+    # Хуваарийн хамрах хүрээ (3 төрөл):
+    #   • employee_id заагдсан      → тухайн ажилтны хувийн хуваарь (хамгийн нарийн)
+    #   • role_value заагдсан        → тухайн тушаалтай БҮХ ажилтанд хамаарна
+    #   • хоёул NULL                 → глобал default (бусдад нь)
     employee_id = Column(Integer, ForeignKey("users.id"), nullable=True, unique=True, index=True)
+    role_value: Mapped[str] = mapped_column(String(50), default="", index=True)  # "" = role-бус мөр
 
     work_days: Mapped[str] = mapped_column(String(20), default="0,1,2,3,4,5")   # 0=Дав .. 6=Ням
     work_start: Mapped[str] = mapped_column(String(5), default="09:00")         # default эхлэх цаг

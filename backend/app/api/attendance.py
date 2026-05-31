@@ -80,27 +80,35 @@ def _minutes_of(dt: datetime) -> int:
     return dt.hour * 60 + dt.minute
 
 
-def _schedule_map(db: Session) -> tuple[dict, AttendanceSchedule]:
-    """Бүх per-employee хуваарь + глобал default-г буцаана."""
+def _schedule_map(db: Session) -> tuple[dict, dict, AttendanceSchedule]:
+    """Бүх хуваарийг ялгаж буцаана:
+       per_emp  {employee_id: sched}  — хувийн override
+       per_role {role_value: sched}   — тушаалаар (адилхан тушаалтай бүгдэд)
+       default  — глобал
+    """
     rows = db.query(AttendanceSchedule).all()
     per_emp: dict[int, AttendanceSchedule] = {}
+    per_role: dict[str, AttendanceSchedule] = {}
     default: Optional[AttendanceSchedule] = None
     for r in rows:
-        if r.employee_id is None:
-            default = r
-        else:
+        if r.employee_id is not None:
             per_emp[r.employee_id] = r
+        elif (r.role_value or "").strip():
+            per_role[r.role_value] = r
+        else:
+            default = r
     if default is None:
-        # Fallback (анхдагч мөр алга болсон тохиолдол)
         default = AttendanceSchedule(
-            employee_id=None, work_days="0,1,2,3,4,5",
+            employee_id=None, role_value="", work_days="0,1,2,3,4,5",
             work_start="09:00", work_end="18:00", grace_minutes=10,
         )
-    return per_emp, default
+    return per_emp, per_role, default
 
 
-def _sched_for(emp_id: int, per_emp: dict, default: AttendanceSchedule) -> AttendanceSchedule:
-    return per_emp.get(emp_id) or default
+def _sched_for(emp_id: int, emp_role: str, per_emp: dict, per_role: dict,
+               default: AttendanceSchedule) -> AttendanceSchedule:
+    """Хуваарь сонгох эрэмбэ: хувийн override → тушаалын хуваарь → глобал default."""
+    return per_emp.get(emp_id) or per_role.get(emp_role or "") or default
 
 
 def _serialize_punch(p: AttendancePunch) -> dict:
@@ -266,10 +274,10 @@ def my_month(
     db: Session = Depends(get_db),
     u: User = Depends(get_current_user),
 ):
-    return _employee_month_summary(db, u.id, year, month)
+    return _employee_month_summary(db, u.id, u.role, year, month)
 
 
-def _employee_month_summary(db: Session, emp_id: int, year: int, month: int) -> dict:
+def _employee_month_summary(db: Session, emp_id: int, emp_role: str, year: int, month: int) -> dict:
     if not (1 <= month <= 12):
         raise HTTPException(400, "month буруу.")
     first = date_type(year, month, 1)
@@ -284,8 +292,8 @@ def _employee_month_summary(db: Session, emp_id: int, year: int, month: int) -> 
     for p in punches:
         by_day.setdefault(p.punch_date, []).append(p)
 
-    per_emp, default = _schedule_map(db)
-    sched = _sched_for(emp_id, per_emp, default)
+    per_emp, per_role, default = _schedule_map(db)
+    sched = _sched_for(emp_id, emp_role, per_emp, per_role, default)
 
     days = []
     cur = first
@@ -491,7 +499,7 @@ def admin_summary(
     for p in punches:
         bucket.setdefault((p.employee_id, p.punch_date), []).append(p)
 
-    per_emp, default = _schedule_map(db)
+    per_emp, per_role, default = _schedule_map(db)
     today = mn_today()
 
     rows = []
@@ -499,7 +507,7 @@ def admin_summary(
     cur = d_from
     while cur <= d_to and cur <= today:
         for e in employees:
-            sched = _sched_for(e.id, per_emp, default)
+            sched = _sched_for(e.id, e.role, per_emp, per_role, default)
             summ = _day_summary(e.id, cur, bucket.get((e.id, cur), []), sched)
             # Зөвхөн утга бүхий мөрийг харуулна (ажлын өдөр эсвэл punch-тай)
             if summ["status"] == "off" and summ["punch_count"] == 0:
@@ -600,22 +608,34 @@ def list_schedules(
     u: User = Depends(require_role("admin", "supervisor")),
 ):
     from app.models.role import Role
-    per_emp, default = _schedule_map(db)
+    per_emp, per_role, default = _schedule_map(db)
     employees = _active_employees(db)
     name_map = {e.id: (e.nickname or e.username) for e in employees}
-    # Role value → монгол label
     roles = db.query(Role).order_by(Role.id.asc()).all()
     role_label = {r.value: (r.label or r.value) for r in roles}
+    # Тухайн тушаалтай идэвхтэй ажилтны тоо
+    role_count: dict[str, int] = {}
+    for e in employees:
+        role_count[e.role] = role_count.get(e.role, 0) + 1
     return {
         "default": _serialize_sched(default),
-        # Бүх role-ийн жагсаалт (dropdown-д + монгол нэр харуулахад)
-        "roles": [{"value": r.value, "label": r.label or r.value} for r in roles],
+        # Тушаал бүр + түүний хуваарь (адилхан тушаалтай бүгдэд хамаарна)
+        "roles": [
+            {
+                "value": r.value,
+                "label": r.label or r.value,
+                "employee_count": role_count.get(r.value, 0),
+                "schedule": (_serialize_sched(per_role[r.value]) if r.value in per_role else None),
+            }
+            for r in roles
+        ],
+        # Ажилтнууд — тушаалаа монгол нэрээр харуулна (засах БОЛОМЖГҮЙ), хувийн override-той эсэх
         "employees": [
             {
                 "id": e.id,
                 "name": e.nickname or e.username,
-                "role": e.role,                                  # систем утга (value)
-                "role_label": role_label.get(e.role, e.role),    # монгол нэр
+                "role": e.role,
+                "role_label": role_label.get(e.role, e.role),
                 "schedule": (_serialize_sched(per_emp[e.id], name_map.get(e.id, ""))
                              if e.id in per_emp else None),
             }
@@ -624,34 +644,69 @@ def list_schedules(
     }
 
 
-class EmployeeRoleIn(BaseModel):
-    role: str
+def _apply_sched_fields(s: AttendanceSchedule, body: ScheduleIn) -> None:
+    """ScheduleIn-ээс хуваарийн талбаруудыг (гариг бүрийн цаг оруулаад) тохируулна."""
+    import json as _json
+    s.work_days = (body.work_days or "0,1,2,3,4,5").strip()
+    s.work_start = (body.work_start or "09:00").strip()
+    s.work_end = (body.work_end or "18:00").strip()
+    s.grace_minutes = max(0, int(body.grace_minutes or 0))
+    clean_dh = {}
+    if body.day_hours:
+        for k, v in body.day_hours.items():
+            if str(k).isdigit() and isinstance(v, (list, tuple)) and len(v) == 2 and v[0] and v[1]:
+                clean_dh[str(k)] = [str(v[0]), str(v[1])]
+    s.day_hours = _json.dumps(clean_dh) if clean_dh else ""
 
 
-@router.put("/employees/{employee_id}/role")
-def set_employee_role(
-    employee_id: int,
-    body: EmployeeRoleIn,
+# ── Тушаалаар хуваарь (адилхан тушаалтай бүх ажилтанд) ──
+# ЭНЭ route-ийг /schedules/{employee_id}-ийн ӨМНӨ тодорхойлно (2 segment).
+@router.put("/schedules/role/{role_value}")
+def set_role_schedule(
+    role_value: str,
+    body: ScheduleIn,
     request: Request,
     db: Session = Depends(get_db),
-    u: User = Depends(require_role("admin")),   # role өөрчлөх нь эмзэг — зөвхөн admin
+    u: User = Depends(require_role("admin", "supervisor")),
 ):
-    """Ажилтны role-ийг хуваарийн хуудаснаас шууд солих (зөвхөн admin)."""
+    """Тушаалын хуваарь тохируулах — тухайн тушаалтай хувийн override-гүй бүх ажилтанд хамаарна."""
     from app.models.role import Role
-    target = db.query(User).filter(User.id == employee_id).first()
-    if not target:
-        raise HTTPException(404, "Ажилтан олдсонгүй.")
-    role_obj = db.query(Role).filter(Role.value == body.role).first()
-    if not role_obj:
+    if not db.query(Role).filter(Role.value == role_value).first():
         raise HTTPException(400, "Тушаал олдсонгүй.")
-    old_role = target.role
-    target.role = role_obj.value
-    target.base_role = role_obj.base_role or role_obj.value
+    s = db.query(AttendanceSchedule).filter(
+        AttendanceSchedule.employee_id.is_(None),
+        AttendanceSchedule.role_value == role_value,
+    ).first()
+    if not s:
+        s = AttendanceSchedule(employee_id=None, role_value=role_value)
+        db.add(s)
+    _apply_sched_fields(s, body)
     db.commit()
-    audit(db, request, u, action="employee_role_changed",
-          entity_type="user", entity_id=target.id,
-          before={"role": old_role}, after={"role": role_obj.value}, autocommit=True)
-    return {"ok": True, "id": target.id, "role": role_obj.value, "role_label": role_obj.label or role_obj.value}
+    db.refresh(s)
+    audit(db, request, u, action="attendance_role_schedule_set",
+          entity_type="attendance_schedule", entity_id=s.id,
+          extra={"role_value": role_value}, autocommit=True)
+    _notify("schedule_changed")
+    return _serialize_sched(s)
+
+
+@router.delete("/schedules/role/{role_value}")
+def clear_role_schedule(
+    role_value: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor")),
+):
+    """Тушаалын хуваарийг устгаж глобал default-руу буцаана."""
+    s = db.query(AttendanceSchedule).filter(
+        AttendanceSchedule.employee_id.is_(None),
+        AttendanceSchedule.role_value == role_value,
+    ).first()
+    if s:
+        db.delete(s)
+        db.commit()
+        _notify("schedule_changed")
+    return {"ok": True}
 
 
 @router.put("/schedules/{employee_id}")
@@ -664,24 +719,13 @@ def set_schedule(
 ):
     target_emp = None if employee_id == 0 else employee_id
     s = db.query(AttendanceSchedule).filter(
-        AttendanceSchedule.employee_id.is_(None) if target_emp is None
+        (AttendanceSchedule.employee_id.is_(None) & (AttendanceSchedule.role_value == "")) if target_emp is None
         else AttendanceSchedule.employee_id == target_emp
     ).first()
     if not s:
-        s = AttendanceSchedule(employee_id=target_emp)
+        s = AttendanceSchedule(employee_id=target_emp, role_value="")
         db.add(s)
-    s.work_days = (body.work_days or "0,1,2,3,4,5").strip()
-    s.work_start = (body.work_start or "09:00").strip()
-    s.work_end = (body.work_end or "18:00").strip()
-    s.grace_minutes = max(0, int(body.grace_minutes or 0))
-    # Гариг бүрийн цаг — зөвхөн зөв форматтай (HH:MM 2 элемент) утгуудыг хадгална
-    import json as _json
-    clean_dh = {}
-    if body.day_hours:
-        for k, v in body.day_hours.items():
-            if str(k).isdigit() and isinstance(v, (list, tuple)) and len(v) == 2 and v[0] and v[1]:
-                clean_dh[str(k)] = [str(v[0]), str(v[1])]
-    s.day_hours = _json.dumps(clean_dh) if clean_dh else ""
+    _apply_sched_fields(s, body)
     db.commit()
     db.refresh(s)
     audit(db, request, u, action="attendance_schedule_set",
