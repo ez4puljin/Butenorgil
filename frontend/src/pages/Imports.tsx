@@ -5,7 +5,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
 import { api } from "../lib/api";
-import { UploadCloud, Info, Play, Pencil, Plus, Trash2, CalendarRange, ChevronRight } from "lucide-react";
+import { UploadCloud, Info, Play, Pencil, Plus, Trash2, CalendarRange, ChevronRight, ArrowLeftRight } from "lucide-react";
 
 type ImportCard = {
   id: string;
@@ -76,16 +76,6 @@ const importCards: ImportCard[] = [
     instruction: [
       "Орлогын тайланг Эксел файлаар экспортлоно.",
       "Оруулсны дараа тайлан нэгтгэх скрипт ажиллана.",
-    ],
-  },
-  {
-    id: "purchase_inbound",
-    key: "purchase_inbound",
-    title: "Хөдөлгөөний тайлан",
-    logo: "erkhet",
-    instruction: [
-      "Эрхэт системээс хөдөлгөөний тайланг Эксел файлаар экспортлоно.",
-      "Гарсан файлыг энд оруулна.",
     ],
   },
   {
@@ -314,17 +304,31 @@ export default function Imports() {
       <div className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Файл оруулалт</div>
       <div className="mt-1 text-xs text-gray-500 sm:text-sm">Эксел файл оруулах, скрипт ажиллуулах, мастер шинэчлэх</div>
 
-      {/* Special tile: Сарын борлуулалт — энэ нь жирийн file upload биш — sub-page руу navigate */}
-      <div className="mt-4 sm:mt-6">
+      {/* Special tiles: жирийн file upload биш — тусдаа sub-page руу navigate */}
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:mt-6 lg:grid-cols-2">
         <Link to="/imports/product-monthly-sales"
           className="flex items-center justify-between gap-3 rounded-apple bg-gradient-to-r from-emerald-500 to-teal-600 p-4 text-white shadow-sm transition-all hover:from-emerald-600 hover:to-teal-700 hover:shadow-md sm:p-5">
           <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-xl bg-white/20">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/20">
               <CalendarRange size={22}/>
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-base font-bold sm:text-lg">Сарын борлуулалт (Агуулах + Заал)</div>
               <div className="text-[12px] text-white/80 sm:text-[13px]">Сар бүрийн борлуулалтын тоо ширхэгээр оруулна — Захиалга бэлдэх үед статистик харагдана</div>
+            </div>
+          </div>
+          <ChevronRight size={22} className="shrink-0 opacity-80"/>
+        </Link>
+
+        <Link to="/imports/product-movement"
+          className="flex items-center justify-between gap-3 rounded-apple bg-gradient-to-r from-sky-500 to-indigo-600 p-4 text-white shadow-sm transition-all hover:from-sky-600 hover:to-indigo-700 hover:shadow-md sm:p-5">
+          <div className="flex items-center gap-3">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/20">
+              <ArrowLeftRight size={22}/>
+            </div>
+            <div className="min-w-0">
+              <div className="text-base font-bold sm:text-lg">Хөдөлгөөний файл оруулалт</div>
+              <div className="text-[12px] text-white/80 sm:text-[13px]">Үндсэн заал + Архи заалны хөдөлгөөнийг зөвхөн оноор оруулна — сар бүрийн задаргаагүй</div>
             </div>
           </div>
           <ChevronRight size={22} className="shrink-0 opacity-80"/>

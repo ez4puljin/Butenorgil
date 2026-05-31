@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, attendance_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, attendance_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -22,6 +22,7 @@ from app.models.min_stock_rule import MinStockRule  # noqa: F401 – registers t
 from app.models.bank_statement import BankStatement, BankTransaction, BankAccountConfig, SettlementConfig, CrossAccountPreset, FeeConfig  # noqa: F401 – registers tables
 from app.models.audit_log import AuditLog  # noqa: F401 – registers table
 from app.models.product_monthly_sales import ProductMonthlySales  # noqa: F401 – registers table
+from app.models.product_yearly_movement import ProductYearlyMovement  # noqa: F401 – registers table
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
@@ -288,6 +289,24 @@ def ensure_product_monthly_sales_schema():
     import os
     pms_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "monthly_sales")
     os.makedirs(pms_dir, exist_ok=True)
+
+
+def ensure_product_yearly_movement_schema():
+    """Барааны жилийн хөдөлгөөн (product_yearly_movement) — шинэ table бол
+    create_all() үүсгэнэ. Хуучин үед үүссэн хувилбарт qty_main,
+    qty_liquor баганыг шалгаж, дутуу бол ALTER хийнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(product_yearly_movement)")).fetchall()]
+        if not cols:
+            return  # create_all() үүсгэнэ
+        if "qty_main" not in cols:
+            conn.execute(text("ALTER TABLE product_yearly_movement ADD COLUMN qty_main FLOAT NOT NULL DEFAULT 0"))
+        if "qty_liquor" not in cols:
+            conn.execute(text("ALTER TABLE product_yearly_movement ADD COLUMN qty_liquor FLOAT NOT NULL DEFAULT 0"))
+    # Хадгалах хавтсыг хангах
+    import os
+    pym_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "yearly_movement")
+    os.makedirs(pym_dir, exist_ok=True)
 
 
 def ensure_attendance_schema():
@@ -799,6 +818,7 @@ def startup():
     ensure_expiration_items_schema()
     ensure_documents_schema()
     ensure_product_monthly_sales_schema()
+    ensure_product_yearly_movement_schema()
     ensure_attendance_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()
@@ -908,6 +928,7 @@ app.include_router(bank_statements_router)
 app.include_router(expiration_router)
 app.include_router(documents_router)
 app.include_router(product_monthly_sales_router)
+app.include_router(product_yearly_movement_router)
 app.include_router(attendance_router)
 
 @app.get("/health")

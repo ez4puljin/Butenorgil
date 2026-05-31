@@ -45,6 +45,7 @@ const BankStatement      = page(() => import("./pages/BankStatement"));
 const ExpirationTracking = page(() => import("./pages/ExpirationTracking"));
 const Documents          = page(() => import("./pages/Documents"));
 const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
+const ProductMovementImport = page(() => import("./pages/ProductMovementImport"));
 const Attendance         = page(() => import("./pages/Attendance"));
 const AttendanceAdmin    = page(() => import("./pages/AttendanceAdmin"));
 
@@ -229,6 +230,7 @@ export default function App() {
                 />
                 <Route path="/imports" element={<Imports />} />
                 <Route path="/imports/product-monthly-sales" element={<ProductSalesImport />} />
+                <Route path="/imports/product-movement" element={<ProductMovementImport />} />
                 <Route path="/reports" element={<Reports />} />
                 <Route
                   path="/order"

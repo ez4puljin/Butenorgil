@@ -62,6 +62,11 @@ const ACTION_LABEL: Record<string, string> = {
   // Сарын борлуулалт (Product monthly sales)
   product_monthly_sales_import: "Сарын борлуулалт — импорт",
   product_monthly_sales_delete: "Сарын борлуулалт — устгах",
+  product_monthly_sales_config: "Сарын борлуулалт — тохиргоо",
+  // Хөдөлгөөн (Product yearly movement)
+  product_yearly_movement_import: "Хөдөлгөөн — импорт",
+  product_yearly_movement_delete: "Хөдөлгөөн — устгах",
+  product_yearly_movement_config: "Хөдөлгөөн — тохиргоо",
   // Тооцоо хаах (Bank)
   bank_statement_swap_debit_credit: "Тооцоо хаах — Дебит/Кредит солих",
 };
@@ -74,6 +79,7 @@ const PARENT_LABEL: Record<string, string> = {
   attendance_adjustment: "Цаг бүртгэл",
   attendance_schedule: "Цаг бүртгэл",
   product_monthly_sales: "Сарын борлуулалт",
+  product_yearly_movement: "Хөдөлгөөн",
 };
 
 /** created_at нь сервер дээр UTC (naive, Z-гүй) хадгалагддаг.
