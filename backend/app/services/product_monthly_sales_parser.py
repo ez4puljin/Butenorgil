@@ -68,8 +68,13 @@ def parse_and_upsert(
     month: int,
     kind: Kind,
     db: Session,
+    code_col: int = 0,
+    qty_col: int = 1,
 ) -> dict:
     """Excel файлыг уншиж product_monthly_sales-руу upsert хийнэ.
+
+    code_col / qty_col — барааны код ба борлуулалтын тооны багана (0-based индекс).
+    Тохиргооноос ирнэ (default A=0, B=1).
 
     Буцаах утга: {"parsed": <тоо>, "upserted": <тоо>, "skipped": <тоо>, "examples": [...]}
     """
@@ -80,28 +85,30 @@ def parse_and_upsert(
     if year < 2000 or year > 2100:
         raise ValueError(f"Invalid year: {year}")
 
-    # Header-гүй уншина — A=0, B=1 column-ыг өөрсдөө шалгана
+    code_col = max(0, int(code_col))
+    qty_col = max(0, int(qty_col))
+
+    # Header-гүй уншина — тохируулсан баганаас өөрсдөө уншина
     df = pd.read_excel(file_path, header=None, dtype=str, engine="openpyxl")
-    if df.empty or df.shape[1] < 2:
+    need_cols = max(code_col, qty_col) + 1
+    if df.empty or df.shape[1] < need_cols:
         return {"parsed": 0, "upserted": 0, "skipped": 0, "examples": []}
 
-    # Header автомат таних: 1-р мөрийн B-багана нь тоо биш бол header гэж үзнэ
-    first_b = df.iloc[0, 1] if len(df) > 0 else None
+    # Header автомат таних: 1-р мөрийн qty багана нь тоо биш бол header гэж үзнэ
+    first_qty = df.iloc[0, qty_col] if len(df) > 0 else None
     try:
-        float(str(first_b).replace(",", ""))
-        # B1 нь тоо — header байхгүй гэж үзнэ
-        start_row = 0
+        float(str(first_qty).replace(",", ""))
+        start_row = 0   # эхний мөр тоо — header байхгүй
     except (TypeError, ValueError):
-        # B1 нь тоо биш — header гэж үзэж алгасна
-        start_row = 1
+        start_row = 1   # эхний мөр header — алгасна
 
     # Item_code-оор group-лэж SUM хийнэ (файл дотор давхарласан мөрүүдийг нэгтгэнэ)
     aggregated: dict[str, float] = defaultdict(float)
     skipped = 0
     parsed = 0
     for i in range(start_row, len(df)):
-        code_raw = df.iloc[i, 0] if df.shape[1] > 0 else None
-        qty_raw  = df.iloc[i, 1] if df.shape[1] > 1 else None
+        code_raw = df.iloc[i, code_col]
+        qty_raw  = df.iloc[i, qty_col]
         code = _safe_code(code_raw)
         qty  = _safe_float(qty_raw)
         if not code:

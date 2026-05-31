@@ -47,6 +47,33 @@ router = APIRouter(prefix="/product-monthly-sales", tags=["product-monthly-sales
 UPLOAD_DIR = Path("app/data/uploads/monthly_sales")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── Баганын тохиргоо (Excel-ийн аль багана код/тоо вэ) ──────────────────────
+_CONFIG_FILE = Path("app/data/monthly_sales_config.json")
+_DEFAULT_CONFIG = {"code_col": 0, "qty_col": 1}   # A=код, B=тоо (0-based)
+
+
+def get_ms_config() -> dict:
+    """Excel баганын тохиргоо: {"code_col": int, "qty_col": int} (0-based)."""
+    import json
+    try:
+        if _CONFIG_FILE.exists():
+            d = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+            return {
+                "code_col": max(0, int(d.get("code_col", 0))),
+                "qty_col": max(0, int(d.get("qty_col", 1))),
+            }
+    except Exception:
+        pass
+    return dict(_DEFAULT_CONFIG)
+
+
+def set_ms_config(code_col: int, qty_col: int) -> dict:
+    import json
+    cfg = {"code_col": max(0, int(code_col)), "qty_col": max(0, int(qty_col))}
+    _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return cfg
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -126,9 +153,11 @@ def import_excel(
         except Exception:
             pass
 
-    # Parse + upsert
+    # Parse + upsert (баганын тохиргоог ашиглана)
+    cfg = get_ms_config()
     try:
-        result = parse_and_upsert(saved_path, year=year, month=month, kind=kind, db=db)
+        result = parse_and_upsert(saved_path, year=year, month=month, kind=kind, db=db,
+                                  code_col=cfg["code_col"], qty_col=cfg["qty_col"])
     except Exception as e:
         raise HTTPException(400, f"Файлыг боловсруулахад алдаа гарлаа: {e}")
 
@@ -317,6 +346,30 @@ def list_slots(
         }
         for (y, m), info in sorted(by_slot.items(), reverse=True)
     ]
+
+
+class ConfigIn(BaseModel):
+    code_col: int = 0
+    qty_col: int = 1
+
+
+@router.get("/config")
+def get_config(u: User = Depends(require_role("admin", "supervisor", "manager"))):
+    """Excel баганын тохиргоо (код/тоо багана)."""
+    return get_ms_config()
+
+
+@router.put("/config")
+def put_config(
+    body: ConfigIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    cfg = set_ms_config(body.code_col, body.qty_col)
+    audit(db, request, u, action="product_monthly_sales_config",
+          entity_type="product_monthly_sales", extra=cfg, autocommit=True)
+    return cfg
 
 
 @router.delete("/{year}/{month}/{kind}")
