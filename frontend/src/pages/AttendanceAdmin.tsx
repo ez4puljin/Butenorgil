@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   CalendarClock, Download, RefreshCw, Check, X, AlertCircle, Users, Clock, Settings2,
+  ChevronDown, ChevronRight, Briefcase, UserCog,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useLiveRefresh } from "../lib/liveEvents";
@@ -87,6 +88,9 @@ export default function AttendanceAdmin() {
   const [defaultSched, setDefaultSched] = useState<any>(null);
   const [schedRows, setSchedRows] = useState<SchedRow[]>([]);
   const [roleScheds, setRoleScheds] = useState<RoleSched[]>([]);
+  // Хуваарийн хэсгүүд хураагдсан байх (дарж дэлгэнэ)
+  const [openRoleSec, setOpenRoleSec] = useState(false);
+  const [openEmpSec, setOpenEmpSec] = useState(false);
 
   const sumTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -386,32 +390,52 @@ export default function AttendanceAdmin() {
             />
           )}
 
-          {/* ── Тушаалаар хуваарь — адилхан тушаалтай бүх ажилтанд хамаарна ── */}
-          <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-            <div className="border-b border-gray-100 px-4 py-3">
-              <div className="text-[13px] font-semibold text-gray-700">Тушаалаар хуваарь</div>
-              <div className="mt-0.5 text-[11px] text-gray-500">Адилхан тушаалтай бүх ажилтан ижил цагийн хуваарьтай болно</div>
-            </div>
-            <div className="divide-y divide-gray-50">
-              {roleScheds.map((r) => (
-                <RoleScheduleRow key={r.value} role={r} defaultSched={defaultSched}
-                  onSave={(s) => saveRoleSchedule(r.value, s)} onClear={() => clearRoleSchedule(r.value)} />
-              ))}
-            </div>
+          {/* ── Тушаалаар хуваарь (хураагдсан — дарж дэлгэнэ) ── */}
+          <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm">
+            <button onClick={() => setOpenRoleSec((v) => !v)}
+              className="flex w-full items-center gap-2.5 px-4 py-3 text-left hover:bg-gray-50/60">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-emerald-50 text-emerald-600">
+                <Briefcase size={15} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold text-gray-800">Тушаалаар хуваарь</div>
+                <div className="text-[11px] text-gray-500">Адилхан тушаалтай бүх ажилтан ижил цагийн хуваарьтай</div>
+              </div>
+              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500">{roleScheds.length}</span>
+              {openRoleSec ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            </button>
+            {openRoleSec && (
+              <div className="divide-y divide-gray-50 border-t border-gray-100">
+                {roleScheds.map((r) => (
+                  <RoleScheduleRow key={r.value} role={r} defaultSched={defaultSched}
+                    onSave={(s) => saveRoleSchedule(r.value, s)} onClear={() => clearRoleSchedule(r.value)} />
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* ── Ажилтны хувийн хуваарь (онцгой тохиолдолд override) ── */}
-          <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-            <div className="border-b border-gray-100 px-4 py-3">
-              <div className="text-[13px] font-semibold text-gray-700">Ажилтны хувийн хуваарь</div>
-              <div className="mt-0.5 text-[11px] text-gray-500">Зөвхөн онцгой ажилтанд — тушаалынхаас давуу. Тушаалыг энд засахгүй.</div>
-            </div>
-            <div className="divide-y divide-gray-50">
-              {schedRows.map((e) => (
-                <EmployeeScheduleRow key={e.id} emp={e} defaultSched={defaultSched}
-                  onSave={(s) => saveSchedule(e.id, s)} onClear={() => clearSchedule(e.id)} />
-              ))}
-            </div>
+          {/* ── Ажилтны хувийн хуваарь (хураагдсан — дарж дэлгэнэ) ── */}
+          <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm">
+            <button onClick={() => setOpenEmpSec((v) => !v)}
+              className="flex w-full items-center gap-2.5 px-4 py-3 text-left hover:bg-gray-50/60">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-blue-50 text-blue-600">
+                <UserCog size={15} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold text-gray-800">Ажилтны хувийн хуваарь</div>
+                <div className="text-[11px] text-gray-500">Зөвхөн онцгой ажилтанд — тушаалынхаас давуу</div>
+              </div>
+              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500">{schedRows.length}</span>
+              {openEmpSec ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            </button>
+            {openEmpSec && (
+              <div className="divide-y divide-gray-50 border-t border-gray-100">
+                {schedRows.map((e) => (
+                  <EmployeeScheduleRow key={e.id} emp={e} defaultSched={defaultSched}
+                    onSave={(s) => saveSchedule(e.id, s)} onClear={() => clearSchedule(e.id)} />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
