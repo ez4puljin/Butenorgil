@@ -324,7 +324,7 @@ export default function Imports() {
             </div>
             <div className="min-w-0">
               <div className="text-base font-bold sm:text-lg">Үлдэгдлийн файл оруулалт</div>
-              <div className="text-[12px] text-white/80 sm:text-[13px]">Бүх агуулах + Үндсэн заал + Архины заалны үлдэгдлийг оноор оруулна</div>
+              <div className="text-[12px] text-white/80 sm:text-[13px]">Бүх агуулах + Үндсэн заал + Архины заалны үлдэгдлийг өдөр бүр шинэчилж оруулна</div>
             </div>
           </div>
           <ChevronRight size={22} className="shrink-0 opacity-80"/>

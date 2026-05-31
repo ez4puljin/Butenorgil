@@ -320,8 +320,17 @@ def ensure_income_files_schema():
 
 
 def ensure_balance_files_schema():
-    """Үлдэгдлийн файл (balance_files) — шинэ table бол create_all() үүсгэнэ.
-    Энд зөвхөн хадгалах хавтсыг хангана."""
+    """Үлдэгдлийн файл (balance_files) — ОН ХЭМЖЭЭСГҮЙ болгосон (өдөр бүр
+    шинэчилнэ). Хэрэв хуучин (year-тэй) схем байвал устгаж, шинэ (зөвхөн kind)
+    схемээр дахин үүсгэнэ. Шинэ table бол энд үүсгэнэ."""
+    from app.models.balance_file import BalanceFile
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(balance_files)")).fetchall()]
+        if cols and "year" in cols:
+            conn.execute(text("DROP TABLE IF EXISTS balance_files"))
+    # Шинэ схемээр (байхгүй бол) үүсгэнэ
+    BalanceFile.__table__.create(bind=engine, checkfirst=True)
+    # Хадгалах хавтсыг хангах
     import os
     bal_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "balance")
     os.makedirs(bal_dir, exist_ok=True)

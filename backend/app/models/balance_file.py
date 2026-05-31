@@ -1,6 +1,6 @@
-"""Үлдэгдлийн файл — он жил + төрлөөр оруулсан ТҮҮХИЙ Excel файлын метадата.
+"""Үлдэгдлийн файл — төрлөөр оруулсан ТҮҮХИЙ Excel файлын метадата.
 
-Хэрэглэгч жил бүр 3 төрлийн үлдэгдлийн файл оруулна:
+Хэрэглэгч 3 төрлийн үлдэгдлийн файлыг ӨДӨР БҮР шинэчлэн оруулна:
   - Бүх агуулахын үлдэгдэл (warehouse)
   - Үндсэн заалны үлдэгдэл (main)
   - Архины заалны үлдэгдэл (liquor)
@@ -9,9 +9,11 @@
 хадгална. Файлыг хэрхэн ашиглах (үлдэгдэл/stock задлах г.м)-ийг хожим
 зааврын дагуу тусдаа хийнэ.
 
-Нэг (year, kind) хослолд нэг л идэвхтэй файл байна (дахин оруулбал солигдоно).
+ОН ХЭМЖЭЭСГҮЙ — төрөл тус бүрд нэг л идэвхтэй файл (хамгийн сүүлд оруулсан)
+байна. Дахин оруулбал солигдоно. uploaded_at нь сүүлд шинэчилсэн огноог
+харуулна.
 """
-from sqlalchemy import Integer, String, DateTime, UniqueConstraint, Index
+from sqlalchemy import Integer, String, DateTime, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 
@@ -30,8 +32,7 @@ class BalanceFile(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
-    year: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    kind: Mapped[str] = mapped_column(String(16), index=True, nullable=False)  # warehouse | main | liquor
+    kind: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)  # warehouse | main | liquor
 
     original_filename: Mapped[str] = mapped_column(String(300), default="")
     stored_filename:   Mapped[str] = mapped_column(String(300), default="")    # UPLOAD_DIR-д харьцангуй
@@ -43,6 +44,5 @@ class BalanceFile(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint("year", "kind", name="uq_balance_file_year_kind"),
-        Index("ix_balance_file_year_kind", "year", "kind"),
+        UniqueConstraint("kind", name="uq_balance_file_kind"),
     )
