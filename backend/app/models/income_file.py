@@ -26,6 +26,7 @@ class IncomeFile(Base):
     stored_filename:   Mapped[str] = mapped_column(String(300), default="")    # UPLOAD_DIR-д харьцангуй
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     row_count:  Mapped[int] = mapped_column(Integer, default=0)                # best-effort, мэдэгдэхгүй бол 0
+    price_updated: Mapped[int] = mapped_column(Integer, default=0)             # сүүлийн орлогын үнэ шинэчилсэн барааны тоо
 
     uploaded_by_id:   Mapped[int] = mapped_column(Integer, default=0)
     uploaded_by_name: Mapped[str] = mapped_column(String(120), default="")

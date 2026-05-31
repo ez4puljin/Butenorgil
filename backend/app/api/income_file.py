@@ -25,6 +25,7 @@ from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
 from app.models.income_file import IncomeFile
+from app.services.refresh_prices_from_income_report import refresh_prices_from_income_report
 
 
 router = APIRouter(prefix="/income-files", tags=["income-files"])
@@ -86,13 +87,25 @@ def import_file(
 
     size_bytes = saved_path.stat().st_size if saved_path.exists() else 0
     row_count = _safe_row_count(saved_path)
-    now = datetime.utcnow()
 
+    # ── Урьдын адил: Орлого тайлангаас барааны сүүлийн нэгж үнийг автомат
+    #    шинэчилнэ (Product.last_purchase_price). BEST-EFFORT: файл аль хэдийн
+    #    хадгалагдсан тул энд алдаа гарсан ч импорт амжилттай хэвээр —
+    #    "шалгуургүй шууд хадгалах" зарчмыг хадгална. ──
+    price_update: dict = {}
+    try:
+        price_update = refresh_prices_from_income_report(db, str(saved_path)) or {}
+    except Exception as e:
+        price_update = {"error": str(e)}
+    price_updated = int(price_update.get("updated", 0) or 0)
+
+    now = datetime.utcnow()
     if prev:
         prev.original_filename = orig_name
         prev.stored_filename = stored_name
         prev.size_bytes = size_bytes
         prev.row_count = row_count
+        prev.price_updated = price_updated
         prev.uploaded_by_id = int(getattr(u, "id", 0) or 0)
         prev.uploaded_by_name = str(getattr(u, "username", "") or "")
         prev.uploaded_at = now
@@ -100,7 +113,7 @@ def import_file(
         db.add(IncomeFile(
             year=year,
             original_filename=orig_name, stored_filename=stored_name,
-            size_bytes=size_bytes, row_count=row_count,
+            size_bytes=size_bytes, row_count=row_count, price_updated=price_updated,
             uploaded_by_id=int(getattr(u, "id", 0) or 0),
             uploaded_by_name=str(getattr(u, "username", "") or ""),
             uploaded_at=now,
@@ -112,12 +125,14 @@ def import_file(
         action="income_file_import",
         entity_type="income_file",
         extra={"year": year, "filename": orig_name,
-               "size_bytes": size_bytes, "row_count": row_count},
+               "size_bytes": size_bytes, "row_count": row_count,
+               "price_update": price_update},
         autocommit=True,
     )
 
     return {"ok": True, "year": year, "filename": orig_name,
-            "size_bytes": size_bytes, "row_count": row_count}
+            "size_bytes": size_bytes, "row_count": row_count,
+            "price_update": price_update}
 
 
 def _file_info(r: IncomeFile) -> dict:
@@ -125,6 +140,7 @@ def _file_info(r: IncomeFile) -> dict:
         "filename": r.original_filename,
         "size_bytes": r.size_bytes or 0,
         "row_count": r.row_count or 0,
+        "price_updated": r.price_updated or 0,
         "uploaded_at": (r.uploaded_at.isoformat() if r.uploaded_at else None),
         "uploaded_by": r.uploaded_by_name or "",
     }

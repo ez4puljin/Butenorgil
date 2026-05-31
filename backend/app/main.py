@@ -307,7 +307,12 @@ def ensure_product_yearly_movement_schema():
 
 def ensure_income_files_schema():
     """Орлогын файл (income_files) — шинэ table бол create_all() үүсгэнэ.
-    Энд зөвхөн хадгалах хавтсыг хангана."""
+    Хуучин үед үүссэн хувилбарт price_updated багана дутуу бол ALTER хийнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(income_files)")).fetchall()]
+        if cols and "price_updated" not in cols:
+            conn.execute(text("ALTER TABLE income_files ADD COLUMN price_updated INTEGER NOT NULL DEFAULT 0"))
+    # Хадгалах хавтсыг хангах
     import os
     inc_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "income")
     os.makedirs(inc_dir, exist_ok=True)

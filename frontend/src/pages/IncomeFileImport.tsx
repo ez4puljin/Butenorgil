@@ -11,6 +11,7 @@ type FileInfo = {
   filename: string;
   size_bytes: number;
   row_count: number;
+  price_updated: number;
   uploaded_at: string | null;
   uploaded_by: string;
 };
@@ -74,8 +75,12 @@ export default function IncomeFileImport() {
       fd.append("year", String(year));
       const r = await api.post("/income-files/import", fd);
       const d = r.data ?? {};
+      const pu = d.price_update ?? {};
+      const priceMsg = pu.error
+        ? " · ⚠ үнэ шинэчилж чадсангүй"
+        : (pu.updated ? ` · ${pu.updated} барааны үнэ шинэчилсэн` : "");
       flash(`${year} он · Бүх орлого: ${d.filename ?? "файл"} хадгалагдлаа` +
-        (d.row_count ? ` (~${d.row_count} мөр)` : ""));
+        (d.row_count ? ` (~${d.row_count} мөр)` : "") + priceMsg);
       await loadSlots();
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Файл оруулахад алдаа гарлаа.");
@@ -218,6 +223,9 @@ function FileRow({ info, busy, onUpload, onDownload, onDelete }: {
           <div className="min-w-0 flex-1">
             <div className="truncate text-[11px] font-medium text-gray-700" title={info.filename}>{info.filename}</div>
             {meta && <div className="text-[10px] text-gray-400">{meta}</div>}
+            {info.price_updated > 0 && (
+              <div className="text-[10px] font-medium text-emerald-600">↻ {info.price_updated} барааны үнэ шинэчилсэн</div>
+            )}
           </div>
           <button onClick={() => onDownload(info.filename)} title="Татах"
             className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-gray-400 hover:bg-emerald-50 hover:text-emerald-600">
