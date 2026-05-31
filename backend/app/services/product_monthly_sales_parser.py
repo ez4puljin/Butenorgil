@@ -146,7 +146,7 @@ def parse_and_upsert(
     if not aggregated:
         return {"parsed": parsed, "upserted": 0, "skipped": skipped, "examples": []}
 
-    # SQLite upsert — нэг batch-аар оруулна
+    # SQLite upsert
     qty_field = "qty_warehouse" if kind == PMS_KIND_WAREHOUSE else "qty_showroom"
     other_field = "qty_showroom" if kind == PMS_KIND_WAREHOUSE else "qty_warehouse"
     now = datetime.utcnow()
@@ -164,16 +164,20 @@ def parse_and_upsert(
         for code, qty in aggregated.items()
     ]
 
-    # ON CONFLICT (item_code, year, month) DO UPDATE — kind-ийн талын баганыг л шинэчилнэ
-    stmt = sqlite_insert(ProductMonthlySales).values(rows)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["item_code", "year", "month"],
-        set_={
-            qty_field: getattr(stmt.excluded, qty_field),
-            "updated_at": now,
-        },
-    )
-    db.execute(stmt)
+    # ── BATCH-аар оруулна — SQLite-ийн "too many SQL variables" (999) хязгаараас
+    #    зайлсхийнэ. Мөр бүр 7 багана тул 100 мөр = 700 хувьсагч (аюулгүй). ──
+    BATCH = 100
+    for i in range(0, len(rows), BATCH):
+        chunk = rows[i:i + BATCH]
+        stmt = sqlite_insert(ProductMonthlySales).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["item_code", "year", "month"],
+            set_={
+                qty_field: getattr(stmt.excluded, qty_field),
+                "updated_at": now,
+            },
+        )
+        db.execute(stmt)
     db.commit()
 
     examples = list(aggregated.items())[:3]
