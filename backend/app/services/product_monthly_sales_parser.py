@@ -62,6 +62,28 @@ def _safe_code(val) -> str:
     return s
 
 
+def _read_excel_any(file_path) -> "pd.DataFrame":
+    """Excel-ийг өргөтгөлөөс хамааруулж зөв engine-ээр уншина.
+    .xlsx → openpyxl, .xls → xlrd. Алдвал нөгөө engine-ээ оролдоно
+    (зарим систем буруу өргөтгөлтэй экспортолдог)."""
+    name = str(file_path).lower()
+    if name.endswith(".xls"):
+        order = ["xlrd", "openpyxl"]
+    else:
+        order = ["openpyxl", "xlrd"]
+    last_err: Exception | None = None
+    for eng in order:
+        try:
+            return pd.read_excel(file_path, header=None, dtype=str, engine=eng)
+        except Exception as e:
+            last_err = e
+    # Эцсийн оролдлого — pandas өөрөө engine сонгоё
+    try:
+        return pd.read_excel(file_path, header=None, dtype=str)
+    except Exception:
+        raise last_err if last_err else RuntimeError("Excel унших боломжгүй")
+
+
 def parse_and_upsert(
     file_path: str | Path,
     year: int,
@@ -88,8 +110,9 @@ def parse_and_upsert(
     code_col = max(0, int(code_col))
     qty_col = max(0, int(qty_col))
 
-    # Header-гүй уншина — тохируулсан баганаас өөрсдөө уншина
-    df = pd.read_excel(file_path, header=None, dtype=str, engine="openpyxl")
+    # Header-гүй уншина — өргөтгөлөөс хамаарч engine сонгоно:
+    #   .xlsx → openpyxl, .xls (97-2003) → xlrd. Аль нэг нь алдвал нөгөөг оролдоно.
+    df = _read_excel_any(file_path)
     need_cols = max(code_col, qty_col) + 1
     if df.empty or df.shape[1] < need_cols:
         return {"parsed": 0, "upserted": 0, "skipped": 0, "examples": []}
