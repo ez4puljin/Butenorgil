@@ -67,6 +67,9 @@ const ACTION_LABEL: Record<string, string> = {
   product_yearly_movement_import: "Хөдөлгөөн — импорт",
   product_yearly_movement_delete: "Хөдөлгөөн — устгах",
   product_yearly_movement_config: "Хөдөлгөөн — тохиргоо",
+  // Орлогын файл (Income file)
+  income_file_import: "Орлого — файл оруулах",
+  income_file_delete: "Орлого — файл устгах",
   // Тооцоо хаах (Bank)
   bank_statement_swap_debit_credit: "Тооцоо хаах — Дебит/Кредит солих",
 };

@@ -12,4 +12,5 @@ from app.models.expiration_item import ExpirationItem
 from app.models.document import DocumentGroup, DocumentFile
 from app.models.product_monthly_sales import ProductMonthlySales
 from app.models.movement_file import MovementFile
+from app.models.income_file import IncomeFile
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule

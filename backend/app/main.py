@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, attendance_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, attendance_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -23,6 +23,7 @@ from app.models.bank_statement import BankStatement, BankTransaction, BankAccoun
 from app.models.audit_log import AuditLog  # noqa: F401 – registers table
 from app.models.product_monthly_sales import ProductMonthlySales  # noqa: F401 – registers table
 from app.models.movement_file import MovementFile  # noqa: F401 – registers table
+from app.models.income_file import IncomeFile  # noqa: F401 – registers table
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
@@ -302,6 +303,14 @@ def ensure_product_yearly_movement_schema():
     import os
     pym_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "yearly_movement")
     os.makedirs(pym_dir, exist_ok=True)
+
+
+def ensure_income_files_schema():
+    """Орлогын файл (income_files) — шинэ table бол create_all() үүсгэнэ.
+    Энд зөвхөн хадгалах хавтсыг хангана."""
+    import os
+    inc_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "income")
+    os.makedirs(inc_dir, exist_ok=True)
 
 
 def ensure_attendance_schema():
@@ -814,6 +823,7 @@ def startup():
     ensure_documents_schema()
     ensure_product_monthly_sales_schema()
     ensure_product_yearly_movement_schema()
+    ensure_income_files_schema()
     ensure_attendance_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()
@@ -924,6 +934,7 @@ app.include_router(expiration_router)
 app.include_router(documents_router)
 app.include_router(product_monthly_sales_router)
 app.include_router(product_yearly_movement_router)
+app.include_router(income_file_router)
 app.include_router(attendance_router)
 
 @app.get("/health")

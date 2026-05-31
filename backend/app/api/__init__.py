@@ -20,4 +20,5 @@ from app.api.expiration import router as expiration_router
 from app.api.documents import router as documents_router
 from app.api.product_monthly_sales import router as product_monthly_sales_router
 from app.api.product_yearly_movement import router as product_yearly_movement_router
+from app.api.income_file import router as income_file_router
 from app.api.attendance import router as attendance_router

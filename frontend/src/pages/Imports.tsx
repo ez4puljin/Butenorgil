@@ -5,7 +5,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
 import { api } from "../lib/api";
-import { UploadCloud, Info, Play, Pencil, Plus, Trash2, CalendarRange, ChevronRight, ArrowLeftRight } from "lucide-react";
+import { UploadCloud, Info, Play, Pencil, Plus, Trash2, CalendarRange, ChevronRight, ArrowLeftRight, Receipt } from "lucide-react";
 
 type ImportCard = {
   id: string;
@@ -66,16 +66,6 @@ const importCards: ImportCard[] = [
       "Эрхэт болон Эрксэс бараа хоёуланг нь импортолсон байх ёстой.",
       "Нэгтгэх товч дарахад хамгийн сүүлийн файлуудыг ашиглан мастер шинэчлэгдэнэ.",
       "Захиалгын модуль хамгийн сүүлийн нэгтгэлийг ашиглана.",
-    ],
-  },
-  {
-    id: "returns",
-    key: "returns",
-    title: "Орлого тайлан",
-    logo: "erkhet",
-    instruction: [
-      "Орлогын тайланг Эксел файлаар экспортлоно.",
-      "Оруулсны дараа тайлан нэгтгэх скрипт ажиллана.",
     ],
   },
   {
@@ -305,7 +295,7 @@ export default function Imports() {
       <div className="mt-1 text-xs text-gray-500 sm:text-sm">Эксел файл оруулах, скрипт ажиллуулах, мастер шинэчлэх</div>
 
       {/* Special tiles: жирийн file upload биш — тусдаа sub-page руу navigate */}
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:mt-6 lg:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:mt-6 lg:grid-cols-2 xl:grid-cols-3">
         <Link to="/imports/product-monthly-sales"
           className="flex items-center justify-between gap-3 rounded-apple bg-gradient-to-r from-emerald-500 to-teal-600 p-4 text-white shadow-sm transition-all hover:from-emerald-600 hover:to-teal-700 hover:shadow-md sm:p-5">
           <div className="flex items-center gap-3">
@@ -329,6 +319,20 @@ export default function Imports() {
             <div className="min-w-0">
               <div className="text-base font-bold sm:text-lg">Хөдөлгөөний файл оруулалт</div>
               <div className="text-[12px] text-white/80 sm:text-[13px]">Үндсэн заал + Архи заалны хөдөлгөөнийг зөвхөн оноор оруулна — сар бүрийн задаргаагүй</div>
+            </div>
+          </div>
+          <ChevronRight size={22} className="shrink-0 opacity-80"/>
+        </Link>
+
+        <Link to="/imports/income-file"
+          className="flex items-center justify-between gap-3 rounded-apple bg-gradient-to-r from-rose-500 to-orange-600 p-4 text-white shadow-sm transition-all hover:from-rose-600 hover:to-orange-700 hover:shadow-md sm:p-5">
+          <div className="flex items-center gap-3">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/20">
+              <Receipt size={22}/>
+            </div>
+            <div className="min-w-0">
+              <div className="text-base font-bold sm:text-lg">Орлогын файл оруулалт</div>
+              <div className="text-[12px] text-white/80 sm:text-[13px]">Бүх орлогыг зөвхөн оноор оруулна — ямар ч шалгуургүй хадгална</div>
             </div>
           </div>
           <ChevronRight size={22} className="shrink-0 opacity-80"/>
