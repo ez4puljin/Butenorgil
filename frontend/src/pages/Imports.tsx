@@ -69,17 +69,6 @@ const importCards: ImportCard[] = [
     ],
   },
   {
-    id: "sales_plan",
-    key: "sales_plan",
-    title: "Борлуулалт тайлан",
-    logo: "erkhet",
-    instruction: [
-      "Эрхэт системээс борлуулалтын тайланг Эксел файлаар экспортлоно.",
-      "Огнооны муж сонгоод файл үүсгэнэ.",
-      "Гарсан файлыг энд оруулна.",
-    ],
-  },
-  {
     id: "transfer_order",
     key: "transfer_order",
     title: "Үлдэгдэл тайлан",
