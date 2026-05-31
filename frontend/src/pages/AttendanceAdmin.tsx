@@ -89,6 +89,7 @@ export default function AttendanceAdmin() {
   const [schedRows, setSchedRows] = useState<SchedRow[]>([]);
   const [roleScheds, setRoleScheds] = useState<RoleSched[]>([]);
   // Хуваарийн хэсгүүд хураагдсан байх (дарж дэлгэнэ)
+  const [openDefaultSec, setOpenDefaultSec] = useState(false);
   const [openRoleSec, setOpenRoleSec] = useState(false);
   const [openEmpSec, setOpenEmpSec] = useState(false);
 
@@ -382,12 +383,26 @@ export default function AttendanceAdmin() {
       {/* ── SCHEDULES TAB ── */}
       {tab === "schedules" && (
         <div className="mt-4 space-y-4">
+          {/* ── Глобал default (хураагдсан — дарж дэлгэнэ) ── */}
           {defaultSched && (
-            <ScheduleCard
-              title="Глобал default (хуваарьгүй бүх ажилтанд)"
-              sched={defaultSched}
-              onSave={(s) => saveSchedule(0, s)}
-            />
+            <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm">
+              <button onClick={() => setOpenDefaultSec((v) => !v)}
+                className="flex w-full items-center gap-2.5 px-4 py-3 text-left hover:bg-gray-50/60">
+                <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gray-100 text-gray-600">
+                  <Settings2 size={15} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold text-gray-800">Глобал default</div>
+                  <div className="text-[11px] text-gray-500">Хувийн ба тушаалын хуваарьгүй бүх ажилтанд хамаарна</div>
+                </div>
+                {openDefaultSec ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+              </button>
+              {openDefaultSec && (
+                <div className="border-t border-gray-100 p-4">
+                  <ScheduleEditor init={defaultSched} onSave={(s) => saveSchedule(0, s)} />
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── Тушаалаар хуваарь (хураагдсан — дарж дэлгэнэ) ── */}
@@ -531,17 +546,6 @@ function ScheduleEditor({ init, onSave }: {
       </div>
       <button onClick={save}
         className="rounded-lg bg-blue-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-blue-700">Хадгалах</button>
-    </div>
-  );
-}
-
-function ScheduleCard({ title, sched, onSave }: {
-  title: string; sched: any; onSave: (s: any) => void;
-}) {
-  return (
-    <div className="rounded-2xl border border-blue-100 bg-blue-50/40 p-4">
-      <div className="mb-3 text-[13px] font-semibold text-gray-800">{title}</div>
-      <ScheduleEditor init={sched} onSave={onSave} />
     </div>
   );
 }
