@@ -116,6 +116,7 @@ def _serialize_order_detail(
         "vehicle_name": f"{vehicle.name} ({vehicle.plate})" if vehicle else None,
         "notes": o.notes or "",
         "is_archived": bool(o.is_archived),
+        "location": o.location or "warehouse",
     }
 
     # Load lines via explicit query (NOT lazy o.lines which loads ALL 10K+ rows)
@@ -158,6 +159,14 @@ def _serialize_order_detail(
             shipped_loaded[row[0]] = float(row[1] or 0)
             shipped_received[row[0]] = float(row[2] or 0)
 
+    # ── Нөөц багана (зөвхөн preparing/reviewing) — захиалгын байршлаас хамаарч
+    #    үлдэгдлийн файлаас тооцно: warehouse → Бүх агуулах; showroom → Үндсэн
+    #    заал + Архины заал. Бусад статуст файл уншихгүй (багана харагдахгүй). ──
+    balance_map = None
+    if o.status in ("preparing", "reviewing"):
+        from app.services.balance_stock import get_location_stock_map
+        balance_map = get_location_stock_map(db, o.location or "warehouse")
+
     lines_out = []
     for l in all_lines:
         p = product_map.get(l.product_id)
@@ -181,10 +190,25 @@ def _serialize_order_detail(
         if received_effective == 0 and (l.received_qty_box or 0) > 0:
             received_effective = float(l.received_qty_box)
 
-        # Min-stock rule match → needs_reorder + min_stock_box
+        # Нөөц: байршлын үлдэгдлийн файлаас (preparing/reviewing). Бусад статуст
+        # системийн Product.stock_qty (тэр үед багана харагдахгүй).
+        if balance_map is not None:
+            s_qty = float(balance_map.get(p.item_code, 0.0))
+            _pack = float(p.pack_ratio or 1) or 1.0
+            s_box = int(s_qty // _pack) if _pack > 0 else 0
+            s_extra = int(round(s_qty - s_box * _pack))
+        else:
+            _bd = stock_breakdown(p)
+            s_qty = float(p.stock_qty or 0)
+            s_box = _bd["stock_box"]
+            s_extra = _bd["stock_extra_pcs"]
+        # Дахин захиалах шалгалт — харагдаж буй нөөцтэй ижил эх сурвалжаар (хайрцгаар)
         matched_rule = find_rule_for_product(p, _ms_rules)
-        needs_reorder, min_stock_box = compute_needs_reorder(p, matched_rule)
-        bd = stock_breakdown(p)
+        if matched_rule:
+            min_stock_box = float(matched_rule.min_qty_box or 0)
+            needs_reorder = s_box < min_stock_box
+        else:
+            needs_reorder, min_stock_box = False, 0.0
 
         # Үр дүнгийн бренд: override_brand тохиргоотой бол түүнийг, эс бол product.brand
         eff_brand = (l.override_brand or "").strip() or p.brand
@@ -201,9 +225,9 @@ def _serialize_order_detail(
             "price_tag": p.price_tag or "",
             "unit_weight": p.unit_weight,
             "pack_ratio": p.pack_ratio,
-            "stock_qty": p.stock_qty,
-            "stock_box": bd["stock_box"],
-            "stock_extra_pcs": bd["stock_extra_pcs"],
+            "stock_qty": s_qty,
+            "stock_box": s_box,
+            "stock_extra_pcs": s_extra,
             "sales_qty": p.sales_qty,
             "needs_reorder": needs_reorder,
             "min_stock_box": min_stock_box,
@@ -276,6 +300,8 @@ class POCreateIn(BaseModel):
     notes: str = ""
     # None эсвэл хоосон бол бүх бренд, эс бол зөвхөн сонгосон бренд-ийн барааг л оруулна.
     brands: Optional[List[str]] = None
+    # Захиалгын байршил: "warehouse" (Агуулах) | "showroom" (Заал). Нөөц баганыг тодорхойлно.
+    location: str = "warehouse"
 
 
 class POLineIn(BaseModel):
@@ -905,6 +931,7 @@ def create_purchase_order(
         status="preparing",
         created_by_user_id=u.id,
         notes=body.notes,
+        location=("showroom" if body.location == "showroom" else "warehouse"),
     )
     db.add(po)
     db.flush()
@@ -2098,6 +2125,29 @@ def _build_pdf(po: PurchaseOrder, body: PDFHeaderIn, db: Session) -> bytes:
     pdf.set_text_color(0, 0, 0)
 
     return bytes(pdf.output())
+
+
+# ── Захиалгын байршил (Нөөц баганын эх сурвалж) ────────────────────────────────
+
+class POLocationIn(BaseModel):
+    location: str = "warehouse"
+
+
+@router.put("/{order_id}/location")
+def set_order_location(
+    order_id: int,
+    body: POLocationIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("manager", "admin", "supervisor")),
+):
+    """Захиалгын байршлыг (warehouse/showroom) солино. Нөөц багана аль
+    үлдэгдлийн файлаас тооцогдохыг тодорхойлно."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+    po.location = "showroom" if body.location == "showroom" else "warehouse"
+    db.commit()
+    return {"ok": True, "location": po.location}
 
 
 # ── Extra lines (supplier-added items not in product catalog) ──────────────────

@@ -825,6 +825,30 @@ export default function PurchaseOrderDetail() {
               ? STATUS_LABEL[effectiveStatus as keyof typeof STATUS_LABEL] ?? effectiveStatus
               : order.status_label}
           </span>
+
+          {/* Байршил — Нөөц баганыг аль үлдэгдлийн файлаас тооцохыг тодорхойлно (preparing/reviewing) */}
+          {showStockCols && (
+            (canEdit && !brandMode) ? (
+              <select
+                value={((order as any).location === "showroom") ? "showroom" : "warehouse"}
+                onChange={async (e) => {
+                  try {
+                    await api.put(`/purchase-orders/${order.id}/location`, { location: e.target.value });
+                    await loadOrder();
+                  } catch (err: any) { flash(err?.response?.data?.detail ?? "Алдаа гарлаа", false); }
+                }}
+                title="Захиалгын байршил — Нөөцийн эх сурвалж"
+                className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-[11px] font-semibold text-violet-700 outline-none focus:ring-2 focus:ring-violet-200"
+              >
+                <option value="warehouse">📦 Агуулах</option>
+                <option value="showroom">🏪 Заал</option>
+              </select>
+            ) : (
+              <span className="rounded-full bg-violet-50 px-2.5 py-0.5 text-[11px] font-semibold text-violet-700 ring-1 ring-inset ring-violet-100">
+                {((order as any).location === "showroom") ? "🏪 Заал" : "📦 Агуулах"}
+              </span>
+            )
+          )}
         </div>
 
         {/* Meta + actions row */}
@@ -1394,7 +1418,9 @@ export default function PurchaseOrderDetail() {
                   <th className="px-2 py-2.5 text-xs font-semibold text-gray-500 md:px-4">Нэр</th>
                   {showStockCols && (
                     <>
-                      <th className="px-2 py-2.5 text-right text-xs font-semibold text-gray-500 md:px-4">Нөөц</th>
+                      <th className="px-2 py-2.5 text-right text-xs font-semibold text-gray-500 md:px-4">
+                        Нөөц <span className="font-normal text-gray-400">· {((order as any).location === "showroom") ? "Заал" : "Агуулах"}</span>
+                      </th>
                       <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Борлуулалт</th>
                     </>
                   )}

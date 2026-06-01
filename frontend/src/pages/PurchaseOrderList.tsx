@@ -105,11 +105,13 @@ export default function PurchaseOrderList() {
     notes: string;
     mode: "all" | "brands";
     brands: string[];
+    location: "warehouse" | "showroom";
   }>({
     order_date: new Date().toISOString().slice(0, 10),
     notes: "",
     mode: "all",
     brands: [],
+    location: "warehouse",
   });
   const [creating, setCreating] = useState(false);
 
@@ -325,6 +327,7 @@ export default function PurchaseOrderList() {
       const payload: any = {
         order_date: createForm.order_date,
         notes: createForm.notes,
+        location: createForm.location,
       };
       if (createForm.mode === "brands" && createForm.brands.length > 0) {
         payload.brands = createForm.brands;
@@ -332,7 +335,7 @@ export default function PurchaseOrderList() {
       const res = await api.post("/purchase-orders", payload);
       flash(`Захиалга үүслээ — ${res.data.line_count} бараа нэмэгдлээ`);
       setShowCreateModal(false);
-      setCreateForm({ order_date: new Date().toISOString().slice(0, 10), notes: "", mode: "all", brands: [] });
+      setCreateForm({ order_date: new Date().toISOString().slice(0, 10), notes: "", mode: "all", brands: [], location: "warehouse" });
       setBrandSearch("");
       await loadOrders();
     } catch (e: any) {
@@ -795,6 +798,38 @@ export default function PurchaseOrderList() {
                   onChange={(e) => setCreateForm((f) => ({ ...f, order_date: e.target.value }))}
                   className="w-full rounded-apple border border-gray-200 px-3 py-2.5 text-base outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15"
                 />
+              </div>
+
+              {/* Байршил — Нөөц багана аль үлдэгдлийн файлаас тооцогдохыг тодорхойлно */}
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-gray-600">Захиалгын байршил</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setCreateForm(f => ({ ...f, location: "warehouse" }))}
+                    className={`flex-1 rounded-apple border py-2.5 text-xs font-semibold transition-colors ${
+                      createForm.location === "warehouse"
+                        ? "border-[#0071E3] bg-[#0071E3] text-white shadow-sm"
+                        : "border-gray-200 bg-white text-gray-700 active:bg-gray-50"
+                    }`}
+                  >
+                    Агуулах
+                  </button>
+                  <button
+                    onClick={() => setCreateForm(f => ({ ...f, location: "showroom" }))}
+                    className={`flex-1 rounded-apple border py-2.5 text-xs font-semibold transition-colors ${
+                      createForm.location === "showroom"
+                        ? "border-[#0071E3] bg-[#0071E3] text-white shadow-sm"
+                        : "border-gray-200 bg-white text-gray-700 active:bg-gray-50"
+                    }`}
+                  >
+                    Заал
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] text-gray-400">
+                  {createForm.location === "warehouse"
+                    ? "Нөөц = Бүх агуулахын үлдэгдэл"
+                    : "Нөөц = Үндсэн заал + Архины заал"}
+                </p>
               </div>
 
               {/* Mode toggle */}

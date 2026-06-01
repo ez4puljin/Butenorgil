@@ -10,6 +10,9 @@ class PurchaseOrder(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     order_date: Mapped[date_type] = mapped_column(Date, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="preparing", nullable=False)
+    # Захиалгын байршил: "warehouse" (Агуулах) | "showroom" (Заал).
+    # Нөөц баганыг аль үлдэгдлийн файлаас тооцохыг тодорхойлно.
+    location: Mapped[str] = mapped_column(String(16), default="warehouse", nullable=False)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     notes: Mapped[str] = mapped_column(String(1000), default="")

@@ -467,6 +467,17 @@ def ensure_po_vehicle_schema():
                 "ALTER TABLE purchase_orders ADD COLUMN vehicle_id INTEGER REFERENCES vehicles(id)"
             ))
 
+
+def ensure_po_location_schema():
+    """Захиалгын байршил (location): "warehouse" | "showroom". Нөөц баганыг
+    аль үлдэгдлийн файлаас тооцохыг тодорхойлно. Хуучин захиалгууд "warehouse"."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(purchase_orders)")).fetchall()]
+        if cols and "location" not in cols:
+            conn.execute(text(
+                "ALTER TABLE purchase_orders ADD COLUMN location VARCHAR(16) DEFAULT 'warehouse' NOT NULL"
+            ))
+
 def ensure_po_brand_status_table():
     """po_brand_statuses хүснэгт үүсгэж, одоо байгаа PO-уудад backfill хийнэ."""
     with engine.begin() as conn:
@@ -838,6 +849,7 @@ def startup():
     ensure_kpi_inventory_schema()
     ensure_po_vehicle_schema()
     ensure_po_archive_schema()
+    ensure_po_location_schema()
     ensure_inventory_count_schema()
     ensure_po_brand_status_table()
     ensure_shipment_lines_schema()
