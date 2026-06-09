@@ -1710,16 +1710,31 @@ export default function PurchaseOrderDetail() {
                           {/* Sales stats (preparing/reviewing): 12с дунд / 3с дунд / Сүүлийн сар / Өмнөх он */}
                           {showSalesStatsCols && (() => {
                             const ss = salesStats[l.item_code];
-                            const fmtQ = (n?: number) => (n && n > 0) ? Math.round(n).toLocaleString("mn-MN") : <span className="text-gray-300">—</span>;
+                            const pack = (l.pack_ratio && l.pack_ratio > 0) ? l.pack_ratio : 1;
+                            // Хайрцаг руу хөрвүүлж харуулна: үндсэн нь хайрцаг (Nх Mш),
+                            // доор жижгээр нийт борлуулалтын ширхэг.
+                            const fmtBox = (n?: number) => {
+                              if (!n || n <= 0) return <span className="text-gray-300">—</span>;
+                              const total = Math.round(n);
+                              const boxes = Math.floor(total / pack);
+                              const extra = total - boxes * pack;
+                              if (boxes <= 0) return <div className="font-medium">{total}ш</div>;
+                              return (
+                                <>
+                                  <div className="font-medium">{boxes}х{extra > 0 ? ` ${extra}ш` : ""}</div>
+                                  <div className="text-[10px] font-normal text-gray-400">{total.toLocaleString("mn-MN")}ш</div>
+                                </>
+                              );
+                            };
                             return (
                               <>
                                 <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-blue-700 md:table-cell"
-                                    title={ss && ss.data_months_12m < 12 ? `${ss.data_months_12m} сараас тооцоолсон` : undefined}>
-                                  {fmtQ(ss?.avg_12m)}
+                                    title={ss && ss.data_months_12m < 12 ? `${ss.data_months_12m} сард дата орсон` : undefined}>
+                                  {fmtBox(ss?.avg_12m)}
                                 </td>
-                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-blue-800 md:table-cell">{fmtQ(ss?.avg_3m)}</td>
-                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-emerald-700 md:table-cell">{fmtQ(ss?.last_month)}</td>
-                                <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-amber-700 md:table-cell">{fmtQ(ss?.same_month_prev_year)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-blue-800 md:table-cell">{fmtBox(ss?.avg_3m)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-emerald-700 md:table-cell">{fmtBox(ss?.last_month)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-amber-700 md:table-cell">{fmtBox(ss?.same_month_prev_year)}</td>
                               </>
                             );
                           })()}

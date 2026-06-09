@@ -257,7 +257,7 @@ def get_stats(
             if ym in months_data:
                 sum_12 += months_data[ym]
                 cnt_12 += 1
-        avg_12 = (sum_12 / cnt_12) if cnt_12 > 0 else 0.0
+        avg_12 = sum_12 / 12.0   # тогтмол 12-т хуваана (дата байхгүй сар = 0 борлуулалт)
 
         # last 3 months
         sum_3, cnt_3 = 0.0, 0
@@ -265,7 +265,7 @@ def get_stats(
             if ym in months_data:
                 sum_3 += months_data[ym]
                 cnt_3 += 1
-        avg_3 = (sum_3 / cnt_3) if cnt_3 > 0 else 0.0
+        avg_3 = sum_3 / 3.0   # тогтмол 3-т хуваана (дата байхгүй сар = 0 борлуулалт)
 
         out[code] = {
             "avg_12m": round(avg_12, 1),
