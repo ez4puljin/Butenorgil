@@ -18,6 +18,13 @@ from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrand
 from app.models.product import Product
 from app.models.user import User
 from app.core.event_bus import publish as _publish_event
+from collections import defaultdict
+
+
+def _chunks(seq: list, n: int = 500):
+    """SQLite-ийн 999 хувьсагчийн хязгаараас зайлсхийхийн тулд IN query-г хуваана."""
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
 
 
 def _notify(session_id: int, action: str = "update") -> None:
@@ -116,11 +123,14 @@ def _serialize_line(ln: ReceivingLine, product: Optional[Product]) -> dict:
     }
 
 
-def _brand_aggregate(session_id: int, db: Session) -> dict:
-    """Бренд тус бүрээр нийт ширхэг + нийт дүн."""
-    lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == session_id).all()
-    prod_ids = [l.product_id for l in lines]
-    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
+def _brand_aggregate(session_id: int, db: Session, *, lines=None, products=None, statuses=None) -> dict:
+    """Бренд тус бүрээр нийт ширхэг + нийт дүн.
+    lines/products/statuses урьдчилан ачаалагдсан бол query хийхгүй (bulk list-д)."""
+    if lines is None:
+        lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == session_id).all()
+    if products is None:
+        prod_ids = [l.product_id for l in lines]
+        products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
     brands: dict[str, dict] = {}
     for l in lines:
         p = products.get(l.product_id)
@@ -133,10 +143,11 @@ def _brand_aggregate(session_id: int, db: Session) -> dict:
         if p and p.last_purchase_price and abs((l.unit_price or 0) - float(p.last_purchase_price)) > 0.01 and l.unit_price > 0:
             brands[brand]["has_price_diff"] = True
     # Attach brand statuses
-    statuses = {
-        bs.brand: bs
-        for bs in db.query(ReceivingBrandStatus).filter(ReceivingBrandStatus.session_id == session_id).all()
-    }
+    if statuses is None:
+        statuses = {
+            bs.brand: bs
+            for bs in db.query(ReceivingBrandStatus).filter(ReceivingBrandStatus.session_id == session_id).all()
+        }
     out = []
     for b, stats in sorted(brands.items()):
         bs = statuses.get(b)
@@ -153,8 +164,13 @@ def _brand_aggregate(session_id: int, db: Session) -> dict:
     return out
 
 
-def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = True) -> dict:
-    creator = db.query(User).filter(User.id == s.created_by_user_id).first()
+def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = True,
+                       *, lines=None, products=None, statuses=None, creator_name=None) -> dict:
+    """lines/products/statuses/creator_name урьдчилан ачаалагдсан бол query хийхгүй
+    (bulk list endpoint-д N+1-аас зайлсхийнэ)."""
+    if creator_name is None:
+        creator = db.query(User).filter(User.id == s.created_by_user_id).first()
+        creator_name = creator.username if creator else ""
     result = {
         "id": s.id,
         "date": s.date.isoformat(),
@@ -162,13 +178,15 @@ def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = T
         "status": s.status,
         "status_label": STATUS_LABEL.get(s.status, s.status),
         "is_archived": bool(s.is_archived),
-        "created_by_username": creator.username if creator else "",
+        "created_by_username": creator_name,
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }
     # Line + brand stats
-    lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == s.id).all()
-    prod_ids = [l.product_id for l in lines]
-    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
+    if lines is None:
+        lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == s.id).all()
+    if products is None:
+        prod_ids = [l.product_id for l in lines]
+        products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
     result["line_count"] = len(lines)
     result["total_pcs"] = round(sum(l.qty_pcs for l in lines), 2)
     result["total_amount"] = round(sum(l.qty_pcs * l.unit_price for l in lines), 2)
@@ -191,7 +209,7 @@ def _serialize_session(s: ReceivingSession, db: Session, include_lines: bool = T
     # backward-compat (хэрэв client-ууд хуучин key-ийг хүсэж байвал)
     result["price_diff_unreviewed_count"] = price_diff_total - price_diff_reviewed
     # Brand info
-    result["brands"] = _brand_aggregate(s.id, db)
+    result["brands"] = _brand_aggregate(s.id, db, lines=lines, products=products, statuses=statuses)
     all_brands_matched = result["brands"] and all(b["is_matched"] for b in result["brands"])
     result["all_brands_matched"] = bool(all_brands_matched)
     if include_lines:
@@ -278,7 +296,45 @@ def list_sessions(
     if status:
         q = q.filter(ReceivingSession.status == status)
     rows = q.order_by(ReceivingSession.date.desc(), ReceivingSession.id.desc()).all()
-    return [_serialize_session(s, db, include_lines=False) for s in rows]
+    if not rows:
+        return []
+
+    # ── Bulk load — session бүрт query хийхгүй (N+1 → цөөн batched query) ──
+    session_ids = [s.id for s in rows]
+    creator_ids = list({s.created_by_user_id for s in rows})
+
+    creators: dict[int, str] = {}
+    for chunk in _chunks(creator_ids):
+        for uid, uname in db.query(User.id, User.username).filter(User.id.in_(chunk)).all():
+            creators[uid] = uname
+
+    lines_by_session: dict[int, list] = defaultdict(list)
+    prod_ids: set[int] = set()
+    for chunk in _chunks(session_ids):
+        for ln in db.query(ReceivingLine).filter(ReceivingLine.session_id.in_(chunk)).all():
+            lines_by_session[ln.session_id].append(ln)
+            prod_ids.add(ln.product_id)
+
+    products: dict[int, Product] = {}
+    for chunk in _chunks(list(prod_ids)):
+        for p in db.query(Product).filter(Product.id.in_(chunk)).all():
+            products[p.id] = p
+
+    stat_by_session: dict[int, dict] = defaultdict(dict)
+    for chunk in _chunks(session_ids):
+        for bs in db.query(ReceivingBrandStatus).filter(ReceivingBrandStatus.session_id.in_(chunk)).all():
+            stat_by_session[bs.session_id][bs.brand] = bs
+
+    return [
+        _serialize_session(
+            s, db, include_lines=False,
+            lines=lines_by_session.get(s.id, []),
+            products=products,
+            statuses=stat_by_session.get(s.id, {}),
+            creator_name=creators.get(s.created_by_user_id, ""),
+        )
+        for s in rows
+    ]
 
 
 @router.post("")

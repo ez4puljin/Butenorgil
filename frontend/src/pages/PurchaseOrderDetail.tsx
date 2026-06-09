@@ -713,7 +713,7 @@ export default function PurchaseOrderDetail() {
   const colCount = (() => {
     // Үргэлж: Агуулах, Код, Нэр, Жин (4)
     let n = 4;
-    if (showStockCols)        n += 2;  // Нөөц, Борлуулалт
+    if (showStockCols)        n += 2;  // Нөөц, Хайрцагны тоо
     if (showUnitWeightCols)   n += 2;  // Нэгж жин, Хайрцаг/ш
     if (!showTransitCols)     n += 1;  // Захиалах
     if (showEstCostCols)      n += 2;  // Нэгж үнэ, Тооцоолсон дүн
@@ -1434,7 +1434,7 @@ export default function PurchaseOrderDetail() {
                       <th className="px-2 py-2.5 text-right text-xs font-semibold text-gray-500 md:px-4">
                         Нөөц <span className="font-normal text-gray-400">· {((order as any).location === "showroom") ? "Заал" : "Агуулах"}</span>
                       </th>
-                      <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Борлуулалт</th>
+                      <th className="hidden px-4 py-2.5 text-right text-xs font-semibold text-gray-500 md:table-cell">Хайрцагны тоо</th>
                     </>
                   )}
                   {showUnitWeightCols && (
@@ -1673,7 +1673,7 @@ export default function PurchaseOrderDetail() {
                                   </div>
                                 )}
                               </td>
-                              <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.sales_qty.toFixed(0)}</td>
+                              <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-gray-500 md:table-cell">{l.pack_ratio}</td>
                             </>
                             );
                           })()}
