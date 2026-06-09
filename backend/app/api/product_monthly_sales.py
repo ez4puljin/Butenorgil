@@ -103,7 +103,10 @@ def _compute_needed_months(anchor_y: int, anchor_m: int) -> list[tuple[int, int]
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
 class StatsRequest(BaseModel):
-    item_codes: list[str] = Field(..., max_length=2000)
+    # Бүх барааны захиалга (нэгдсэн) олон мянган мөртэй байж болно. Доорх query
+    # 500-аар batch хийдэг тул жагсаалтын хэмжээг өндөр тавина (өмнө 2000 байсан нь
+    # том захиалгад 422 өгдөг байсан). Frontend бас 1000-аар хувааж илгээнэ.
+    item_codes: list[str] = Field(..., max_length=100000)
     anchor_year: int
     anchor_month: int
 

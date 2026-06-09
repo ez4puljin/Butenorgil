@@ -834,6 +834,29 @@ def _auto_refresh_stock(db):
 
 @app.on_event("startup")
 def startup():
+    # ── Windows asyncio (Proactor) дээрх аюулгүй чимээг дарах ──
+    # Client (утас/browser) холболтоо огцом таслахад (ялангуяа /events SSE
+    # stream хаагдахад) _call_connection_lost → socket.shutdown() нь
+    # ConnectionResetError [WinError 10054] шиддэг. Энэ нь хүсэлтийн
+    # боловсруулалтад нөлөөлдөггүй — зөвхөн лог дүүргэдэг тул чимээг дарна.
+    try:
+        import asyncio
+        _loop = asyncio.get_event_loop()
+        _orig_handler = _loop.get_exception_handler()
+
+        def _quiet_conn_errors(loop, context):
+            exc = context.get("exception")
+            if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+                return  # аюулгүй: алсын тал холболтоо хаасан
+            if _orig_handler is not None:
+                _orig_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+
+        _loop.set_exception_handler(_quiet_conn_errors)
+    except Exception:
+        pass
+
     Base.metadata.create_all(bind=engine)
     ensure_extra_lines_brand()
     ensure_import_logs_schema()

@@ -448,9 +448,22 @@ export default function PurchaseOrderDetail() {
     const anchor_year  = parseInt(ym[0], 10);
     const anchor_month = parseInt(ym[1], 10);
     if (!anchor_year || !anchor_month) return;
-    api.post("/product-monthly-sales/stats", { item_codes: codes, anchor_year, anchor_month })
-      .then(r => setSalesStats(r.data ?? {}))
-      .catch(() => setSalesStats({}));
+    // Том захиалга (бүх бренд) олон мянган бараатай байж болзошгүй тул
+    // 1000-аар хувааж илгээгээд үр дүнг нэгтгэнэ (нэг асар том хүсэлт + 422-оос сэргийлнэ).
+    let cancelled = false;
+    (async () => {
+      const CHUNK = 1000;
+      const merged: Record<string, SalesStats> = {};
+      for (let i = 0; i < codes.length; i += CHUNK) {
+        const slice = codes.slice(i, i + CHUNK) as string[];
+        try {
+          const r = await api.post("/product-monthly-sales/stats", { item_codes: slice, anchor_year, anchor_month });
+          Object.assign(merged, r.data ?? {});
+        } catch { /* энэ багцыг алгасна */ }
+      }
+      if (!cancelled) setSalesStats(merged);
+    })();
+    return () => { cancelled = true; };
   }, [order?.id, effectiveStatus]);
 
   const canEdit = (() => {
