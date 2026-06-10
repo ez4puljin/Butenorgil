@@ -434,6 +434,11 @@ export default function PurchaseOrderDetail() {
     data_months_12m: number;
   };
   const [salesStats, setSalesStats] = useState<Record<string, SalesStats>>({});
+  // Сарын борлуулалтын файл аль хугацаанд оруулагдсан эсэх (—/0 ялгахад)
+  const [salesMeta, setSalesMeta] = useState<{
+    has_data_12m?: boolean; has_data_3m?: boolean;
+    has_data_last_month?: boolean; has_data_prev_year?: boolean;
+  }>({});
   useEffect(() => {
     if (!order) { setSalesStats({}); return; }
     if (!["preparing", "reviewing"].includes(effectiveStatus)) { setSalesStats({}); return; }
@@ -454,14 +459,17 @@ export default function PurchaseOrderDetail() {
     (async () => {
       const CHUNK = 1000;
       const merged: Record<string, SalesStats> = {};
+      let meta: any = {};
       for (let i = 0; i < codes.length; i += CHUNK) {
         const slice = codes.slice(i, i + CHUNK) as string[];
         try {
           const r = await api.post("/product-monthly-sales/stats", { item_codes: slice, anchor_year, anchor_month });
-          Object.assign(merged, r.data ?? {});
+          const { __meta__, ...items } = (r.data ?? {}) as any;
+          Object.assign(merged, items);
+          if (__meta__) meta = __meta__;
         } catch { /* энэ багцыг алгасна */ }
       }
-      if (!cancelled) setSalesStats(merged);
+      if (!cancelled) { setSalesStats(merged); setSalesMeta(meta); }
     })();
     return () => { cancelled = true; };
   }, [order?.id, effectiveStatus]);
@@ -1453,7 +1461,7 @@ export default function PurchaseOrderDetail() {
                       <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-blue-600 md:table-cell" title="Сүүлийн 12 сарын дундаж борлуулалт">12с дунд.</th>
                       <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-blue-700 md:table-cell" title="Сүүлийн 3 сарын дундаж борлуулалт">3с дунд.</th>
                       <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-emerald-600 md:table-cell" title="Сүүлийн сарын борлуулалт">Сүүлийн сар</th>
-                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-amber-600 md:table-cell" title="Өмнөх оны энэ сарын борлуулалт">Өмнөх он</th>
+                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-amber-600 md:table-cell" title="Өмнөх оны энэ сарын борлуулалт">Өмнөх оны энэ сард</th>
                     </>
                   )}
                   {showEstCostCols && (
@@ -1713,28 +1721,33 @@ export default function PurchaseOrderDetail() {
                             const pack = (l.pack_ratio && l.pack_ratio > 0) ? l.pack_ratio : 1;
                             // Хайрцаг руу хөрвүүлж харуулна: үндсэн нь хайрцаг (Nх Mш),
                             // доор жижгээр нийт борлуулалтын ширхэг.
-                            const fmtBox = (n?: number) => {
-                              if (!n || n <= 0) return <span className="text-gray-300">—</span>;
-                              const total = Math.round(n);
-                              const boxes = Math.floor(total / pack);
-                              const extra = total - boxes * pack;
-                              if (boxes <= 0) return <div className="font-medium">{total}ш</div>;
-                              return (
-                                <>
-                                  <div className="font-medium">{boxes}х{extra > 0 ? ` ${extra}ш` : ""}</div>
-                                  <div className="text-[10px] font-normal text-gray-400">{total.toLocaleString("mn-MN")}ш</div>
-                                </>
-                              );
+                            // Тоо байхгүй үед: файл орсон бол "0" (борлуулалтгүй),
+                            // эс бол "—" (борлуулалтын файл оруулаагүй) гэж ялгана.
+                            const fmtBox = (n: number | undefined, imported: boolean | undefined) => {
+                              if (n && n > 0) {
+                                const total = Math.round(n);
+                                const boxes = Math.floor(total / pack);
+                                const extra = total - boxes * pack;
+                                if (boxes <= 0) return <div className="font-medium">{total}ш</div>;
+                                return (
+                                  <>
+                                    <div className="font-medium">{boxes}х{extra > 0 ? ` ${extra}ш` : ""}</div>
+                                    <div className="text-[10px] font-normal text-gray-400">{total.toLocaleString("mn-MN")}ш</div>
+                                  </>
+                                );
+                              }
+                              if (imported) return <span className="font-medium text-gray-400" title="Файл орсон — энэ бараа борлуулалтгүй">0</span>;
+                              return <span className="text-gray-300" title="Энэ хугацааны борлуулалтын файл оруулаагүй">—</span>;
                             };
                             return (
                               <>
                                 <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-blue-700 md:table-cell"
                                     title={ss && ss.data_months_12m < 12 ? `${ss.data_months_12m} сард дата орсон` : undefined}>
-                                  {fmtBox(ss?.avg_12m)}
+                                  {fmtBox(ss?.avg_12m, salesMeta.has_data_12m)}
                                 </td>
-                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-blue-800 md:table-cell">{fmtBox(ss?.avg_3m)}</td>
-                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-emerald-700 md:table-cell">{fmtBox(ss?.last_month)}</td>
-                                <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-amber-700 md:table-cell">{fmtBox(ss?.same_month_prev_year)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-blue-800 md:table-cell">{fmtBox(ss?.avg_3m, salesMeta.has_data_3m)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs font-semibold tabular-nums text-emerald-700 md:table-cell">{fmtBox(ss?.last_month, salesMeta.has_data_last_month)}</td>
+                                <td className="hidden px-3 py-2.5 text-right text-xs tabular-nums text-amber-700 md:table-cell">{fmtBox(ss?.same_month_prev_year, salesMeta.has_data_prev_year)}</td>
                               </>
                             );
                           })()}

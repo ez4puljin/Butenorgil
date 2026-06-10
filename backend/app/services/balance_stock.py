@@ -13,6 +13,7 @@ Excel баганын бүтэц нь Эрхэт "Үлдэгдлийн тайла
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +30,9 @@ UPLOAD_DIR = Path("app/data/uploads/balance")
 
 # abs_path -> (mtime, {item_code: qty})
 _parse_cache: dict[str, tuple[float, dict[str, float]]] = {}
+# Олон хэрэглэгч зэрэг хандахад нэг файлыг олон thread зэрэг parse хийхээс
+# (cache stampede) сэргийлнэ.
+_parse_lock = threading.Lock()
 
 
 def _normalize_code(raw) -> str:
@@ -48,20 +52,30 @@ def _safe_float(raw) -> float:
 
 def parse_balance_file(path: Path) -> dict[str, float]:
     """Үлдэгдлийн тайлан Excel → {item_code: эцсийн үлдэгдэл}.
-    (refresh_stock_from_balance-тэй ижил логик: A=код, I=тоо)."""
+    (refresh_stock_from_balance-тэй ижил логик: A=код, I=тоо).
+
+    VECTORIZED — iterrows ашиглахгүй (мянган мөртэй файлд 10x+ хурдан).
+    A багана (0) = код, I багана (8) = тоо. Эхний 2 мөр гарчиг.
+    Зөвхөн 6+ оронтой код, давхар код нийлнэ."""
     p = str(path)
     eng = "xlrd" if p.lower().endswith(".xls") else "openpyxl"
     df = pd.read_excel(p, sheet_name=0, header=None, engine=eng)
-    out: dict[str, float] = {}
-    if df.shape[1] < 9:
-        return out
-    for _, row in df.iloc[2:].iterrows():     # 0,1-р мөр — header
-        code = _normalize_code(row.iloc[0])
-        # Зөвхөн 6+ оронтой бараа мөр (ангилал/агуулахын дэд нийлбэрийг алгасна)
-        if not code or not re.match(r"^\d{6,}$", code):
-            continue
-        out[code] = out.get(code, 0.0) + _safe_float(row.iloc[8])   # I багана (8)
-    return out
+    if df.shape[1] < 9 or len(df) <= 2:
+        return {}
+    sub = df.iloc[2:]                                  # 0,1-р мөр — header
+    codes = (
+        sub.iloc[:, 0].astype(str).str.strip()
+        .str.replace(r"\.0$", "", regex=True)          # 123.0 → 123
+        .str.replace(r"\s+", "", regex=True)
+    )
+    # Зөвхөн 6+ оронтой код (ангилал/агуулахын дэд нийлбэр '01','150101'-ийг бус —
+    # хуучин логиктой ижил: 6+ цифр л үлдэнэ)
+    mask = codes.str.fullmatch(r"\d{6,}").fillna(False)
+    if not mask.any():
+        return {}
+    qty = pd.to_numeric(sub.iloc[:, 8], errors="coerce").fillna(0.0)   # I багана (8)
+    grouped = qty[mask].groupby(codes[mask]).sum()
+    return {str(k): float(v) for k, v in grouped.items()}
 
 
 def _cached_map_for(stored_filename: str) -> dict[str, float]:
@@ -75,15 +89,22 @@ def _cached_map_for(stored_filename: str) -> dict[str, float]:
         mtime = path.stat().st_mtime
     except OSError:
         return {}
-    cached = _parse_cache.get(str(path))
+    key = str(path)
+    cached = _parse_cache.get(key)
     if cached and cached[0] == mtime:
         return cached[1]
-    try:
-        m = parse_balance_file(path)
-    except Exception:
-        m = {}
-    _parse_cache[str(path)] = (mtime, m)
-    return m
+    # Cache хүйтэн/хуучирсан — зөвхөн НЭГ thread parse хийнэ (бусад нь lock-д
+    # хүлээгээд бэлэн cache-ээс авна → олон хэрэглэгч зэрэг нээхэд stampede болохгүй).
+    with _parse_lock:
+        cached = _parse_cache.get(key)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        try:
+            m = parse_balance_file(path)
+        except Exception:
+            m = {}
+        _parse_cache[key] = (mtime, m)
+        return m
 
 
 def get_location_stock_map(db: Session, location: str) -> dict[str, float]:
@@ -103,3 +124,18 @@ def get_location_stock_map(db: Session, location: str) -> dict[str, float]:
         return out
     # warehouse (default)
     return _cached_map_for(rows.get(BAL_KIND_WAREHOUSE, ""))
+
+
+def warm_balance_maps() -> None:
+    """Бүх баланс файлыг cache-д урьдчилан уншина (startup + 60с background loop).
+    Ингэснээр захиалга/бренд нээхэд parse хүлээхгүй — шууд cache-ээс авна.
+    Файл өдөр бүр шинэчлэгдвэл mtime өөрчлөгдөж, дараагийн warm-д дахин уншина."""
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        for r in db.query(BalanceFile).all():
+            _cached_map_for(r.stored_filename)
+    except Exception:
+        pass
+    finally:
+        db.close()

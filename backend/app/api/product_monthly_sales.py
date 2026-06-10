@@ -274,6 +274,23 @@ def get_stats(
             "same_month_prev_year": round(months_data.get((prev_year_y, prev_year_m), 0.0), 1),
             "data_months_12m": cnt_12,
         }
+
+    # ── Аль сарын slot-д ямар нэг бараа импортлогдсоныг шалгана ──
+    # Frontend "—" (борлуулалтын файл оруулаагүй) ба "0" (файл орсон ч энэ
+    # бараа борлуулалтгүй)-г ялгаж харуулахад ашиглана.
+    imported_slots = {
+        (y, m)
+        for y, m in db.query(ProductMonthlySales.year, ProductMonthlySales.month)
+        .filter(tuple_(ProductMonthlySales.year, ProductMonthlySales.month).in_(needed))
+        .distinct()
+        .all()
+    }
+    out["__meta__"] = {
+        "has_data_12m": any(ym in imported_slots for ym in last_12_months),
+        "has_data_3m": any(ym in imported_slots for ym in last_3_months),
+        "has_data_last_month": (last_y, last_m) in imported_slots,
+        "has_data_prev_year": (prev_year_y, prev_year_m) in imported_slots,
+    }
     return out
 
 

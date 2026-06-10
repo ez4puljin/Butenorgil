@@ -918,6 +918,13 @@ async def _dashboard_warm_loop():
             await asyncio.to_thread(dashboard_cache.warm_all)
         except Exception as e:
             print(f"[dashboard] warm алдаа: {e}")
+        # Захиалга/бренд нээхэд Нөөц баганыг хурдан гаргахын тулд баланс
+        # файлуудыг (warehouse/main/liquor) урьдчилан cache-д уншина.
+        try:
+            from app.services.balance_stock import warm_balance_maps
+            await asyncio.to_thread(warm_balance_maps)
+        except Exception as e:
+            print(f"[balance] warm алдаа: {e}")
         await asyncio.sleep(60)  # 60с тутамд snapshot-уудыг шинэ байлгана
 
 
