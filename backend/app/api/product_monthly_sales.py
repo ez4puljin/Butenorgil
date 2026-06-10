@@ -109,6 +109,9 @@ class StatsRequest(BaseModel):
     item_codes: list[str] = Field(..., max_length=100000)
     anchor_year: int
     anchor_month: int
+    # "Өмнөх оны энэ сард" баганад харьцуулах сар (1-12). Заагаагүй бол anchor_month.
+    # Захиалга үүсгэхэд сонгосон сар (PurchaseOrder.stat_month)-аар дамжина.
+    prev_year_month: int | None = None
 
 
 class StatsResult(BaseModel):
@@ -208,7 +211,13 @@ def get_stats(
         return {}
 
     last_y, last_m = _shift_month(anchor_y, anchor_m, -1)
-    prev_year_y, prev_year_m = anchor_y - 1, anchor_m
+    # "Өмнөх оны энэ сард" — сонгосон сар байвал түүгээр, эс бол anchor сараар
+    prev_year_y = anchor_y - 1
+    _pym = body.prev_year_month
+    prev_year_m = _pym if (_pym and 1 <= _pym <= 12) else anchor_m
+    # Тухайн (өмнөх он, сонгосон сар) needed-д ороогүй бол нэмж дата татагдана
+    if (prev_year_y, prev_year_m) not in needed:
+        needed = sorted(set(needed) | {(prev_year_y, prev_year_m)})
 
     # Сүүлийн 12 сар (anchor-1 .. anchor-12)
     last_12_months = {_shift_month(anchor_y, anchor_m, -i) for i in range(1, 13)}

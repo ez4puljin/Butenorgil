@@ -106,12 +106,14 @@ export default function PurchaseOrderList() {
     mode: "all" | "brands";
     brands: string[];
     location: "warehouse" | "showroom";
+    statMonth: number;
   }>({
     order_date: new Date().toISOString().slice(0, 10),
     notes: "",
     mode: "all",
     brands: [],
     location: "warehouse",
+    statMonth: new Date().getMonth() + 1,
   });
   const [creating, setCreating] = useState(false);
 
@@ -328,6 +330,7 @@ export default function PurchaseOrderList() {
         order_date: createForm.order_date,
         notes: createForm.notes,
         location: createForm.location,
+        stat_month: createForm.statMonth,
       };
       if (createForm.mode === "brands" && createForm.brands.length > 0) {
         payload.brands = createForm.brands;
@@ -335,7 +338,7 @@ export default function PurchaseOrderList() {
       const res = await api.post("/purchase-orders", payload);
       flash(`Захиалга үүслээ — ${res.data.line_count} бараа нэмэгдлээ`);
       setShowCreateModal(false);
-      setCreateForm({ order_date: new Date().toISOString().slice(0, 10), notes: "", mode: "all", brands: [], location: "warehouse" });
+      setCreateForm({ order_date: new Date().toISOString().slice(0, 10), notes: "", mode: "all", brands: [], location: "warehouse", statMonth: new Date().getMonth() + 1 });
       setBrandSearch("");
       await loadOrders();
     } catch (e: any) {
@@ -830,6 +833,21 @@ export default function PurchaseOrderList() {
                     ? "Нөөц = Бүх агуулахын үлдэгдэл"
                     : "Нөөц = Үндсэн заал + Архины заал"}
                 </p>
+              </div>
+
+              {/* Статистикийн сар — "Өмнөх оны энэ сард" баганад харьцуулах сар */}
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-gray-600">Статистикийн сар (Өмнөх он харьцуулах)</label>
+                <select
+                  value={createForm.statMonth}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, statMonth: Number(e.target.value) }))}
+                  className="w-full rounded-apple border border-gray-200 px-3 py-2.5 text-base outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/15"
+                >
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((mo) => (
+                    <option key={mo} value={mo}>{mo}-р сар</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[11px] text-gray-400">"Өмнөх оны энэ сард" багана — энэ сарын өмнөх оны борлуулалтыг харуулна.</p>
               </div>
 
               {/* Mode toggle */}

@@ -13,6 +13,10 @@ class PurchaseOrder(Base):
     # Захиалгын байршил: "warehouse" (Агуулах) | "showroom" (Заал).
     # Нөөц баганыг аль үлдэгдлийн файлаас тооцохыг тодорхойлно.
     location: Mapped[str] = mapped_column(String(16), default="warehouse", nullable=False)
+    # "Өмнөх оны энэ сард" баганад харьцуулах сар (1-12). NULL бол order_date-ийн сар.
+    # Захиалга үүсгэхэд сонгоно (ирээдүйн төлөвлөж буй сарын өмнөх оны борлуулалтыг харах).
+    # (vehicle_id-тэй адил Column хэлбэрээр — Mapped[int|None] нь Py3.14-д typing алдаа өгдөг)
+    stat_month = Column(Integer, nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     notes: Mapped[str] = mapped_column(String(1000), default="")

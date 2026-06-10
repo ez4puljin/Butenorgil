@@ -117,6 +117,7 @@ def _serialize_order_detail(
         "notes": o.notes or "",
         "is_archived": bool(o.is_archived),
         "location": o.location or "warehouse",
+        "stat_month": o.stat_month,
     }
 
     # Load lines via explicit query (NOT lazy o.lines which loads ALL 10K+ rows)
@@ -302,6 +303,8 @@ class POCreateIn(BaseModel):
     brands: Optional[List[str]] = None
     # Захиалгын байршил: "warehouse" (Агуулах) | "showroom" (Заал). Нөөц баганыг тодорхойлно.
     location: str = "warehouse"
+    # "Өмнөх оны энэ сард" баганад харьцуулах сар (1-12). None бол order_date-ийн сар.
+    stat_month: Optional[int] = None
 
 
 class POLineIn(BaseModel):
@@ -932,6 +935,7 @@ def create_purchase_order(
         created_by_user_id=u.id,
         notes=body.notes,
         location=("showroom" if body.location == "showroom" else "warehouse"),
+        stat_month=(body.stat_month if (body.stat_month and 1 <= body.stat_month <= 12) else None),
     )
     db.add(po)
     db.flush()
@@ -2148,6 +2152,28 @@ def set_order_location(
     po.location = "showroom" if body.location == "showroom" else "warehouse"
     db.commit()
     return {"ok": True, "location": po.location}
+
+
+class POStatMonthIn(BaseModel):
+    stat_month: Optional[int] = None
+
+
+@router.put("/{order_id}/stat-month")
+def set_order_stat_month(
+    order_id: int,
+    body: POStatMonthIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("manager", "admin", "supervisor")),
+):
+    """"Өмнөх оны энэ сард" баганад харьцуулах сарыг (1-12) солино. None бол
+    order_date-ийн сараар."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+    sm = body.stat_month
+    po.stat_month = sm if (sm and 1 <= sm <= 12) else None
+    db.commit()
+    return {"ok": True, "stat_month": po.stat_month}
 
 
 # ── Extra lines (supplier-added items not in product catalog) ──────────────────

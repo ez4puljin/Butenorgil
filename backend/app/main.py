@@ -477,6 +477,9 @@ def ensure_po_location_schema():
             conn.execute(text(
                 "ALTER TABLE purchase_orders ADD COLUMN location VARCHAR(16) DEFAULT 'warehouse' NOT NULL"
             ))
+        # "Өмнөх оны энэ сард" баганад харьцуулах сар (NULL = order_date-ийн сар)
+        if cols and "stat_month" not in cols:
+            conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN stat_month INTEGER"))
 
 def ensure_po_brand_status_table():
     """po_brand_statuses хүснэгт үүсгэж, одоо байгаа PO-уудад backfill хийнэ."""

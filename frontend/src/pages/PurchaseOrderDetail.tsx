@@ -463,7 +463,7 @@ export default function PurchaseOrderDetail() {
       for (let i = 0; i < codes.length; i += CHUNK) {
         const slice = codes.slice(i, i + CHUNK) as string[];
         try {
-          const r = await api.post("/product-monthly-sales/stats", { item_codes: slice, anchor_year, anchor_month });
+          const r = await api.post("/product-monthly-sales/stats", { item_codes: slice, anchor_year, anchor_month, prev_year_month: (order as any).stat_month || null });
           const { __meta__, ...items } = (r.data ?? {}) as any;
           Object.assign(merged, items);
           if (__meta__) meta = __meta__;
@@ -472,7 +472,7 @@ export default function PurchaseOrderDetail() {
       if (!cancelled) { setSalesStats(merged); setSalesMeta(meta); }
     })();
     return () => { cancelled = true; };
-  }, [order?.id, effectiveStatus]);
+  }, [order?.id, effectiveStatus, (order as any)?.stat_month]);
 
   const canEdit = (() => {
     if (!order) return false;
@@ -869,6 +869,30 @@ export default function PurchaseOrderDetail() {
                 {((order as any).location === "showroom") ? "🏪 Заал" : "📦 Агуулах"}
               </span>
             )
+          )}
+
+          {/* Статистикийн сар — "Өмнөх оны энэ сард" баганад харьцуулах сар (preparing/reviewing) */}
+          {showSalesStatsCols && (
+            (canEdit && !brandMode) ? (
+              <select
+                value={(order as any).stat_month || ""}
+                onChange={async (e) => {
+                  try {
+                    await api.put(`/purchase-orders/${order.id}/stat-month`, { stat_month: e.target.value ? Number(e.target.value) : null });
+                    await loadOrder();
+                  } catch (err: any) { flash(err?.response?.data?.detail ?? "Алдаа гарлаа", false); }
+                }}
+                title="Өмнөх он харьцуулах сар"
+                className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 outline-none focus:ring-2 focus:ring-amber-200"
+              >
+                <option value="">📊 Сар: автомат</option>
+                {Array.from({ length: 12 }, (_, i) => i + 1).map((mo) => (
+                  <option key={mo} value={mo}>📊 {mo}-р сар</option>
+                ))}
+              </select>
+            ) : ((order as any).stat_month ? (
+              <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-100">📊 {(order as any).stat_month}-р сар</span>
+            ) : null)
           )}
         </div>
 
@@ -1461,7 +1485,7 @@ export default function PurchaseOrderDetail() {
                       <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-blue-600 md:table-cell" title="Сүүлийн 12 сарын дундаж борлуулалт">12с дунд.</th>
                       <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-blue-700 md:table-cell" title="Сүүлийн 3 сарын дундаж борлуулалт">3с дунд.</th>
                       <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-emerald-600 md:table-cell" title="Сүүлийн сарын борлуулалт">Сүүлийн сар</th>
-                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-amber-600 md:table-cell" title="Өмнөх оны энэ сарын борлуулалт">Өмнөх оны энэ сард</th>
+                      <th className="hidden px-3 py-2.5 text-right text-xs font-semibold text-amber-600 md:table-cell" title="Өмнөх оны сонгосон сарын борлуулалт">Өмнөх оны {(order as any).stat_month ? `${(order as any).stat_month}-р сар` : "энэ сард"}</th>
                     </>
                   )}
                   {showEstCostCols && (
