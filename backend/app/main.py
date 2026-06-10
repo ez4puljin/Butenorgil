@@ -934,6 +934,13 @@ async def _dashboard_warm_loop():
 @app.on_event("startup")
 async def schedule_dashboard_warm():
     """Хянах самбарын cache-ийг урьдчилан халаах background loop."""
+    # Sync endpoint бүр threadpool-ийн нэг thread эзэлдэг — default 40 нь олон
+    # хэрэглэгч (7+ утас, хүсэлт бүр зэрэгцээ) үед дутагдаж дараалал үүсгэдэг.
+    try:
+        import anyio.to_thread
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 120
+    except Exception as e:
+        print(f"[startup] threadpool тохируулга алдаа: {e}")
     asyncio.create_task(_dashboard_warm_loop())
 
 

@@ -1,6 +1,7 @@
 import axios from "axios";
 import { useAuthStore } from "../store/authStore";
 import { getServerUrlSync, isNativeApp } from "./serverConfig";
+import { bindBaseUrlGetter, reportNetworkError, reportSuccess, waitForOnline } from "./connection";
 
 // Base URL сонголт:
 // 1) Native app (Capacitor APK) — хэрэглэгчийн оруулсан IP/порт (ServerConfig screen)
@@ -38,14 +39,52 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Response: 401 ирвэл logout хийж login руу шилжүүлнэ
+// connection.ts-д baseURL-аа өгнө (ping /health-д ашиглана)
+bindBaseUrlGetter(() => api.defaults.baseURL || "");
+
+const _sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Response: 401 → logout; network алдаа → холболтын төлөв + автомат retry/resume
 api.interceptors.response.use(
-  (res) => res,
-  (err) => {
+  (res) => {
+    reportSuccess();
+    return res;
+  },
+  async (err) => {
     if (err?.response?.status === 401) {
       useAuthStore.getState().logout();
       window.location.href = "/";
+      return Promise.reject(err);
     }
+
+    // ── Network түвшний алдаа (HTTP хариу огт ирээгүй — WiFi/router/сервер) ──
+    const cfg = err?.config;
+    const isNetworkErr = !err?.response && !!cfg && err?.code !== "ERR_CANCELED";
+    if (!isNetworkErr) return Promise.reject(err);
+
+    reportNetworkError();
+    const method = String(cfg.method || "get").toLowerCase();
+    const retries = cfg._connRetries ?? 0;
+
+    // GET: түр зуурын тасалдалд 2 удаа богино зайтай дахина
+    if (method === "get" && retries < 2 && !cfg._noConnRetry) {
+      cfg._connRetries = retries + 1;
+      await _sleep(1200 * (retries + 1));
+      return api.request(cfg);
+    }
+
+    // PATCH/PUT: идемпотент (бүтэн/абсолют утга илгээдэг) тул холболт сэргэхийг хүлээгээд
+    // АВТОМАТААР үргэлжлүүлнэ — хэрэглэгчийн хийж байсан үйлдэл алдагдахгүй.
+    // (POST/DELETE-ийг давтахгүй — сервер хүрсэн байж магадгүй тул давхардана.)
+    if ((method === "patch" || method === "put") && retries < 3 && !cfg._noConnRetry) {
+      cfg._connRetries = retries + 1;
+      const ok = await waitForOnline(120_000);   // 2 мин хүртэл хүлээнэ
+      if (ok) {
+        await _sleep(300 * retries);
+        return api.request(cfg);
+      }
+    }
+
     return Promise.reject(err);
   },
 );

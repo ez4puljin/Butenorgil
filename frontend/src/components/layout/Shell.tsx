@@ -9,6 +9,7 @@ import {
   Clock, CalendarClock,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
+import ConnectionBanner from "../ConnectionBanner";
 
 type NavItem = {
   to: string;
@@ -210,6 +211,8 @@ export default function Shell(props: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-[#F5F5F7]">
+      {/* Холболтын төлөв (WiFi / сервер тасрахад тодорхой мэдээлнэ) */}
+      <ConnectionBanner />
 
       {/* ══ DESKTOP (lg+) ═══════════════════════════════════════════════ */}
       <div className="hidden lg:flex min-h-screen print:block">
