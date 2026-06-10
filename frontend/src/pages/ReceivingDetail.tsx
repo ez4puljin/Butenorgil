@@ -5,7 +5,7 @@ import {
   ChevronLeft, Search, Plus, Trash2, Upload, Check, X, FileDown,
   RefreshCw, Image as ImageIcon, AlertCircle, Package, Camera,
   Calendar, User, Hash, CheckCircle2, Clock, Undo2, Eye, TrendingUp,
-  ChevronRight, ChevronDown, AlertTriangle,
+  ChevronRight, ChevronDown, AlertTriangle, ArrowLeftRight,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useLiveRefresh } from "../lib/liveEvents";
@@ -259,6 +259,11 @@ export default function ReceivingDetail() {
   const [mobileView, setMobileView] = useState<"brands" | "lines">("brands");
 
   const [confirmBrand, setConfirmBrand] = useState<BrandInfo | null>(null);
+  // Бренд өөр тулгалт руу шилжүүлэх dialog
+  const [moveBrand, setMoveBrand] = useState<BrandInfo | null>(null);
+  const [moveSessions, setMoveSessions] = useState<Array<{ id: number; date: string; status_label: string }>>([]);
+  const [moveTargetId, setMoveTargetId] = useState<number | null>(null);
+  const [moving, setMoving] = useState(false);
   const [supplierPcs, setSupplierPcs] = useState("");
   const [supplierAmount, setSupplierAmount] = useState("");
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
@@ -511,6 +516,29 @@ export default function ReceivingDetail() {
       await api.post(`/receivings/${session.id}/brands/unmatch`, null, { params: { brand } });
       await load();
     } catch (e: any) { flash(e?.response?.data?.detail ?? "Алдаа", false); }
+  };
+
+  // ── Бренд өөр тулгалт руу шилжүүлэх ──
+  const openMove = async (b: BrandInfo) => {
+    setMoveBrand(b); setMoveTargetId(null); setMoveSessions([]);
+    try {
+      const r = await api.get("/receivings", { params: { archived: "false" } });
+      setMoveSessions((r.data ?? []).filter((s: any) => s.id !== session?.id));
+    } catch { /* алгасах */ }
+  };
+  const doMove = async () => {
+    if (!session || !moveBrand || !moveTargetId) return;
+    setMoving(true);
+    try {
+      const r = await api.post(`/receivings/${session.id}/brands/move`, null, {
+        params: { brand: moveBrand.brand, target_session_id: moveTargetId },
+      });
+      flash(`${moveBrand.brand} — #${moveTargetId} тулгалт руу шилжлээ (${r.data?.moved_lines ?? 0} мөр)`);
+      setMoveBrand(null); setMoveTargetId(null);
+      await load();
+    } catch (e: any) {
+      flash(e?.response?.data?.detail ?? "Шилжүүлэхэд алдаа гарлаа", false);
+    } finally { setMoving(false); }
   };
 
   const advanceTo = async (status: string) => {
@@ -1218,6 +1246,17 @@ export default function ReceivingDetail() {
                     </button>
                   )}
 
+                  {/* Desktop: брендийг өөр тулгалт руу шилжүүлэх */}
+                  {(role === "admin" || role === "manager" || role === "supervisor") && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openMove(b); }}
+                      className="hidden lg:inline-flex mt-1.5 w-full items-center justify-center gap-1 rounded border border-dashed border-violet-400 bg-transparent px-2 py-1 text-[10.5px] font-semibold text-violet-600 hover:bg-violet-50"
+                      title="Энэ брендийг бүхэлд нь өөр тулгалт руу шилжүүлэх"
+                    >
+                      <ArrowLeftRight size={10}/> Өөр тулгалт руу
+                    </button>
+                  )}
+
                   {/* Mobile: legacy Шүүж харах / Тулгах / Буцаах товчнууд (lg:hidden) */}
                   <div className="mt-2.5 flex flex-wrap items-center gap-1.5 lg:hidden">
                     <button
@@ -1256,6 +1295,15 @@ export default function ReceivingDetail() {
                         title="Тулгалтыг буцаах"
                       >
                         <Undo2 size={11}/>
+                      </button>
+                    )}
+                    {(role === "admin" || role === "manager" || role === "supervisor") && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openMove(b); }}
+                        className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1.5 text-[11px] font-medium text-violet-600 ring-1 ring-inset ring-violet-200/60 hover:bg-violet-50"
+                        title="Өөр тулгалт руу шилжүүлэх"
+                      >
+                        <ArrowLeftRight size={11}/>
                       </button>
                     )}
                   </div>
@@ -1790,6 +1838,47 @@ export default function ReceivingDetail() {
           onSubmit={confirmBrandMatch}
           submitting={confirming}
         />
+      )}
+
+      {/* Бренд өөр тулгалт руу шилжүүлэх dialog */}
+      {moveBrand && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+             onClick={() => !moving && setMoveBrand(null)}>
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-gray-900">Бренд шилжүүлэх</h3>
+              <button onClick={() => setMoveBrand(null)} disabled={moving} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
+            </div>
+            <p className="mt-2 text-sm text-gray-600">
+              <b className="text-gray-900">{moveBrand.brand}</b>
+              <span className="text-gray-500"> ({moveBrand.line_count} бараа · {moveBrand.total_pcs.toFixed(0)}ш · {moveBrand.total_amount.toLocaleString("mn-MN")}₮)</span>
+              {" "}— энэ брендийг бүхэлд нь өөр тулгалт руу шилжүүлнэ.
+            </p>
+            <div className="mt-3">
+              <div className="mb-1 text-xs font-semibold text-gray-500">Зорилтот тулгалт сонгоно уу</div>
+              <div className="max-h-64 divide-y divide-gray-100 overflow-auto rounded-lg border border-gray-200">
+                {moveSessions.length === 0 ? (
+                  <div className="px-3 py-5 text-center text-xs text-gray-400">Өөр идэвхтэй тулгалт алга</div>
+                ) : moveSessions.map((s) => (
+                  <button key={s.id} onClick={() => setMoveTargetId(s.id)}
+                    className={`flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-gray-50 ${moveTargetId === s.id ? "bg-violet-50 ring-1 ring-inset ring-violet-300" : ""}`}>
+                    <span className="font-medium text-gray-800">{String(s.date).replaceAll("-", "/")} <span className="text-gray-400">#{s.id}</span></span>
+                    <span className="text-[11px] text-gray-500">{s.status_label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setMoveBrand(null)} disabled={moving}
+                className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Болих</button>
+              <button onClick={doMove} disabled={moving || !moveTargetId}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50">
+                {moving ? <RefreshCw size={14} className="animate-spin"/> : <ArrowLeftRight size={14}/>}
+                {moving ? "Шилжүүлж байна..." : "Шилжүүлэх"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Error modal — дэлгэрэнгүй алдааны мессеж */}

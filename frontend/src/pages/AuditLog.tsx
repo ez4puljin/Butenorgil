@@ -50,6 +50,7 @@ const ACTION_LABEL: Record<string, string> = {
   receiving_delete: "Бараа тулгаж авах — бүртгэл устгах",
   receiving_delete_line: "Бараа тулгаж авах — мөр устгах",
   receiving_unmatch_brand: "Бараа тулгаж авах — брэнд тулгалт буцаах",
+  receiving_move_brand: "Бараа тулгаж авах — брэнд өөр тулгалт руу шилжүүлэх",
   // Бичиг баримт (Documents)
   document_group_delete: "Бичиг баримт — бүлэг устгах",
   document_file_delete: "Бичиг баримт — файл устгах",

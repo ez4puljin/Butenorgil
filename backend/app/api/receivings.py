@@ -769,6 +769,80 @@ def unmatch_brand(
     return {"ok": True}
 
 
+@router.post("/{session_id}/brands/move")
+def move_brand(
+    session_id: int,
+    request: Request,
+    brand: str = Query(...),
+    target_session_id: int = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "manager", "supervisor")),
+):
+    """Тухайн брендийн БҮХ мөрийг өөр тулгалт руу бүхэлд нь шилжүүлнэ.
+    (effective brand == brand байх мөрүүд). Brand status (тулгалт/баримт)-ийг
+    хамт шилжүүлнэ. Хоёр session-г SSE-ээр шинэчилнэ."""
+    src = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
+    if not src:
+        raise HTTPException(404, "Эх тулгалт олдсонгүй")
+    tgt_id = int(target_session_id)
+    if tgt_id == session_id:
+        raise HTTPException(400, "Өөр тулгалт сонгоно уу")
+    tgt = db.query(ReceivingSession).filter(ReceivingSession.id == tgt_id).first()
+    if not tgt:
+        raise HTTPException(404, "Зорилтот тулгалт олдсонгүй")
+    if src.is_archived or tgt.is_archived:
+        raise HTTPException(400, "Архивлагдсан тулгалт руу/-аас шилжүүлэх боломжгүй")
+
+    # Эх session-ы тухайн брендийн мөрүүдийг олно (effective brand == brand)
+    lines = db.query(ReceivingLine).filter(ReceivingLine.session_id == session_id).all()
+    prod_ids = [l.product_id for l in lines]
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()} if prod_ids else {}
+    moving = [l for l in lines if _effective_brand(l, products.get(l.product_id)) == brand]
+    if not moving:
+        raise HTTPException(404, f"'{brand}' брендийн мөр олдсонгүй")
+
+    moved_count = len(moving)
+    moved_pcs = round(sum(l.qty_pcs for l in moving), 2)
+    for l in moving:
+        l.session_id = tgt_id
+
+    # Brand status: target-д аль хэдийн байгаа бол эх дэхийг устгана; үгүй бол
+    # эх дэх brand status-ийг (matched төлөв + баримттай нь) target руу шилжүүлнэ.
+    src_bs = db.query(ReceivingBrandStatus).filter(
+        ReceivingBrandStatus.session_id == session_id,
+        ReceivingBrandStatus.brand == brand,
+    ).first()
+    tgt_bs = db.query(ReceivingBrandStatus).filter(
+        ReceivingBrandStatus.session_id == tgt_id,
+        ReceivingBrandStatus.brand == brand,
+    ).first()
+    if src_bs:
+        if tgt_bs:
+            db.delete(src_bs)
+        else:
+            src_bs.session_id = tgt_id
+    db.commit()
+
+    # Бренд хасагдсан/нэмэгдсэн тул хоёр session-ы төлөвийг шалгана
+    # (тулгагдаагүй бренд орвол price_review/received → matching руу буцна).
+    _revert_if_unmatched_brand_appears(src, db)
+    _revert_if_unmatched_brand_appears(tgt, db)
+
+    audit(db, request, u,
+          action="receiving_move_brand",
+          entity_type="receiving_session",
+          entity_id=int(session_id),
+          parent_type="receiving_session",
+          parent_id=int(session_id),
+          before={"brand": brand, "from_session": session_id},
+          after={"brand": brand, "to_session": tgt_id,
+                 "moved_lines": moved_count, "moved_pcs": moved_pcs},
+          autocommit=True)
+    _notify(session_id, "brand_moved")
+    _notify(tgt_id, "brand_moved")
+    return {"ok": True, "moved_lines": moved_count, "moved_pcs": moved_pcs, "target_session_id": tgt_id}
+
+
 @router.get("/{session_id}/brands/receipt")
 def get_receipt(
     session_id: int,
