@@ -6,9 +6,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Search, X, Check, Loader2, AlertCircle, CheckCircle,
-  Timer, Printer, Archive, ArchiveRestore, Trash2, Pencil, Filter,
+  Timer, Printer, Archive, ArchiveRestore, Pencil, Filter,
   ScanLine, Calendar as CalendarIcon, Users, AlertTriangle, FileText,
-  Camera,
+  Camera, History, UserRound,
 } from "lucide-react";
 import { api } from "../lib/api";
 import BarcodeScanner from "../components/BarcodeScanner";
@@ -49,6 +49,17 @@ interface ProductHit {
   brand: string;
   barcode: string;
   stock_qty: number;
+}
+
+interface QtyHistRow {
+  id: number;
+  kind: string;                 // create | update
+  qty_floor_old: number;
+  qty_floor_new: number;
+  qty_warehouse_old: number;
+  qty_warehouse_new: number;
+  changed_at: string | null;
+  changed_by_username: string;
 }
 
 interface RoleOpt { value: string; label: string; color?: string; }
@@ -101,6 +112,17 @@ function fmtDate(iso: string): string {
   return `${y}/${m}/${d}`;
 }
 
+/** UTC iso → Улаанбаатарын цаг (UTC+8) "YYYY/MM/DD HH:mm" — төхөөрөмжийн
+ * timezone-оос үл хамааран нэг ижил харагдана (AuditLog-тай ижил арга). */
+function fmtDateTimeUB(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso.endsWith("Z") ? iso : iso + "Z");
+  if (Number.isNaN(d.getTime())) return "—";
+  const ub = new Date(d.getTime() + 8 * 3600 * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${ub.getUTCFullYear()}/${p(ub.getUTCMonth() + 1)}/${p(ub.getUTCDate())} ${p(ub.getUTCHours())}:${p(ub.getUTCMinutes())}`;
+}
+
 function daysLabel(d: number): string {
   if (d < 0) return `${Math.abs(d)} хоног өнгөрсөн`;
   if (d === 0) return "Өнөөдөр дуусна";
@@ -124,6 +146,54 @@ function Toast({ toast }: { toast: { msg: string; ok: boolean } | null }) {
     }`}>
       {toast.ok ? <CheckCircle size={15}/> : <AlertCircle size={15}/>}
       {toast.msg}
+    </div>
+  );
+}
+
+// ── Монгол огноо сонгогч (Он / Сар / Өдөр) ──────────────────────────────────
+// Native <input type="date"> нь төхөөрөмжийн хэлээр (ихэвчлэн англи) сар
+// харуулдаг тул бүх төхөөрөмж дээр монголоор гарах 3 select ашиглана.
+
+const MN_MONTH_NAMES = ["1-р сар","2-р сар","3-р сар","4-р сар","5-р сар","6-р сар","7-р сар","8-р сар","9-р сар","10-р сар","11-р сар","12-р сар"];
+
+function MnDateInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const today = new Date();
+  const yy = value ? parseInt(value.slice(0, 4), 10) : 0;
+  const mm = value ? parseInt(value.slice(5, 7), 10) : 0;
+  const dd = value ? parseInt(value.slice(8, 10), 10) : 0;
+
+  // Дуусах хугацаа ихэвчлэн ирээдүйд — өнгөрсөн 1 жилээс ирэх 5 жил хүртэл
+  const years = Array.from({ length: 7 }, (_, i) => today.getFullYear() - 1 + i);
+  const daysInMonth = (y: number, m: number) => (y && m ? new Date(y, m, 0).getDate() : 31);
+
+  function update(ny: number, nm: number, nd: number) {
+    // Сар/он солиход тухайн сарын өдрийн тооноос хэтэрсэн өдрийг тааруулна
+    let fd = nd;
+    if (ny && nm && nd > daysInMonth(ny, nm)) fd = daysInMonth(ny, nm);
+    if (ny && nm && fd) {
+      onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(fd).padStart(2, "0")}`);
+    }
+  }
+
+  const selCls = "rounded-xl border border-gray-200 bg-gray-50 px-2 py-2 text-sm focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0071E3]/15";
+  return (
+    <div className="flex gap-1.5">
+      <select value={yy || ""} onChange={e => update(parseInt(e.target.value, 10) || 0, mm || today.getMonth() + 1, dd || today.getDate())}
+        className={`${selCls} flex-[1.2]`}>
+        <option value="" disabled>Он</option>
+        {years.map(y => <option key={y} value={y}>{y} он</option>)}
+      </select>
+      <select value={mm || ""} onChange={e => update(yy || today.getFullYear(), parseInt(e.target.value, 10) || 0, dd || today.getDate())}
+        className={`${selCls} flex-[1.3]`}>
+        <option value="" disabled>Сар</option>
+        {MN_MONTH_NAMES.map((name, i) => <option key={i + 1} value={i + 1}>{name}</option>)}
+      </select>
+      <select value={dd || ""} onChange={e => update(yy || today.getFullYear(), mm || today.getMonth() + 1, parseInt(e.target.value, 10) || 0)}
+        className={`${selCls} flex-1`}>
+        <option value="" disabled>Өдөр</option>
+        {Array.from({ length: daysInMonth(yy || today.getFullYear(), mm || today.getMonth() + 1) }, (_, i) => i + 1)
+          .map(d => <option key={d} value={d}>{d}</option>)}
+      </select>
     </div>
   );
 }
@@ -169,8 +239,15 @@ export default function ExpirationTracking() {
   // Camera barcode scanner
   const [scannerOpen, setScannerOpen] = useState(false);
 
-  // Delete confirm
-  const [confirmDel, setConfirmDel] = useState<ExpirationItemRow | null>(null);
+  // Баганын шүүлтүүр (client-side — Бренд / Нэмсэн хүн / Хариуцлага)
+  const [brandFilter, setBrandFilter] = useState("");
+  const [creatorFilter, setCreatorFilter] = useState("");
+  const [liabFilter, setLiabFilter] = useState("");
+
+  // Үлдэгдлийн өөрчлөлтийн түүх modal
+  const [histFor, setHistFor] = useState<ExpirationItemRow | null>(null);
+  const [histRows, setHistRows] = useState<QtyHistRow[]>([]);
+  const [histLoading, setHistLoading] = useState(false);
 
   const scanRef = useRef<HTMLInputElement>(null);
 
@@ -315,8 +392,15 @@ export default function ExpirationTracking() {
   async function changeStatus(it: ExpirationItemRow, newStatus: string) {
     try {
       const r = await api.patch(`/expiration/items/${it.id}`, { status: newStatus });
-      setItems(prev => prev.map(p => p.id === it.id ? r.data : p));
-      notify("Статус өөрчлөгдлөө ✓");
+      if (newStatus === "archived" && filter !== "archived") {
+        // Архивласан бараа идэвхтэй жагсаалтад ХЭЗЭЭ Ч үлдэхгүй
+        setItems(prev => prev.filter(p => p.id !== it.id));
+        notify("Архивлагдлаа ✓ (Архив сонголтоос харна)");
+      } else {
+        setItems(prev => prev.map(p => p.id === it.id ? r.data : p));
+        notify("Статус өөрчлөгдлөө ✓");
+      }
+      api.get("/expiration/stats").then(s => setStats(s.data)).catch(() => {});
     } catch (e: any) {
       notify(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
     }
@@ -329,25 +413,30 @@ export default function ExpirationTracking() {
       const url = it.status === "archived"
         ? `/expiration/items/${it.id}/unarchive`
         : `/expiration/items/${it.id}/archive`;
-      const r = await api.post(url);
-      setItems(prev => prev.map(p => p.id === it.id ? r.data : p));
-      notify(it.status === "archived" ? "Архиваас гарав" : "Архивлагдлаа ✓");
+      await api.post(url);
+      // Идэвхтэй ба архивласан бараа нэг жагсаалтад хэзээ ч хамт харагдахгүй —
+      // архивлахад идэвхтэй жагсаалтаас, сэргээхэд архивын жагсаалтаас хасна.
+      setItems(prev => prev.filter(p => p.id !== it.id));
+      notify(it.status === "archived" ? "Архиваас гарав ✓" : "Архивлагдлаа ✓ (Архив сонголтоос харна)");
+      api.get("/expiration/stats").then(s => setStats(s.data)).catch(() => {});
     } catch (e: any) {
       notify(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
     }
   }
 
-  // ── Delete ─────────────────────────────────────────────────────────────────
+  // ── Үлдэгдлийн өөрчлөлтийн түүх ────────────────────────────────────────────
 
-  async function doDelete() {
-    if (!confirmDel) return;
+  async function openHistory(it: ExpirationItemRow) {
+    setHistFor(it);
+    setHistRows([]);
+    setHistLoading(true);
     try {
-      await api.delete(`/expiration/items/${confirmDel.id}`);
-      setItems(prev => prev.filter(p => p.id !== confirmDel.id));
-      setConfirmDel(null);
-      notify("Устгагдлаа");
+      const r = await api.get(`/expiration/items/${it.id}/history`);
+      setHistRows(r.data || []);
     } catch (e: any) {
-      notify(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
+      notify(e?.response?.data?.detail ?? "Түүх ачааллахад алдаа гарлаа", false);
+    } finally {
+      setHistLoading(false);
     }
   }
 
@@ -389,7 +478,21 @@ export default function ExpirationTracking() {
 
   // ── Computed ───────────────────────────────────────────────────────────────
 
-  const visibleItems = useMemo(() => items, [items]);
+  // Баганын шүүлтүүрийн сонголтууд — ачаалагдсан жагсаалтаас distinct утгууд
+  const brandOptions = useMemo(
+    () => Array.from(new Set(items.map(it => it.product_brand || "—"))).sort((a, b) => a.localeCompare(b)),
+    [items]);
+  const creatorOptions = useMemo(
+    () => Array.from(new Set(items.map(it => it.created_by_username || "—"))).sort((a, b) => a.localeCompare(b)),
+    [items]);
+
+  const visibleItems = useMemo(() => items.filter(it =>
+    (!brandFilter || (it.product_brand || "—") === brandFilter) &&
+    (!creatorFilter || (it.created_by_username || "—") === creatorFilter) &&
+    (!liabFilter || it.liability_type === liabFilter)
+  ), [items, brandFilter, creatorFilter, liabFilter]);
+
+  const colFilterActive = !!(brandFilter || creatorFilter || liabFilter);
 
   // Liability label for display
   function liabilityShort(it: ExpirationItemRow): string {
@@ -478,6 +581,35 @@ export default function ExpirationTracking() {
             ))}
           </div>
         </div>
+
+        {/* Баганын шүүлтүүр — Бренд / Нэмсэн хүн / Хариуцлага */}
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-gray-50 pt-2">
+          <span className="text-[11px] font-semibold text-gray-400">Багана:</span>
+          <select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}
+            className={`rounded-lg border px-2 py-1.5 text-xs outline-none focus:border-[#0071E3] ${brandFilter ? "border-blue-300 bg-blue-50 font-semibold text-blue-700" : "border-gray-200 bg-white text-gray-600"}`}>
+            <option value="">Бренд: бүгд</option>
+            {brandOptions.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+          <select value={creatorFilter} onChange={e => setCreatorFilter(e.target.value)}
+            className={`rounded-lg border px-2 py-1.5 text-xs outline-none focus:border-[#0071E3] ${creatorFilter ? "border-blue-300 bg-blue-50 font-semibold text-blue-700" : "border-gray-200 bg-white text-gray-600"}`}>
+            <option value="">Нэмсэн: бүгд</option>
+            {creatorOptions.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={liabFilter} onChange={e => setLiabFilter(e.target.value)}
+            className={`rounded-lg border px-2 py-1.5 text-xs outline-none focus:border-[#0071E3] ${liabFilter ? "border-blue-300 bg-blue-50 font-semibold text-blue-700" : "border-gray-200 bg-white text-gray-600"}`}>
+            <option value="">Хариуцлага: бүгд</option>
+            <option value="none">Хариуцлагагүй</option>
+            <option value="specific">Тодорхой ажилчид</option>
+            <option value="all_staff">Бүх ажилчид</option>
+          </select>
+          {colFilterActive && (
+            <button onClick={() => { setBrandFilter(""); setCreatorFilter(""); setLiabFilter(""); }}
+              className="inline-flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-1.5 text-[11px] font-medium text-gray-600 hover:bg-gray-200">
+              <X size={11}/> Шүүлтүүр арилгах
+            </button>
+          )}
+          <span className="ml-auto text-[11px] text-gray-400">{visibleItems.length} бараа</span>
+        </div>
       </div>
 
       {/* Table — Desktop + Print */}
@@ -502,17 +634,19 @@ export default function ExpirationTracking() {
                 <th className="px-3 py-2.5 text-right">Нийт</th>
                 <th className="px-3 py-2.5 text-center">Статус</th>
                 <th className="px-3 py-2.5 text-left">Хариуцлага</th>
+                <th className="px-3 py-2.5 text-left">Нэмсэн</th>
+                <th className="px-3 py-2.5 text-center">Огноо / цаг</th>
                 <th className="px-3 py-2.5 text-center print:hidden">Үйлдэл</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {loading && (
-                <tr><td colSpan={11} className="py-12 text-center text-sm text-gray-400">
+                <tr><td colSpan={13} className="py-12 text-center text-sm text-gray-400">
                   <Loader2 size={14} className="inline animate-spin mr-2"/> Ачааллаж байна...
                 </td></tr>
               )}
               {!loading && visibleItems.length === 0 && (
-                <tr><td colSpan={11} className="py-12 text-center text-sm text-gray-400">
+                <tr><td colSpan={13} className="py-12 text-center text-sm text-gray-400">
                   Бүртгэл байхгүй. <button onClick={openAdd} className="text-[#0071E3] hover:underline">Шинэ нэмэх</button>
                 </td></tr>
               )}
@@ -596,6 +730,17 @@ export default function ExpirationTracking() {
                         <div className="mt-0.5 text-[10px] text-gray-500 line-clamp-1 italic">{it.liability_note}</div>
                       )}
                     </td>
+                    {/* Нэмсэн хүн */}
+                    <td className="px-3 py-2.5 text-xs text-gray-700">
+                      <span className="inline-flex items-center gap-1">
+                        <UserRound size={11} className="text-gray-400"/>
+                        {it.created_by_username || "—"}
+                      </span>
+                    </td>
+                    {/* Нэмсэн огноо / цаг (UB) */}
+                    <td className="px-3 py-2.5 text-center text-[11px] tabular-nums text-gray-500">
+                      {fmtDateTimeUB(it.created_at)}
+                    </td>
                     {/* Үйлдэл */}
                     <td className="px-3 py-2.5 text-center print:hidden">
                       <div className="flex justify-center gap-1">
@@ -616,6 +761,10 @@ export default function ExpirationTracking() {
                               className="rounded-lg bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-700 hover:bg-blue-100">
                               <Pencil size={11}/>
                             </button>
+                            <button onClick={() => openHistory(it)} title="Үлдэгдлийн өөрчлөлтийн түүх"
+                              className="rounded-lg bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100">
+                              <History size={11}/>
+                            </button>
                             <button onClick={() => toggleArchive(it)}
                               title={it.status === "archived" ? "Архиваас гаргах" : "Архивлах"}
                               className={`rounded-lg px-2 py-1 text-[10px] font-semibold ${
@@ -624,10 +773,6 @@ export default function ExpirationTracking() {
                                   : "bg-violet-50 text-violet-700 hover:bg-violet-100"
                               }`}>
                               {it.status === "archived" ? <ArchiveRestore size={11}/> : <Archive size={11}/>}
-                            </button>
-                            <button onClick={() => setConfirmDel(it)} title="Устгах"
-                              className="rounded-lg bg-red-50 px-2 py-1 text-[10px] font-semibold text-red-700 hover:bg-red-100">
-                              <Trash2 size={11}/>
                             </button>
                           </>
                         )}
@@ -696,6 +841,15 @@ export default function ExpirationTracking() {
                 <span className={`tabular-nums ${daysColor(it.days_left)}`}>
                   {daysLabel(it.days_left)}
                 </span>
+              </div>
+
+              {/* Нэмсэн хүн + огноо/цаг */}
+              <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-50 text-[10px] text-gray-500">
+                <span className="inline-flex items-center gap-1">
+                  <UserRound size={10} className="text-gray-400"/>
+                  Нэмсэн: <b className="text-gray-700">{it.created_by_username || "—"}</b>
+                </span>
+                <span className="tabular-nums">{fmtDateTimeUB(it.created_at)}</span>
               </div>
 
               {/* Quantities grid */}
@@ -777,6 +931,10 @@ export default function ExpirationTracking() {
                       className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100">
                       <Pencil size={11}/> Засах
                     </button>
+                    <button onClick={() => openHistory(it)}
+                      className="flex items-center justify-center gap-1 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100">
+                      <History size={11}/> Түүх
+                    </button>
                     <button onClick={() => toggleArchive(it)}
                       className={`flex-1 flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs font-semibold ${
                         it.status === "archived"
@@ -784,10 +942,6 @@ export default function ExpirationTracking() {
                           : "bg-violet-50 text-violet-700 hover:bg-violet-100"
                       }`}>
                       {it.status === "archived" ? <><ArchiveRestore size={11}/> Сэргээх</> : <><Archive size={11}/> Архив</>}
-                    </button>
-                    <button onClick={() => setConfirmDel(it)}
-                      className="flex items-center justify-center rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100">
-                      <Trash2 size={11}/>
                     </button>
                   </>
                 )}
@@ -862,12 +1016,11 @@ export default function ExpirationTracking() {
 
               {/* Date + qty */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="sm:col-span-1">
+                <div className="sm:col-span-3">
                   <label className="mb-1.5 block text-xs font-semibold text-gray-700 flex items-center gap-1">
                     <CalendarIcon size={11}/> Дуусах огноо
                   </label>
-                  <input type="date" value={addExpDate} onChange={e => setAddExpDate(e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0071E3]/15"/>
+                  <MnDateInput value={addExpDate} onChange={setAddExpDate}/>
                 </div>
                 <div>
                   <label className="mb-1.5 block text-xs font-semibold text-gray-700">Заал (ш)</label>
@@ -1015,25 +1168,66 @@ export default function ExpirationTracking() {
         </div>
       )}
 
-      {/* ── Delete confirm ──────────────────────────────────────── */}
-      {confirmDel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setConfirmDel(null)}>
-          <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-5" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-100">
-                <Trash2 size={18} className="text-red-600"/>
-              </div>
+      {/* ── Үлдэгдлийн өөрчлөлтийн түүх ─────────────────────────── */}
+      {histFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setHistFor(null)}>
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
               <div>
-                <h3 className="text-base font-semibold text-gray-900">Устгах уу?</h3>
-                <p className="text-xs text-gray-500 mt-0.5">{confirmDel.product_name} — буцаах боломжгүй</p>
+                <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+                  <History size={16} className="text-emerald-600"/> Үлдэгдлийн түүх
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">{histFor.product_name} · одоо {histFor.qty_total}ш</p>
               </div>
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => setConfirmDel(null)} className="rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
-                Болих
+              <button onClick={() => setHistFor(null)} className="text-gray-400 hover:text-gray-600">
+                <X size={16}/>
               </button>
-              <button onClick={doDelete} className="rounded-xl bg-red-500 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600">
-                Устгах
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
+              {histLoading && (
+                <div className="flex items-center justify-center gap-2 py-8 text-sm text-gray-400">
+                  <Loader2 size={14} className="animate-spin"/> Ачааллаж байна...
+                </div>
+              )}
+              {!histLoading && histRows.length === 0 && (
+                <p className="py-8 text-center text-sm text-gray-400">Түүх бүртгэгдээгүй байна</p>
+              )}
+              {!histLoading && histRows.length > 0 && (
+                <ol className="relative space-y-3 border-l-2 border-gray-100 pl-4">
+                  {histRows.map(h => {
+                    const floorChanged = h.qty_floor_old !== h.qty_floor_new;
+                    const whChanged = h.qty_warehouse_old !== h.qty_warehouse_new;
+                    return (
+                      <li key={h.id} className="relative">
+                        <span className={`absolute -left-[23px] top-1 h-3 w-3 rounded-full ring-2 ring-white ${
+                          h.kind === "create" ? "bg-blue-500" : "bg-emerald-500"
+                        }`}/>
+                        <div className="rounded-xl bg-gray-50 px-3 py-2">
+                          {h.kind === "create" ? (
+                            <p className="text-xs font-semibold text-blue-700">
+                              Анх бүртгэсэн — Заал {h.qty_floor_new}ш · Агуулах {h.qty_warehouse_new}ш
+                            </p>
+                          ) : (
+                            <p className="text-xs font-semibold text-gray-800">
+                              {floorChanged && <>Заал: <span className="text-gray-400 line-through">{h.qty_floor_old}</span> → <b className="text-emerald-700">{h.qty_floor_new}ш</b></>}
+                              {floorChanged && whChanged && <span className="mx-1 text-gray-300">·</span>}
+                              {whChanged && <>Агуулах: <span className="text-gray-400 line-through">{h.qty_warehouse_old}</span> → <b className="text-emerald-700">{h.qty_warehouse_new}ш</b></>}
+                            </p>
+                          )}
+                          <p className="mt-0.5 text-[10px] text-gray-500">
+                            <UserRound size={9} className="inline mr-0.5 -mt-0.5"/>
+                            {h.changed_by_username || "—"} · {fmtDateTimeUB(h.changed_at)}
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </div>
+            <div className="flex justify-end border-t border-gray-100 bg-gray-50 px-5 py-3">
+              <button onClick={() => setHistFor(null)} className="rounded-xl px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">
+                Хаах
               </button>
             </div>
           </div>

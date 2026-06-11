@@ -13,7 +13,7 @@ from typing import Optional, List
 from pydantic import BaseModel, field_validator
 
 from app.api.deps import get_db, get_current_user
-from app.models.expiration_item import ExpirationItem, EXPIRATION_STATUSES, LIABILITY_TYPES
+from app.models.expiration_item import ExpirationItem, ExpirationQtyChange, EXPIRATION_STATUSES, LIABILITY_TYPES
 from app.models.product import Product
 from app.models.user import User
 from app.models.role import Role
@@ -221,6 +221,14 @@ def create_item(
         created_by_id=u.id,
     )
     db.add(it)
+    db.flush()
+    # Түүхийн эхний бичилт — "анх оруулсан үлдэгдэл"
+    db.add(ExpirationQtyChange(
+        item_id=it.id, kind="create",
+        qty_floor_old=float(body.qty_floor), qty_floor_new=float(body.qty_floor),
+        qty_warehouse_old=float(body.qty_warehouse), qty_warehouse_new=float(body.qty_warehouse),
+        changed_by_id=u.id,
+    ))
     db.commit()
     db.refresh(it)
     return _serialize(it, db)
@@ -236,6 +244,10 @@ def update_item(
     it = db.query(ExpirationItem).filter(ExpirationItem.id == item_id).first()
     if not it:
         raise HTTPException(404, "Бүртгэл олдсонгүй")
+
+    # Үлдэгдлийн өөрчлөлтийн түүхэд бичихийн тулд хуучин утгыг хадгална
+    old_floor = float(it.qty_floor or 0)
+    old_warehouse = float(it.qty_warehouse or 0)
 
     if body.expiration_date is not None:
         it.expiration_date = body.expiration_date
@@ -266,26 +278,58 @@ def update_item(
     if body.notes is not None:
         it.notes = body.notes.strip()
 
+    # Үлдэгдэл өөрчлөгдсөн бол түүхэд бичнэ (хэн, хэзээ, хэд → хэд)
+    new_floor = float(it.qty_floor or 0)
+    new_warehouse = float(it.qty_warehouse or 0)
+    if new_floor != old_floor or new_warehouse != old_warehouse:
+        db.add(ExpirationQtyChange(
+            item_id=it.id, kind="update",
+            qty_floor_old=old_floor, qty_floor_new=new_floor,
+            qty_warehouse_old=old_warehouse, qty_warehouse_new=new_warehouse,
+            changed_by_id=u.id,
+        ))
+
     db.commit()
     db.refresh(it)
     return _serialize(it, db)
 
 
-@router.delete("/items/{item_id}")
-def delete_item(
+# Устгах endpoint-ийг зориуд хассан (2026-06): бүртгэлийг устгахгүй, зөвхөн
+# архивлана. Түүх (qty changes, хариуцлага) алдагдахаас сэргийлнэ.
+
+
+@router.get("/items/{item_id}/history")
+def item_qty_history(
     item_id: int,
     db: Session = Depends(get_db),
-    u: User = Depends(get_current_user),
+    _: User = Depends(get_current_user),
 ):
+    """Үлдэгдлийн өөрчлөлтийн түүх — анх оруулсан утга + хэн хэзээ хэд болгож
+    өөрчилснийг он цагийн дарааллаар буцаана."""
     it = db.query(ExpirationItem).filter(ExpirationItem.id == item_id).first()
     if not it:
         raise HTTPException(404, "Бүртгэл олдсонгүй")
-    # Зөвхөн үүсгэгч эсвэл admin/supervisor устгана
-    if u.id != it.created_by_id and u.role not in ("admin", "supervisor"):
-        raise HTTPException(403, "Зөвхөн үүсгэгч эсвэл админ устгана")
-    db.delete(it)
-    db.commit()
-    return {"ok": True}
+    rows = (
+        db.query(ExpirationQtyChange)
+        .filter(ExpirationQtyChange.item_id == item_id)
+        .order_by(ExpirationQtyChange.changed_at.asc(), ExpirationQtyChange.id.asc())
+        .all()
+    )
+    uids = {r.changed_by_id for r in rows if r.changed_by_id}
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(uids)).all()} if uids else {}
+    return [
+        {
+            "id": r.id,
+            "kind": r.kind or "update",
+            "qty_floor_old": float(r.qty_floor_old or 0),
+            "qty_floor_new": float(r.qty_floor_new or 0),
+            "qty_warehouse_old": float(r.qty_warehouse_old or 0),
+            "qty_warehouse_new": float(r.qty_warehouse_new or 0),
+            "changed_at": r.changed_at.isoformat() if r.changed_at else None,
+            "changed_by_username": users.get(r.changed_by_id).username if users.get(r.changed_by_id) else "",
+        }
+        for r in rows
+    ]
 
 
 @router.post("/items/{item_id}/archive")

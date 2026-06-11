@@ -62,3 +62,24 @@ class ExpirationItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class ExpirationQtyChange(Base):
+    """Үлдэгдлийн өөрчлөлтийн түүх — анх бүртгэсэн утга + дараагийн засвар бүр.
+
+    kind="create" — анх бүртгэхэд (old = new = анхны утга)
+    kind="update" — үлдэгдэл засахад (old → new)
+    """
+    __tablename__ = "expiration_qty_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id = Column(Integer, ForeignKey("expiration_items.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(10), default="update")   # create | update
+
+    qty_floor_old: Mapped[float]     = mapped_column(Float, default=0.0)
+    qty_floor_new: Mapped[float]     = mapped_column(Float, default=0.0)
+    qty_warehouse_old: Mapped[float] = mapped_column(Float, default=0.0)
+    qty_warehouse_new: Mapped[float] = mapped_column(Float, default=0.0)
+
+    changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -264,6 +264,36 @@ def ensure_expiration_items_schema():
             conn.execute(text("ALTER TABLE expiration_items ADD COLUMN liability_user_ids VARCHAR(500) DEFAULT ''"))
 
 
+def ensure_expiration_qty_history_backfill():
+    """Үлдэгдлийн түүх (expiration_qty_changes) нэвтрэхээс ӨМНӨ үүссэн
+    item-уудад "анх оруулсан" гэсэн эхний бичилтийг нэг удаа үүсгэнэ.
+    Түүхийн хүснэгт хоосон + item байгаа үед л ажиллана (давтагдахгүй)."""
+    from datetime import datetime as _dt
+    from app.models.expiration_item import ExpirationItem, ExpirationQtyChange
+    db = SessionLocal()
+    try:
+        if db.query(ExpirationQtyChange.id).first() is not None:
+            return
+        items = db.query(ExpirationItem).all()
+        if not items:
+            return
+        for it in items:
+            db.add(ExpirationQtyChange(
+                item_id=it.id, kind="create",
+                qty_floor_old=float(it.qty_floor or 0), qty_floor_new=float(it.qty_floor or 0),
+                qty_warehouse_old=float(it.qty_warehouse or 0), qty_warehouse_new=float(it.qty_warehouse or 0),
+                changed_by_id=it.created_by_id,
+                changed_at=it.created_at or _dt.utcnow(),
+            ))
+        db.commit()
+        print(f"[expiration] {len(items)} item-д үлдэгдлийн түүхийн эхний бичилт үүсгэв")
+    except Exception as e:
+        db.rollback()
+        print(f"[expiration] түүхийн backfill алдаа: {e}")
+    finally:
+        db.close()
+
+
 def ensure_documents_schema():
     """Бичиг баримт (document_groups + document_files) шинэ багана нэмэх
     migration helper. Шинэ table бол create_all() өөрөө үүсгэнэ. Энд
@@ -881,6 +911,7 @@ def startup():
     ensure_shipment_lines_schema()
     ensure_min_stock_rules_schema()
     ensure_expiration_items_schema()
+    ensure_expiration_qty_history_backfill()
     ensure_documents_schema()
     ensure_product_monthly_sales_schema()
     ensure_product_yearly_movement_schema()
