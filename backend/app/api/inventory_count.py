@@ -255,6 +255,59 @@ def _read_discrepancy_rows(excel_path: Path) -> list[dict]:
     return out
 
 
+MASTER_FILE_PATH = Path("app/data/outputs/master_latest.xlsx")
+
+
+def _master_loc_image_lookup() -> dict[str, dict]:
+    """master_latest.xlsx-аас {normalized_code: {"loc_tag": str, "has_image": bool}}.
+    Байршил tag болон зургийн URL байгаа эсэхийг барааны кодоор татна."""
+    out: dict[str, dict] = {}
+    if not MASTER_FILE_PATH.exists():
+        return out
+    try:
+        import pandas as pd
+        df = pd.read_excel(str(MASTER_FILE_PATH), sheet_name=0, dtype=object)
+        cols = {str(c).strip(): c for c in df.columns}
+        code_col = cols.get("Код")
+        if code_col is None:
+            return out
+        loc_col = cols.get("Байршил tag")
+        img_col = cols.get("imageUrl")
+
+        def _empty(v) -> bool:
+            if v is None:
+                return True
+            try:
+                if pd.isna(v):
+                    return True
+            except (TypeError, ValueError):
+                pass
+            s = str(v).strip()
+            return s == "" or s.lower() == "nan"
+
+        for _, row in df.iterrows():
+            code = _normalize_code(row[code_col])
+            if not code:
+                continue
+            loc = "" if (loc_col is None or _empty(row[loc_col])) else str(row[loc_col]).strip()
+            has_image = (img_col is not None) and (not _empty(row[img_col]))
+            out[code] = {"loc_tag": loc, "has_image": has_image}
+    except Exception:
+        pass
+    return out
+
+
+def _int_if_whole(v):
+    """Бүхэл тоо бол int болгож буцаана — Excel-д ард нь '.' гаргахгүй. None→None."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return v
+    return int(f) if f == int(f) else f
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("/warehouses")
@@ -691,6 +744,8 @@ def export_discrepancy_excel(
     txt_index = _build_txt_code_index(txt_files)
 
     source_rows = _read_discrepancy_rows(excel_path)
+    # Master эксэлээс байршлын tag + зургийн URL байгаа эсэхийг код-оор татна
+    master_lookup = _master_loc_image_lookup()
 
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -703,6 +758,8 @@ def export_discrepancy_excel(
     headers = [
         "Код",
         "Нэр",
+        "Байршилын tag",
+        "Зураг",
         "Үлдэгдэл",
         "Тоолсон тоо",
         "Зөрүү",
@@ -737,26 +794,43 @@ def export_discrepancy_excel(
             ref_parts.append(f"{person} (мөр {line_no})")
         source_info = "; ".join(ref_parts) if ref_parts else "Олдсонгүй"
 
+        minfo = master_lookup.get(code, {})
+        loc_tag = minfo.get("loc_tag", "")
+        # Зураг: зөвхөн master-д код байгаа БА imageUrl байхгүй үед "зураггүй";
+        # зурагтай эсвэл master-д олдоогүй бол хоосон.
+        zurag = "зураггүй" if (code in master_lookup and not minfo.get("has_image", True)) else ""
+
         ws.append([
             code,
             r.get("name") or "",
-            r.get("balance"),
-            r.get("counted"),
-            diff,
-            r.get("unit_price"),
+            loc_tag,
+            zurag,
+            _int_if_whole(r.get("balance")),
+            _int_if_whole(r.get("counted")),
+            _int_if_whole(diff),
+            _int_if_whole(r.get("unit_price")),
             source_info,
         ])
         out_count += 1
 
-    widths = [16, 40, 14, 14, 12, 14, 48]
+    widths = [16, 40, 22, 10, 14, 14, 12, 14, 48]
     for ci, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
-    for row in ws.iter_rows(min_row=2, min_col=3, max_col=6, max_row=ws.max_row):
+    # Тоон баганууд: Үлдэгдэл(5) Тоолсон тоо(6) Зөрүү(7) Нэгж үнэ(8)
+    # Бүхэл тоо → "#,##0" (ард нь '.' гарахгүй); бутархай → "#,##0.##"
+    for row in ws.iter_rows(min_row=2, min_col=5, max_col=8, max_row=ws.max_row):
         for cell in row:
-            if isinstance(cell.value, (int, float)):
+            if isinstance(cell.value, int):
+                cell.number_format = "#,##0"
+            elif isinstance(cell.value, float):
                 cell.number_format = "#,##0.##"
-    for cell in ws["G"]:
+    # Зураг баганыг (4) улаанаар тодруулна
+    for cell in ws["D"][1:]:
+        if cell.value:
+            cell.font = Font(color="C00000", bold=True)
+    # TXT эх сурвалж багана (9-р багана = I)
+    for cell in ws["I"]:
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     buf = io.BytesIO()
