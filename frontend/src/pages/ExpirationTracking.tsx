@@ -22,6 +22,7 @@ interface ExpirationItemRow {
   product_code: string;
   product_brand: string;
   product_barcode: string;
+  location_tags: string[];
   expiration_date: string;
   days_left: number;
   is_expired: boolean;
@@ -239,8 +240,9 @@ export default function ExpirationTracking() {
   // Camera barcode scanner
   const [scannerOpen, setScannerOpen] = useState(false);
 
-  // Баганын шүүлтүүр (client-side — Бренд / Нэмсэн хүн / Хариуцлага)
+  // Баганын шүүлтүүр (client-side — Бренд / Байршил / Нэмсэн хүн / Хариуцлага)
   const [brandFilter, setBrandFilter] = useState("");
+  const [locFilter, setLocFilter] = useState("");
   const [creatorFilter, setCreatorFilter] = useState("");
   const [liabFilter, setLiabFilter] = useState("");
 
@@ -485,14 +487,19 @@ export default function ExpirationTracking() {
   const creatorOptions = useMemo(
     () => Array.from(new Set(items.map(it => it.created_by_username || "—"))).sort((a, b) => a.localeCompare(b)),
     [items]);
+  // Байршлын tag — нэг бараа олон tag-тай байж болно (CSV → list), бүгдийг дэлгэнэ
+  const locOptions = useMemo(
+    () => Array.from(new Set(items.flatMap(it => it.location_tags || []))).sort((a, b) => a.localeCompare(b)),
+    [items]);
 
   const visibleItems = useMemo(() => items.filter(it =>
     (!brandFilter || (it.product_brand || "—") === brandFilter) &&
+    (!locFilter || (it.location_tags || []).includes(locFilter)) &&
     (!creatorFilter || (it.created_by_username || "—") === creatorFilter) &&
     (!liabFilter || it.liability_type === liabFilter)
-  ), [items, brandFilter, creatorFilter, liabFilter]);
+  ), [items, brandFilter, locFilter, creatorFilter, liabFilter]);
 
-  const colFilterActive = !!(brandFilter || creatorFilter || liabFilter);
+  const colFilterActive = !!(brandFilter || locFilter || creatorFilter || liabFilter);
 
   // Liability label for display
   function liabilityShort(it: ExpirationItemRow): string {
@@ -590,6 +597,11 @@ export default function ExpirationTracking() {
             <option value="">Бренд: бүгд</option>
             {brandOptions.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
+          <select value={locFilter} onChange={e => setLocFilter(e.target.value)}
+            className={`rounded-lg border px-2 py-1.5 text-xs outline-none focus:border-[#0071E3] ${locFilter ? "border-blue-300 bg-blue-50 font-semibold text-blue-700" : "border-gray-200 bg-white text-gray-600"}`}>
+            <option value="">Байршил: бүгд</option>
+            {locOptions.map(l => <option key={l} value={l}>{l}</option>)}
+          </select>
           <select value={creatorFilter} onChange={e => setCreatorFilter(e.target.value)}
             className={`rounded-lg border px-2 py-1.5 text-xs outline-none focus:border-[#0071E3] ${creatorFilter ? "border-blue-300 bg-blue-50 font-semibold text-blue-700" : "border-gray-200 bg-white text-gray-600"}`}>
             <option value="">Нэмсэн: бүгд</option>
@@ -603,7 +615,7 @@ export default function ExpirationTracking() {
             <option value="all_staff">Бүх ажилчид</option>
           </select>
           {colFilterActive && (
-            <button onClick={() => { setBrandFilter(""); setCreatorFilter(""); setLiabFilter(""); }}
+            <button onClick={() => { setBrandFilter(""); setLocFilter(""); setCreatorFilter(""); setLiabFilter(""); }}
               className="inline-flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-1.5 text-[11px] font-medium text-gray-600 hover:bg-gray-200">
               <X size={11}/> Шүүлтүүр арилгах
             </button>

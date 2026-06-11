@@ -78,6 +78,8 @@ def _row_dict(it: ExpirationItem, p, creator, archiver, today) -> dict:
         "product_code": p.item_code if p else "",
         "product_brand": p.brand if p else "",
         "product_barcode": p.barcode if p else "",
+        # Байршлын tag-ууд — мастер эксэлийн "Байршил tag" багана (Product.warehouse_name, CSV)
+        "location_tags": [t.strip() for t in (p.warehouse_name or "").split(",") if t.strip()] if p else [],
         "expiration_date": it.expiration_date.isoformat() if it.expiration_date else None,
         "days_left": days_left,
         "is_expired": days_left < 0,
