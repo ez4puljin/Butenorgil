@@ -22,4 +22,5 @@ from app.api.product_monthly_sales import router as product_monthly_sales_router
 from app.api.product_yearly_movement import router as product_yearly_movement_router
 from app.api.income_file import router as income_file_router
 from app.api.balance_file import router as balance_file_router
+from app.api.tag_location_check import router as tag_location_check_router
 from app.api.attendance import router as attendance_router

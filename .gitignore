@@ -26,6 +26,7 @@ backend/app/data/known_permission_keys.json
 backend/app/data/universal_pages.json
 backend/app/data/monthly_sales_config.json
 backend/app/data/movement_config.json
+backend/app/data/tag_location_map.json
 *.db
 *.db-shm
 *.db-wal

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, attendance_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -959,6 +959,13 @@ async def _dashboard_warm_loop():
             await asyncio.to_thread(warm_balance_maps)
         except Exception as e:
             print(f"[balance] warm алдаа: {e}")
+        # Tag vs Байршил шалгалтын орлого/мастер кэшийг урьдчилан ачаална
+        # (анхны шалгалт том файл parse хүлээхгүй, шууд гарна)
+        try:
+            from app.api.tag_location_check import warm_tag_location_caches
+            await asyncio.to_thread(warm_tag_location_caches)
+        except Exception as e:
+            print(f"[tagloc] warm алдаа: {e}")
         await asyncio.sleep(60)  # 60с тутамд snapshot-уудыг шинэ байлгана
 
 
@@ -1043,6 +1050,7 @@ app.include_router(product_monthly_sales_router)
 app.include_router(product_yearly_movement_router)
 app.include_router(income_file_router)
 app.include_router(balance_file_router)
+app.include_router(tag_location_check_router)
 app.include_router(attendance_router)
 
 @app.get("/health")

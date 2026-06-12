@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Card } from "../components/ui/Card";
 import { api } from "../lib/api";
-import { Download, FileSpreadsheet, CheckCircle2, AlertCircle } from "lucide-react";
+import {
+  Download, FileSpreadsheet, CheckCircle2, AlertCircle, MapPinned, Printer,
+  FileDown, Settings2, ChevronDown, ChevronRight, RefreshCw, Save,
+} from "lucide-react";
 
 // ── Тайлангийн тодорхойлолт ───────────────────────────────────────────────────
 type ReportCard = {
@@ -38,12 +41,6 @@ const REPORT_CARDS: ReportCard[] = [
     requiredTypes: [1, 2, 3, 4],
   },
   {
-    key: "tag_vs_location",
-    title: "Tag vs Байршил зөрүү",
-    description: "Орлого авсан байршил ба tagIds-ийн хүлзэгдэж буй байршлыг зөрүүтэй эсэхийг шалгана.",
-    requiredTypes: [1, 2, 3],
-  },
-  {
     key: "inventory_adj",
     title: "Дарагдсан барааны тайлан",
     description: "type=7 файлын tickUsed=False мөрүүдийг шүүж тайлан гаргана.",
@@ -57,6 +54,291 @@ const REPORT_CARDS: ReportCard[] = [
     requiredTypes: [3],
   },
 ];
+
+// ── Tag vs Байршил зөрүүтэй орлого шалгагч ───────────────────────────────────
+
+type TagLocRow = {
+  date: string; doc_no: string; code: string; name: string;
+  product_tags: string; qty: number; unit_price: number; amount: number; user: string;
+};
+type TagLocGroup = {
+  location: string; allowed_tags: string[]; rows: TagLocRow[];
+  count: number; total_amount: number;
+};
+type TagLocResult = {
+  date_from: string; date_to: string;
+  summary: { total_rows: number; ok: number; mismatch: number; master_not_found: number; ignored: number; truncated: number };
+  unmapped_locations: Record<string, number>;
+  groups: TagLocGroup[];
+  meta: { locations_in_range: Record<string, number>; all_tags: string[]; config: { map: Record<string, string[]>; ignore_locations: string[] } };
+};
+
+const fmtN = (v: number) => {
+  const f = Number(v || 0);
+  return f === Math.trunc(f) ? Math.trunc(f).toLocaleString("mn-MN") : f.toLocaleString("mn-MN", { maximumFractionDigits: 2 });
+};
+
+function TagLocationChecker() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [dateFrom, setDateFrom] = useState(today.slice(0, 8) + "01");
+  const [dateTo, setDateTo] = useState(today);
+  const [loading, setLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [res, setRes] = useState<TagLocResult | null>(null);
+  // Харгалзааны тохиргоо засварлагч
+  const [cfgOpen, setCfgOpen] = useState(false);
+  const [cfgMap, setCfgMap] = useState<Record<string, string[]>>({});
+  const [cfgIgnore, setCfgIgnore] = useState<string[]>([]);
+  const [cfgSaving, setCfgSaving] = useState(false);
+
+  const run = async () => {
+    if (!dateFrom || !dateTo) { setError("Огноо сонгоно уу."); return; }
+    setLoading(true); setError("");
+    try {
+      const r = await api.get("/reports/tag-location-check", { params: { date_from: dateFrom, date_to: dateTo } });
+      setRes(r.data);
+      setCfgMap(r.data?.meta?.config?.map ?? {});
+      setCfgIgnore(r.data?.meta?.config?.ignore_locations ?? []);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "Шалгахад алдаа гарлаа.");
+      setRes(null);
+    } finally { setLoading(false); }
+  };
+
+  const downloadPdf = async () => {
+    setPdfLoading(true); setError("");
+    try {
+      const r = await api.get("/reports/tag-location-check/pdf", {
+        params: { date_from: dateFrom, date_to: dateTo }, responseType: "blob",
+      });
+      const url = URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `tag_bairshil_zoruu_${dateFrom}_${dateTo}.pdf`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "PDF татахад алдаа гарлаа.");
+    } finally { setPdfLoading(false); }
+  };
+
+  const toggleTag = (loc: string, tag: string) => {
+    setCfgMap((m) => {
+      const cur = new Set(m[loc] ?? []);
+      cur.has(tag) ? cur.delete(tag) : cur.add(tag);
+      return { ...m, [loc]: [...cur] };
+    });
+  };
+  const toggleIgnore = (loc: string) => {
+    setCfgIgnore((l) => (l.includes(loc) ? l.filter((x) => x !== loc) : [...l, loc]));
+  };
+  const saveCfg = async () => {
+    setCfgSaving(true); setError("");
+    try {
+      await api.put("/reports/tag-location-check/config", { map: cfgMap, ignore_locations: cfgIgnore });
+      await run();   // шинэ харгалзаагаар дахин шалгана
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "Тохиргоо хадгалахад алдаа гарлаа.");
+    } finally { setCfgSaving(false); }
+  };
+
+  const s = res?.summary;
+
+  return (
+    <div className="mt-6">
+      {/* Хэвлэх үед зөвхөн preview хэсэг харагдана */}
+      {res && (
+        <style>{`@media print {
+          body * { visibility: hidden !important; }
+          #tagloc-print, #tagloc-print * { visibility: visible !important; }
+          #tagloc-print { position: absolute; left: 0; top: 0; width: 100%; }
+        }`}</style>
+      )}
+
+      {/* ── Шалгагч толгой ── */}
+      <div className="rounded-apple bg-gradient-to-r from-violet-600 to-purple-600 p-4 text-white shadow-sm sm:p-5 print:hidden">
+        <div className="flex items-center gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/20">
+            <MapPinned size={22} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-base font-bold sm:text-lg">Tag vs Байршил зөрүү</div>
+            <div className="text-[12px] text-white/80 sm:text-[13px]">
+              Орлого авагдсан байршил (L багана) мастерын "Байршил tag"-тай зөрсөн орлогуудыг шалгана — 2025-2026 оны бүх орлогоос
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-end gap-2.5">
+          <div>
+            <label className="block text-[11px] font-semibold text-white/70">Эхлэх огноо</label>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+              className="mt-1 rounded-lg border-0 bg-white/95 px-3 py-2 text-sm text-gray-800 outline-none" />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-white/70">Дуусах огноо</label>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+              className="mt-1 rounded-lg border-0 bg-white/95 px-3 py-2 text-sm text-gray-800 outline-none" />
+          </div>
+          <button onClick={run} disabled={loading}
+            className="inline-flex h-[38px] items-center gap-2 rounded-lg bg-white px-4 text-sm font-bold text-violet-700 shadow-sm hover:bg-violet-50 disabled:opacity-60">
+            {loading ? <RefreshCw size={15} className="animate-spin" /> : <MapPinned size={15} />}
+            {loading ? "Боловсруулж байна..." : "Tag vs Байршил зөрүүтэй орлого шалгах"}
+          </button>
+        </div>
+        {error && <div className="mt-2 rounded-lg bg-red-500/30 px-3 py-1.5 text-[12px] font-medium">{error}</div>}
+      </div>
+
+      {/* ── Үр дүн ── */}
+      {res && s && (
+        <div className="mt-4">
+          {/* Үйлдлийн мөр */}
+          <div className="flex flex-wrap items-center gap-2 print:hidden">
+            <button onClick={() => window.print()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3.5 py-2 text-[12px] font-semibold text-white hover:bg-gray-700">
+              <Printer size={14} /> Хэвлэх
+            </button>
+            <button onClick={downloadPdf} disabled={pdfLoading}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-2 text-[12px] font-semibold text-white hover:bg-rose-700 disabled:opacity-60">
+              {pdfLoading ? <RefreshCw size={14} className="animate-spin" /> : <FileDown size={14} />} PDF татах
+            </button>
+            <button onClick={() => setCfgOpen((v) => !v)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-[12px] font-semibold text-amber-700 hover:bg-amber-100">
+              <Settings2 size={14} /> Харгалзаа тохиргоо
+              {cfgOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            </button>
+          </div>
+
+          {/* Харгалзаа тохиргоо — байршил бүрд зөвшөөрөгдөх tag-ууд */}
+          {cfgOpen && (
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50/40 p-4 print:hidden">
+              <div className="text-[13px] font-semibold text-gray-800">Байршил ↔ Master tag харгалзаа</div>
+              <p className="mt-1 text-[11px] text-gray-500">
+                Байршил бүр дээр аль tag-тай бараа авагдах нь ЗӨВ болохыг тэмдэглэнэ. Тэмдэглээгүй tag-тай бараа тухайн байршилд авагдвал зөрүүтэйд тооцно.
+              </p>
+              <div className="mt-3 space-y-2.5">
+                {Object.keys(res.meta.locations_in_range).sort().map((loc) => (
+                  <div key={loc} className="rounded-xl bg-white p-3 ring-1 ring-amber-100">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[12.5px] font-bold text-gray-800">{loc}</span>
+                      <span className="text-[10px] text-gray-400">({res.meta.locations_in_range[loc]} мөр)</span>
+                      <label className="ml-auto inline-flex items-center gap-1 text-[11px] text-gray-500">
+                        <input type="checkbox" checked={cfgIgnore.includes(loc)} onChange={() => toggleIgnore(loc)} />
+                        Шалгалтаас алгасах
+                      </label>
+                    </div>
+                    {!cfgIgnore.includes(loc) && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {res.meta.all_tags.map((tag) => {
+                          const on = (cfgMap[loc] ?? []).includes(tag);
+                          return (
+                            <button key={tag} onClick={() => toggleTag(loc, tag)}
+                              className={`rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset transition-colors ${
+                                on ? "bg-violet-600 text-white ring-violet-600" : "bg-white text-gray-600 ring-gray-200 hover:bg-gray-50"
+                              }`}>
+                              {on ? "✓ " : ""}{tag}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button onClick={saveCfg} disabled={cfgSaving}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-4 py-2 text-[12px] font-semibold text-white hover:bg-amber-700 disabled:opacity-60">
+                {cfgSaving ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />}
+                Хадгалаад дахин шалгах
+              </button>
+            </div>
+          )}
+
+          {/* ── Preview (хэвлэгдэх хэсэг) ── */}
+          <div id="tagloc-print" className="mt-3">
+            <div className="hidden print:block pb-2 text-[15px] font-bold">
+              Tag vs Байршил зөрүүтэй орлого — {res.date_from} … {res.date_to}
+            </div>
+
+            {/* Summary tiles */}
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-5">
+              {[
+                { label: "Нийт орлогын мөр", v: s.total_rows, cls: "text-gray-800" },
+                { label: "Зөв байршилд", v: s.ok, cls: "text-emerald-600" },
+                { label: "Зөрүүтэй", v: s.mismatch, cls: "text-red-600" },
+                { label: "Мастерт олдоогүй", v: s.master_not_found, cls: "text-amber-600" },
+                { label: "Алгассан", v: s.ignored, cls: "text-gray-400" },
+              ].map((t) => (
+                <div key={t.label} className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm">
+                  <div className="text-[10.5px] font-medium text-gray-400">{t.label}</div>
+                  <div className={`text-xl font-bold tabular-nums ${t.cls}`}>{t.v.toLocaleString("mn-MN")}</div>
+                </div>
+              ))}
+            </div>
+
+            {Object.keys(res.unmapped_locations).length > 0 && (
+              <div className="mt-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                ⚠ Харгалзаа тохируулаагүй байршил: {Object.entries(res.unmapped_locations).map(([l, c]) => `${l} (${c} мөр)`).join(", ")} — "Харгалзаа тохиргоо"-оос tag оноож өгнө үү.
+              </div>
+            )}
+            {s.truncated > 0 && (
+              <div className="mt-2.5 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] text-gray-500">
+                Зөрүү их тул эхний 3,000 мөрийг харуулав — {s.truncated.toLocaleString("mn-MN")} мөр багтсангүй. Богино огнооны муж сонговол бүрэн харагдана.
+              </div>
+            )}
+
+            {/* Бүлгүүд — зөрүүтэй байршил тус бүр */}
+            {res.groups.length === 0 ? (
+              <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-6 text-center text-sm font-semibold text-emerald-700">
+                ✓ Сонгосон хугацаанд байршлын зөрүүтэй орлого олдсонгүй
+              </div>
+            ) : res.groups.map((g) => (
+              <div key={g.location} className="mt-4 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm print:break-inside-avoid">
+                <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 bg-violet-50/60 px-4 py-2.5">
+                  <span className="text-[14px] font-bold text-violet-900">{g.location}</span>
+                  <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-bold text-red-600 ring-1 ring-red-200">{g.count.toLocaleString("mn-MN")} мөр</span>
+                  <span className="text-[12px] font-semibold tabular-nums text-gray-600">{fmtN(g.total_amount)}₮</span>
+                  <span className="ml-auto text-[10.5px] text-gray-400">Зөвшөөрөгдөх tag: {g.allowed_tags.join(", ")}</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[12px]">
+                    <thead>
+                      <tr className="border-b border-gray-100 bg-gray-50/60 text-left text-[10.5px] uppercase tracking-wide text-gray-400">
+                        <th className="px-3 py-2">Огноо</th>
+                        <th className="px-3 py-2">Баримт</th>
+                        <th className="px-3 py-2">Код</th>
+                        <th className="px-3 py-2">Бараа</th>
+                        <th className="px-3 py-2">Барааны master tag</th>
+                        <th className="px-3 py-2 text-right">Тоо</th>
+                        <th className="px-3 py-2 text-right">Нэгж үнэ</th>
+                        <th className="px-3 py-2 text-right">Дүн</th>
+                        <th className="px-3 py-2">Хэрэглэгч</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {g.rows.map((r, i) => (
+                        <tr key={i} className="hover:bg-gray-50/60">
+                          <td className="whitespace-nowrap px-3 py-1.5 tabular-nums text-gray-500">{r.date.replaceAll("-", "/")}</td>
+                          <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[11px] text-gray-400">{r.doc_no}</td>
+                          <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[11px] text-gray-600">{r.code}</td>
+                          <td className="px-3 py-1.5 font-medium text-gray-800">{r.name}</td>
+                          <td className="px-3 py-1.5 text-amber-700">{r.product_tags}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">{fmtN(r.qty)}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-gray-500">{fmtN(r.unit_price)}</td>
+                          <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{fmtN(r.amount)}</td>
+                          <td className="px-3 py-1.5 text-[11px] text-gray-400">{r.user.split("@")[0]}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -130,10 +412,13 @@ export default function Reports() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-      <div className="text-2xl font-semibold text-gray-900">Тайлан</div>
-      <div className="mt-1 text-sm text-gray-500">
+      <div className="text-2xl font-semibold text-gray-900 print:hidden">Тайлан</div>
+      <div className="mt-1 text-sm text-gray-500 print:hidden">
         Тайлан боловсруулж эксэл файлаар экспорт хийх
       </div>
+
+      {/* ── Tag vs Байршил зөрүүтэй орлого шалгагч ──────────────────────────── */}
+      <TagLocationChecker />
 
       {/* ── Тайлангийн карт grid ────────────────────────────────────────────── */}
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
