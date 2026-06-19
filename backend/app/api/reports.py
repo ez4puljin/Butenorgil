@@ -180,17 +180,35 @@ async def run_inventory_check(
 
 @router.post("/run/ulailt")
 def run_ulailt(
+    kind: str | None = None,
+    db: Session = Depends(get_db),
     _=Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Улайлт тайлан — type=5 (Үлдэгдэл тайлан) -ийн хамгийн сүүлийн файлаас гаргана."""
-    folder = UPLOAD_DIR / TYPE_FOLDER_MAP[5]
-    files = sorted(folder.glob("*.xl*"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not files:
-        raise HTTPException(400, "Үлдэгдэл тайлан (type=5) файл байхгүй байна. Эхлээд Файл оруулалт хэсгээс оруулна уу.")
+    """Улайлт тайлан — Үлдэгдлийн файл оруулалтын 3 файлын аль нэгээс (kind):
+      warehouse — Бүх агуулахын үлдэгдэл
+      main      — Үндсэн заалны үлдэгдэл
+      liquor    — Архины заалны үлдэгдэл
+    kind дамжуулаагүй бол warehouse-ийг анхдагчаар сонгоно."""
+    from app.models.balance_file import BalanceFile, BAL_KINDS, BAL_KIND_WAREHOUSE
+    from app.api.balance_file import UPLOAD_DIR as BAL_UPLOAD_DIR
 
-    input_path = files[0]
+    pick = (kind or BAL_KIND_WAREHOUSE).strip().lower()
+    if pick not in BAL_KINDS:
+        raise HTTPException(400, f"kind буруу. Зөвшөөрөгдөх утгууд: {sorted(BAL_KINDS)}")
+
+    bf = db.query(BalanceFile).filter(BalanceFile.kind == pick).first()
+    if not bf or not bf.stored_filename:
+        labels = {"warehouse": "Бүх агуулахын үлдэгдэл",
+                  "main": "Үндсэн заалны үлдэгдэл",
+                  "liquor": "Архины заалны үлдэгдэл"}
+        raise HTTPException(400, f"'{labels.get(pick, pick)}' файл оруулаагүй байна. Үлдэгдлийн файл оруулалт хэсгээс оруулна уу.")
+
+    input_path = BAL_UPLOAD_DIR / bf.stored_filename
+    if not input_path.exists():
+        raise HTTPException(404, "Хадгалсан үлдэгдлийн файл олдсонгүй.")
+
     ts = int(time.time())
-    out_path = OUTPUT_DIR / f"ulailt_taillan_{ts}.xlsx"
+    out_path = OUTPUT_DIR / f"ulailt_taillan_{pick}_{ts}.xlsx"
 
     try:
         from app.scripts.ulailt_report import build_report
@@ -202,7 +220,7 @@ def run_ulailt(
 
     return FileResponse(
         path=str(out_path),
-        filename=f"ulailt_taillan_{ts}.xlsx",
+        filename=f"ulailt_taillan_{pick}_{ts}.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 

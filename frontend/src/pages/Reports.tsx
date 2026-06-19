@@ -31,8 +31,8 @@ const REPORT_CARDS: ReportCard[] = [
     key: "ulailt",
     title: "Улайлт тайлан",
     scriptNote: "done.py",
-    description: "Өчигдрийн үлдэгдэл (type=5) ашиглан улайлт тайлан гаргана.",
-    requiredTypes: [5],
+    description: "Үлдэгдлийн 3 файлын аль нэгийг сонгоод улайлт тайлан гаргана (Бүх агуулах / Үндсэн заал / Архины заал).",
+    requiredTypes: [],   // Үлдэгдлийн файл оруулалт (BalanceFile)-аас уншина — runtime-д шалгана
   },
   {
     key: "no_movement",
@@ -342,10 +342,19 @@ function TagLocationChecker() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+type BalanceSlots = {
+  warehouse: { filename: string; uploaded_at: string | null } | null;
+  main:      { filename: string; uploaded_at: string | null } | null;
+  liquor:    { filename: string; uploaded_at: string | null } | null;
+};
+
 export default function Reports() {
   const [files, setFiles] = useState<any[]>([]);
   const [availableTypes, setAvailableTypes] = useState<number[]>([]);
   const [running, setRunning] = useState<string | null>(null);
+  // Үлдэгдлийн файл оруулалтын төлөв — Улайлт картанд аль файл бэлэн болохыг харуулна
+  const [balSlots, setBalSlots] = useState<BalanceSlots>({ warehouse: null, main: null, liquor: null });
+  const [ulailtKind, setUlailtKind] = useState<"warehouse" | "main" | "liquor">("warehouse");
 
   const loadStatus = async () => {
     try {
@@ -356,6 +365,17 @@ export default function Reports() {
     }
   };
 
+  const loadBalanceSlots = async () => {
+    try {
+      const res = await api.get("/balance-files/slots");
+      setBalSlots({
+        warehouse: res.data?.warehouse ?? null,
+        main: res.data?.main ?? null,
+        liquor: res.data?.liquor ?? null,
+      });
+    } catch { /* хоосон үлдээнэ */ }
+  };
+
   const loadFiles = async () => {
     const res = await api.get("/reports/files");
     setFiles(res.data.files);
@@ -364,6 +384,7 @@ export default function Reports() {
   useEffect(() => {
     loadStatus();
     loadFiles();
+    loadBalanceSlots();
   }, []);
 
   const download = async (name: string) => {
@@ -379,7 +400,14 @@ export default function Reports() {
   const runReport = async (card: ReportCard) => {
     setRunning(card.key);
     try {
-      const res = await api.post(`/reports/run/${card.key}`, {}, { responseType: "blob" });
+      // Улайлт картын хувьд сонгосон үлдэгдлийн файлын kind-ийг дамжуулна
+      const params: Record<string, string> = {};
+      if (card.key === "ulailt") params.kind = ulailtKind;
+
+      const res = await api.post(`/reports/run/${card.key}`, {}, {
+        responseType: "blob",
+        params,
+      });
 
       const cd = res.headers["content-disposition"] ?? "";
       const match = cd.match(/filename="?([^"]+)"?/);
@@ -406,6 +434,10 @@ export default function Reports() {
 
   // Карт бэлэн эсэхийг шалгах
   const isReady = (card: ReportCard) => {
+    if (card.key === "ulailt") {
+      // Улайлт: сонгосон kind-ийн файл оруулагдсан эсэхээр шалгана
+      return !!balSlots[ulailtKind];
+    }
     if (card.requiredTypes.length === 0) return null; // тусгай төрөл
     return card.requiredTypes.every((t) => availableTypes.includes(t));
   };
@@ -468,6 +500,56 @@ export default function Reports() {
 
               {/* Тайлбар */}
               <p className="mt-3 text-xs leading-relaxed text-gray-500">{card.description}</p>
+
+              {/* Улайлт картын файл сонгогч — 3 төрлөөс аль нэгээс улайлт гаргана */}
+              {card.key === "ulailt" && (
+                <div className="mt-3">
+                  <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">
+                    Үлдэгдлийн файлаас сонго
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {([
+                      { k: "warehouse", label: "Бүх агуулахын үлдэгдэл", color: "blue"   },
+                      { k: "main",      label: "Үндсэн заалны үлдэгдэл",  color: "violet" },
+                      { k: "liquor",    label: "Архины заалны үлдэгдэл",  color: "amber"  },
+                    ] as const).map(({ k, label, color }) => {
+                      const info = balSlots[k];
+                      const active = ulailtKind === k;
+                      const has = !!info;
+                      const ring  = active ? (color === "blue" ? "ring-blue-400" : color === "violet" ? "ring-violet-400" : "ring-amber-400") : "ring-gray-200";
+                      const bg    = active ? (color === "blue" ? "bg-blue-50"    : color === "violet" ? "bg-violet-50"    : "bg-amber-50")    : "bg-white";
+                      return (
+                        <button
+                          key={k}
+                          onClick={() => setUlailtKind(k)}
+                          disabled={!has}
+                          className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] ring-1 ring-inset ${ring} ${bg} ${has ? "" : "opacity-50 cursor-not-allowed"} hover:bg-gray-50`}
+                          title={has ? `Файл: ${info!.filename}` : "Файл оруулаагүй"}
+                        >
+                          <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${active ? "border-current" : "border-gray-300"}`}>
+                            {active && <span className="h-2 w-2 rounded-full bg-current" />}
+                          </span>
+                          <span className="flex-1 font-semibold text-gray-800">{label}</span>
+                          {has ? (
+                            <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                              <CheckCircle2 size={9} /> Бэлэн
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                              <AlertCircle size={9} /> Алга
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {!balSlots[ulailtKind] && (
+                    <div className="mt-1.5 text-[10px] text-amber-600">
+                      Сонгосон файл оруулагдаагүй байна. Файл оруулалт → Үлдэгдлийн файл оруулалт хэсгээс оруулна уу.
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Шаардлагатай файлууд */}
               {card.requiredTypes.length > 0 && (
