@@ -547,6 +547,7 @@ export default function BankStatementPage() {
     export_type: null as string | null,  // null = өөрчлөхгүй
   });
   const [bulkApplying, setBulkApplying] = useState(false);
+  const [fillingDesc,  setFillingDesc]  = useState(false);
 
   // Settings
   const [accounts,    setAccounts]    = useState<AccountConfig[]>([]);
@@ -809,6 +810,30 @@ export default function BankStatementPage() {
       setBulkForm({ partner_name: "", partner_account: "", custom_description: "", action: null, export_type: null });
     } catch { setErr("Bulk засах амжилтгүй"); }
     finally { setBulkApplying(false); }
+  }
+
+  // Сонгосон гүйлгээний Гүйлгээний утгыг "Дансаар - {Банкны утга}" болгож бөглөх.
+  // Мөр бүр өөрийн bank_description-ийг ашиглана (тогтмол утга биш).
+  async function fillDansaarDescriptions() {
+    if (selectedTxns.size === 0 || !openStmt) return;
+    setFillingDesc(true);
+    try {
+      const r = await api.post(`/bank-statements/${openStmt.id}/fill-descriptions`, {
+        txn_ids: [...selectedTxns],
+        prefix: "Дансаар - ",
+      });
+      // Backend-ийн логиктой ижил утгыг локалд тооцоолж шинэчилнэ
+      setTxns(prev => prev.map(t => {
+        if (!selectedTxns.has(t.id)) return t;
+        if (t.is_fee || t.is_settlement) return t;   // эдгээр нь lock-той, алгасагдсан
+        const bd = (t.bank_description || "").trim();
+        return { ...t, custom_description: bd ? `Дансаар - ${bd}` : "Дансаар" };
+      }));
+      clearSelection();
+      setErr("");
+      alert(`✓ ${r.data.updated} гүйлгээний утга "Дансаар - …" болж шинэчлэгдлээ`);
+    } catch { setErr("Гүйлгээний утга бөглөх амжилтгүй"); }
+    finally { setFillingDesc(false); }
   }
 
   // ── Settings ───────────────────────────────────────────────────────
@@ -1304,6 +1329,17 @@ export default function BankStatementPage() {
                     {bulkApplying
                       ? <><RefreshCw size={10} className="animate-spin"/>Хадгалж байна…</>
                       : <><Check size={10}/>Хэрэглэх</>}
+                  </button>
+
+                  <div className="h-5 w-px bg-blue-200 mx-0.5 shrink-0"/>
+
+                  {/* "Дансаар - {Банкны утга}" форматаар бөглөх */}
+                  <button onClick={fillDansaarDescriptions} disabled={fillingDesc}
+                    title='Сонгосон мөрүүдийн Гүйлгээний утгыг "Дансаар - {Банкны утга}" болгож бөглөнө (мөр бүр өөрийн банкны утгаар)'
+                    className="flex items-center gap-1 rounded-lg bg-violet-600 px-2.5 py-0.5 text-[11px] font-semibold text-white hover:bg-violet-700 disabled:opacity-60 shrink-0">
+                    {fillingDesc
+                      ? <><RefreshCw size={10} className="animate-spin"/>Бөглөж байна…</>
+                      : <>＋ Дансаар - утга</>}
                   </button>
                 </div>
               )}

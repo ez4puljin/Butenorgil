@@ -344,6 +344,16 @@ class TxnUpdate(BaseModel):
     export_type:        Optional[str] = None   # "" | "kass" | "hariltsah"
 
 
+class FillDescIn(BaseModel):
+    """Сонгосон гүйлгээнүүдийн Гүйлгээний утгыг (custom_description)
+    угтвар + банкны утга форматаар бөглөх. Жишээ: "Дансаар - {Банкны утга}".
+    """
+    txn_ids:      Optional[list[int]] = None   # None/хоосон → хуулгын бүх үндсэн гүйлгээ
+    prefix:       str  = "Дансаар - "          # угтвар (банкны утгын өмнө залгагдана)
+    include_fees: bool = False                 # шимтгэл/POS мөрийг ч хамруулах эсэх
+    overwrite:    bool = True                  # False → зөвхөн хоосон утгатайг бөглөнө
+
+
 class AccountIn(BaseModel):
     account_number:   str  = ""
     partner_name:     str  = ""
@@ -1045,6 +1055,58 @@ def update_transaction(
 
     db.commit()
     return _ser_txn(t)
+
+
+@router.post("/{stmt_id}/fill-descriptions")
+def fill_descriptions(
+    stmt_id: int,
+    body: FillDescIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Сонгосон (эсвэл бүх) гүйлгээний Гүйлгээний утгыг
+    `prefix + банкны утга` форматаар бөглөнө. Мөр бүр өөрийн
+    bank_description-ийг ашиглана. Жишээ:
+      bank="АЛТАНГЭРЭЛ-с 95509479", prefix="Дансаар - "
+      → "Дансаар - АЛТАНГЭРЭЛ-с 95509479"
+    Банкны утга хоосон бол зөвхөн угтварыг (төгсгөлийн "- "-гүй) тавина.
+
+    Аль ч дансны хуулга дээр ажиллана. txn_ids хоосон бол хуулгын
+    бүх (шимтгэл/POS-оос бусад) гүйлгээнд хэрэглэнэ.
+    """
+    stmt = db.query(BankStatement).filter(BankStatement.id == stmt_id).first()
+    if not stmt:
+        raise HTTPException(404, "Хуулга олдсонгүй")
+
+    q = db.query(BankTransaction).filter(BankTransaction.statement_id == stmt_id)
+    if body.txn_ids:
+        q = q.filter(BankTransaction.id.in_(body.txn_ids))
+    txns = q.all()
+
+    # Банкны утга хоосон үед тавих суурь текст: "Дансаар - " → "Дансаар"
+    base = body.prefix.rstrip()
+    if base.endswith("-"):
+        base = base[:-1].rstrip()
+
+    updated = 0
+    for t in txns:
+        # Шимтгэл / POS settlement мөр нь тохиргооноос автомат бөглөгддөг —
+        # тусгайлан хүсээгүй бол алгасна (lock-той тул UI-д ч засагдахгүй).
+        if not body.include_fees:
+            if t.is_fee:
+                continue
+            if t.credit > 0 and _is_pos_income(t.bank_description or ""):
+                continue
+        bd = (t.bank_description or "").strip()
+        new_val = f"{body.prefix}{bd}" if bd else base
+        if not body.overwrite and (t.custom_description or "").strip():
+            continue
+        if t.custom_description != new_val:
+            t.custom_description = new_val
+            updated += 1
+
+    db.commit()
+    return {"ok": True, "updated": updated, "total": len(txns)}
 
 
 # ── Эрхэт Excel export helpers ───────────────────────────────────────────────
