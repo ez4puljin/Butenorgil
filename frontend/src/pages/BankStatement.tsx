@@ -99,11 +99,11 @@ function fmtDateShort(s: string | null) {
   // "2026-05-20 09:41:00" → "05-20 09:41"
   return v.length >= 16 ? `${v.slice(5, 10)} ${v.slice(11, 16)}` : v.slice(0, 16);
 }
-/** "2026-06-29" → "6/29/2026" (Short Date, тэргүүлэх 0-гүй) — файлын нэрэнд. */
+/** "2026-06-29" → "6-29-2026" (Short Date, тэргүүлэх 0-гүй, зураасаар) — файлын нэрэнд. */
 function fmtShortDateFile(iso: string) {
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
   if (!y || !m || !d) return iso.slice(0, 10);
-  return `${m}/${d}/${y}`;
+  return `${m}-${d}-${y}`;
 }
 function pad2(n: number) { return String(n).padStart(2, "0"); }
 function toDateStr(y: number, m: number, d: number) {
@@ -720,7 +720,7 @@ export default function BankStatementPage() {
 
       if (fileList.length === 0) { setErr("Экспортлох гүйлгээ алга"); return; }
 
-      // Short Date: "2026-06-29" → "6/29/2026" (тэргүүлэх 0-гүй)
+      // Short Date: "2026-06-29" → "6-29-2026" (тэргүүлэх 0-гүй, зураасаар)
       const shortDate = fmtShortDateFile(exportDate || todayStr());
 
       // Файл бүрийг тус тусад нь шууд татна (zip биш)
@@ -735,7 +735,7 @@ export default function BankStatementPage() {
         }));
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${openStmt.account_number}_${shortDate}_${f.title}.xlsx`;
+        a.download = `${shortDate}_${openStmt.account_number}_${f.title}.xlsx`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
