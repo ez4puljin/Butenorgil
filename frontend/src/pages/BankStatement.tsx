@@ -99,6 +99,12 @@ function fmtDateShort(s: string | null) {
   // "2026-05-20 09:41:00" → "05-20 09:41"
   return v.length >= 16 ? `${v.slice(5, 10)} ${v.slice(11, 16)}` : v.slice(0, 16);
 }
+/** "2026-06-29" → "6/29/2026" (Short Date, тэргүүлэх 0-гүй) — файлын нэрэнд. */
+function fmtShortDateFile(iso: string) {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return iso.slice(0, 10);
+  return `${m}/${d}/${y}`;
+}
 function pad2(n: number) { return String(n).padStart(2, "0"); }
 function toDateStr(y: number, m: number, d: number) {
   return `${y}-${pad2(m)}-${pad2(d)}`;
@@ -703,20 +709,40 @@ export default function BankStatementPage() {
     if (!openStmt) return;
     setExporting(true);
     try {
-      const params: Record<string, string> = {};
-      if (exportDate) params.export_date = exportDate;
-      const r = await api.get(`/bank-statements/${openStmt.id}/export`, {
-        params,
-        responseType: "blob",
-      });
-      const url = URL.createObjectURL(new Blob([r.data], { type: "application/zip" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `Эрхэт_${openStmt.account_number}_${exportDate || "export"}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Аль файлууд гарахыг урьдчилан тооцоолно (хоосон файл татахгүй)
+      const fileList: { key: string; title: string }[] = [];
+      if (txns.some(t => !t.is_fee && t.credit > 0))
+        fileList.push({ key: "avlaga", title: "Авлага өглөгийн гүйлгээ" });
+      if (txns.some(t => !t.is_fee && t.debit > 0 && t.export_type === "kass"))
+        fileList.push({ key: "kass", title: "Мөнгөн хөрөнгийн кассын гүйлгээ" });
+      if (txns.some(t => !t.is_fee && t.debit > 0 && t.export_type === "hariltsah"))
+        fileList.push({ key: "hariltsah", title: "Мөнгөн хөрөнгийн харилцахын гүйлгээ" });
+
+      if (fileList.length === 0) { setErr("Экспортлох гүйлгээ алга"); return; }
+
+      // Short Date: "2026-06-29" → "6/29/2026" (тэргүүлэх 0-гүй)
+      const shortDate = fmtShortDateFile(exportDate || todayStr());
+
+      // Файл бүрийг тус тусад нь шууд татна (zip биш)
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        const r = await api.get(`/bank-statements/${openStmt.id}/export`, {
+          params: { export_date: exportDate, file: f.key },
+          responseType: "blob",
+        });
+        const url = URL.createObjectURL(new Blob([r.data], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${openStmt.account_number}_${shortDate}_${f.title}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        // Browser олон файл зэрэг татахад блоклохгүйн тулд бага зэрэг хүлээнэ
+        if (i < fileList.length - 1) await new Promise(res => setTimeout(res, 400));
+      }
       setExportOpen(false);
     } catch { setErr("Экспортлох амжилтгүй"); }
     finally { setExporting(false); }

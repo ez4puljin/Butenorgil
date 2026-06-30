@@ -1135,8 +1135,8 @@ _KASS_HARILTSAH_HEADERS = [
 ]
 
 
-# Excel-ийн "Short Date" формат — 04/30/2026
-_DATE_FMT = "MM/DD/YYYY"
+# Excel-ийн "Short Date" формат — тэргүүлэх 0-гүй (жишээ: 6/29/2026)
+_DATE_FMT = "M/D/YYYY"
 
 
 def _apply_date_format(ws, col_letter: str, start_row: int, end_row: int) -> None:
@@ -1297,19 +1297,24 @@ def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", n
 def export_erkhet(
     stmt_id: int,
     export_date: Optional[str] = Query(None),   # "YYYY-MM-DD" — сонгосон огноо
+    file: Optional[str] = Query(None),          # "avlaga"|"kass"|"hariltsah" — нэг файл шууд татах
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Хуулгын гүйлгээг 3 Эрхэт импорт Excel файл болгон ZIP архивт буцаана.
+    """Хуулгын гүйлгээг Эрхэт импорт Excel файл(ууд) болгон буцаана.
     • Кредит гүйлгээ → Авлага өглөгийн гүйлгээ.xlsx
     • Дебит (export_type=kass) → Мөнгөн хөрөнгийн кассын гүйлгээ.xlsx
     • Дебит (export_type=hariltsah) → Мөнгөн хөрөнгийн харилцахын гүйлгээ.xlsx
+
+    `file` параметр өгвөл тухайн нэг файлыг шууд (.xlsx) буцаана.
+    Өгөхгүй бол бүгдийг ZIP архивт хийж буцаана (хуучин хэрэглээ).
     """
     stmt = db.query(BankStatement).filter(BankStatement.id == stmt_id).first()
     if not stmt:
         raise HTTPException(404, "Хуулга олдсонгүй")
 
     from datetime import date as dt_date
+    from urllib.parse import quote
     eff_date = None
     if export_date:
         try:
@@ -1329,7 +1334,7 @@ def export_erkhet(
     sc = _get_settlement_config(db)
     settlement_account_code = (sc.account_code or "120105")
 
-    # Customer name → code map — нэгэн ёсон бүх 3 export файлд ашиглана
+    # Customer name → code map — нэгэн ёсон бүх export файлд ашиглана
     name_to_code = _customer_name_to_code()
 
     txns = [t for t in stmt.transactions if not t.is_fee]
@@ -1337,22 +1342,45 @@ def export_erkhet(
     kass_txns      = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"]
     hariltsah_txns = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"]
 
+    XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    # Файл бүрийн (Монгол title, гүйлгээний жагсаалт, бэлдэгч) тодорхойлолт
+    file_defs = {
+        "avlaga":    ("Авлага өглөгийн гүйлгээ", credit_txns,
+                      lambda ts: _build_avlaga_excel(ts, eff_date, bank_erp_code, name_to_code, settlement_account_code)),
+        "kass":      ("Мөнгөн хөрөнгийн кассын гүйлгээ", kass_txns,
+                      lambda ts: _build_kass_hariltsah_excel(ts, eff_date, bank_erp_code, name_to_code)),
+        "hariltsah": ("Мөнгөн хөрөнгийн харилцахын гүйлгээ", hariltsah_txns,
+                      lambda ts: _build_kass_hariltsah_excel(ts, eff_date, bank_erp_code, name_to_code)),
+    }
+
+    acct        = stmt.account_number or "statement"
+    date_label  = eff_date.strftime("%Y%m%d") if eff_date else "export"
+
+    # ── Нэг файл шууд татах ────────────────────────────────────────
+    if file:
+        if file not in file_defs:
+            raise HTTPException(400, "Буруу файлын төрөл")
+        title, ts, build = file_defs[file]
+        if not ts:
+            raise HTTPException(404, f"{title}: гүйлгээ алга")
+        data = build(ts)
+        ascii_name = f"{acct}_{date_label}_{file}.xlsx"
+        display    = f"{acct}_{date_label}_{title}.xlsx"
+        return StreamingResponse(
+            io.BytesIO(data),
+            media_type=XLSX_MIME,
+            headers={"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(display)}"},
+        )
+
+    # ── Бүгдийг ZIP-ээр (хуучин хэрэглээ) ─────────────────────────
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        if credit_txns:
-            zf.writestr("Авлага өглөгийн гүйлгээ.xlsx",
-                        _build_avlaga_excel(credit_txns, eff_date, bank_erp_code, name_to_code, settlement_account_code))
-        if kass_txns:
-            zf.writestr("Мөнгөн хөрөнгийн кассын гүйлгээ.xlsx",
-                        _build_kass_hariltsah_excel(kass_txns, eff_date, bank_erp_code, name_to_code))
-        if hariltsah_txns:
-            zf.writestr("Мөнгөн хөрөнгийн харилцахын гүйлгээ.xlsx",
-                        _build_kass_hariltsah_excel(hariltsah_txns, eff_date, bank_erp_code, name_to_code))
+        for _key, (title, ts, build) in file_defs.items():
+            if ts:
+                zf.writestr(f"{title}.xlsx", build(ts))
 
-    from urllib.parse import quote
     zip_buf.seek(0)
-    date_label = eff_date.strftime("%Y%m%d") if eff_date else "export"
-    acct = stmt.account_number or "statement"
     ascii_name = f"Erkhet_{acct}_{date_label}.zip"
     display    = f"Эрхэт_{acct}_{date_label}.zip"
 
