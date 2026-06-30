@@ -1505,18 +1505,24 @@ export default function BankStatementPage() {
                               }
                             </td>
                             <td className="px-1.5 py-1.5 text-center whitespace-nowrap">
-                              {t.credit > 0 && !t.is_fee ? (
-                                <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-bold font-mono text-emerald-700"
-                                  title="Авлага → 120105">
-                                  120105
-                                </span>
-                              ) : (t.debit > 0 || t.is_fee) && openStmt?.erp_account_code ? (
+                              {t.is_settlement ? (
+                                /* POS settlement → clearing данс (тохиргооноос) */
+                                settlementCfg.account_code ? (
+                                  <span className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] font-bold font-mono text-amber-700"
+                                    title={`POS settlement clearing данс: ${settlementCfg.account_code}`}>
+                                    {settlementCfg.account_code}
+                                  </span>
+                                ) : (
+                                  <span className="text-[11px] text-gray-300">—</span>
+                                )
+                              ) : openStmt?.erp_account_code ? (
+                                /* Энгийн Авлага / Касс / Харилцах / Шимтгэл → тухайн дансны ERP код */
                                 <span className="inline-flex items-center rounded-md border border-sky-300 bg-sky-50 px-2 py-1 text-[11px] font-bold font-mono text-sky-700"
                                   title={`Тухайн дансны ERP код: ${openStmt.erp_account_code}`}>
                                   {openStmt.erp_account_code}
                                 </span>
                               ) : (
-                                <span className="text-[11px] text-gray-300">—</span>
+                                <span className="text-[11px] text-gray-300" title="Тухайн дансанд ERP код бүртгэгдээгүй">—</span>
                               )}
                             </td>
                           </tr>

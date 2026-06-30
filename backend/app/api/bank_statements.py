@@ -1178,14 +1178,17 @@ def _resolve_partner_field(t, name_to_code: dict[str, str]) -> str:
     return name
 
 
-def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None) -> bytes:
+def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None, settlement_account_code: str = "120105") -> bytes:
     """Авлага өглөгийн гүйлгээ Excel (зөвхөн кредит гүйлгээ).
-    SETTLEMENT pattern илрүүлбэл автомат бөглөнө:
+    Энгийн кредит мөр:
+      • Харьцсан данс — хэрэглэгчийн сонгосон данс (120101 г.м.)
+      • Дансны код   — тухайн дансны ERP код (bank_erp_code) — мөнгө орж ирсэн данс
+    SETTLEMENT (POS) мөр илрүүлбэл автомат бөглөнө:
       • Огноо       — bank_description-аас parse
       • Утга        — "Пос орлого " + bank_description
       • Харилцагч   — "30000"
       • Харьцсан    — банкны ERP код (bank_erp_code)
-      • Дансны код  — "120105"
+      • Дансны код  — settlement clearing данс (settlement_account_code, default 120105)
     """
     if name_to_code is None:
         name_to_code = _customer_name_to_code()
@@ -1223,13 +1226,15 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
             cross     = bank_erp_code or (t.partner_account or "").strip()
             # custom_description нь parse үед концат хийгдсэн байна, эс бөгөөс bd
             desc_text = (t.custom_description or "").strip() or bd
+            # POS-ийн "Дансны код" = settlement clearing данс (Харьцсан нь bank ERP тул)
+            main_acct = settlement_account_code or "120105"
         else:
             row_date  = eff_date
             partner   = partner_field
             cross     = t.partner_account or ""
             desc_text = t.custom_description or bd
-        # Авлага бүх кредит мөрийн "Дансны код" = 120105 (анхдагч авлагын данс)
-        main_acct = "120105"
+            # Энгийн Авлага мөрийн "Дансны код" = мөнгө орж ирсэн дансны ERP код
+            main_acct = bank_erp_code
 
         ws.append([
             row_date,        # Огноо — date object (POS бол bank_description-ийн огноо)
@@ -1241,7 +1246,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
             "", "", "", "",  # НӨАТ 4 col
             "", "", "", "",  # НХАТ 4 col
             action_val,      # Нээлт(1) / Хаалт(2)
-            main_acct,       # Дансны код (POS → "120105")
+            main_acct,       # Дансны код (энгийн → дансны ERP код; POS → clearing)
             "",              # Валют
             "",              # Авах / Зарах ханш
             "",              # Олз / Гарзын дансны код
@@ -1320,6 +1325,10 @@ def export_erkhet(
     ).first()
     bank_erp_code = (cfg.erp_account_code or "") if cfg else ""
 
+    # POS settlement-ийн clearing дансны код (SettlementConfig-аас)
+    sc = _get_settlement_config(db)
+    settlement_account_code = (sc.account_code or "120105")
+
     # Customer name → code map — нэгэн ёсон бүх 3 export файлд ашиглана
     name_to_code = _customer_name_to_code()
 
@@ -1332,7 +1341,7 @@ def export_erkhet(
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         if credit_txns:
             zf.writestr("Авлага өглөгийн гүйлгээ.xlsx",
-                        _build_avlaga_excel(credit_txns, eff_date, bank_erp_code, name_to_code))
+                        _build_avlaga_excel(credit_txns, eff_date, bank_erp_code, name_to_code, settlement_account_code))
         if kass_txns:
             zf.writestr("Мөнгөн хөрөнгийн кассын гүйлгээ.xlsx",
                         _build_kass_hariltsah_excel(kass_txns, eff_date, bank_erp_code, name_to_code))
