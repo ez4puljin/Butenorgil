@@ -1135,8 +1135,11 @@ _KASS_HARILTSAH_HEADERS = [
 ]
 
 
-# Excel-ийн "Short Date" формат — тэргүүлэх 0-гүй (жишээ: 6/29/2026)
-_DATE_FMT = "M/D/YYYY"
+# Excel-ийн BUILT-IN "Short Date" формат (numFmtId 14).
+# Эрхэт импорт нь зөвхөн built-in огнооны форматыг "огноо" гэж таних тул
+# custom "M/D/YYYY" (numFmtId 165) биш ЗААВАЛ энэ built-in-ийг ашиглана.
+# Excel нээхэд системийн Short Date-ээр (жишээ 6/30/2026) харуулна.
+_DATE_FMT = "mm-dd-yy"
 
 
 def _apply_date_format(ws, col_letter: str, start_row: int, end_row: int) -> None:
