@@ -982,6 +982,14 @@ async def schedule_dashboard_warm():
     asyncio.create_task(_dashboard_warm_loop())
 
 
+@app.on_event("startup")
+async def schedule_heartbeat():
+    """Систем асалт мониторингийн heartbeat loop.
+    HEARTBEAT_URL тохируулсан үед л ажиллана (эс бол no-op)."""
+    from app.core.health_monitor import _heartbeat_loop
+    asyncio.create_task(_heartbeat_loop())
+
+
 def ensure_calendar_labels_seeded():
     """Calendar label default-уудыг суулгана (зөвхөн хоосон үед).
 
@@ -1055,7 +1063,13 @@ app.include_router(attendance_router)
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    """Системийн эрүүл мэнд. DB хүрч байвал 200, эс бол 503.
+    Гадаад мониторинг (poll) болон дотоод heartbeat-д ашиглана."""
+    from fastapi.responses import JSONResponse
+    from app.core.health_monitor import _db_ok
+    if _db_ok():
+        return {"ok": True, "db": True}
+    return JSONResponse(status_code=503, content={"ok": False, "db": False})
 
 
 # ── Real-time event stream (Server-Sent Events) ─────────────────────────────

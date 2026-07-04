@@ -29,6 +29,12 @@ echo.
 REM ---- Stop any previous instance on port 8000 (avoid conflicts) ----
 echo [1/4] Cleaning previous instances...
 
+REM Signal any running auto-restart wrapper (run_server_loop.bat) to stop,
+REM so it does NOT relaunch uvicorn while we start a fresh instance.
+if exist "%ROOT%\backend\run_server_loop.bat" (
+    type nul > "%ROOT%\backend\stop.flag" 2>nul
+)
+
 REM First pass: kill processes listening on port 8000.
 call :kill_port_8000
 
@@ -245,6 +251,9 @@ echo.
 REM ---- Start backend + cert helper ----
 echo [4/4] Starting servers...
 echo.
+
+REM Clear the stop flag so the auto-restart wrapper runs its loop.
+del /q "%ROOT%\backend\stop.flag" >nul 2>&1
 if "!USE_HTTPS!"=="1" (
     echo   App ^(HTTPS^):         https://!LAN_IP!:8000
     echo   Setup helper ^(HTTP^): http://!LAN_IP!:8080/
@@ -254,7 +263,7 @@ if "!USE_HTTPS!"=="1" (
     echo     2. Tap "rootCA.crt download" and install it as Trusted Root
     echo     3. Open the app, set Protocol=HTTPS, IP=!LAN_IP!, Port=8000
     echo.
-    start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile app/data/certs/server.key --ssl-certfile app/data/certs/server.crt"
+    start "ERP-Server" /D "%ROOT%\backend" cmd /k run_server_loop.bat
 ) else (
     echo   App ^(HTTP^):  http://!LAN_IP!:8000
     echo.
@@ -262,7 +271,7 @@ if "!USE_HTTPS!"=="1" (
     echo         Camera, microphone, geolocation features will be DISABLED
     echo         on phones because they require HTTPS ^(secure context^).
     echo.
-    start "ERP-Server" /D "%ROOT%\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    start "ERP-Server" /D "%ROOT%\backend" cmd /k run_server_loop.bat
 )
 
 REM Helper for cert download (port 8080, plain HTTP) — only useful when HTTPS is on

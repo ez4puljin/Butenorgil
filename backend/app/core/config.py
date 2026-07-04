@@ -8,6 +8,13 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     gemini_api_key: str = ""   # env: GEMINI_API_KEY (aistudio.google.com-д үнэгүй авна)
 
+    # ── Систем асалт мониторинг (heartbeat + Telegram мэдэгдэл) ──────────
+    # heartbeat_url хоосон бол мониторинг идэвхгүй (юу ч илгээхгүй).
+    heartbeat_url: str = ""            # env: HEARTBEAT_URL — Healthchecks.io ping URL
+    heartbeat_interval_sec: int = 60   # env: HEARTBEAT_INTERVAL_SEC — heartbeat давтамж (сек)
+    telegram_bot_token: str = ""       # env: TELEGRAM_BOT_TOKEN — BotFather-аас
+    telegram_chat_id: str = ""         # env: TELEGRAM_CHAT_ID — групп/чат id
+
     class Config:
         env_file = ".env"
 
