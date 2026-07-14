@@ -250,6 +250,30 @@ def _parse_excel(content: bytes, filename: str) -> dict:
     }
 
 
+def _txn_missing_fields(t, erp_ok: bool) -> list[str]:
+    """Гүйлгээний дутуу (бөглөгдөөгүй) талбаруудын жагсаалт.
+
+    Мөр "бүрэн бөглөгдсөн" гэж тооцогдохын тулд Харилцагч, Харьцсан данс,
+    Гүйлгээний утга, Үйлдэл, Экспорт (дебит мөрд), Данс (ERP код) бүгд
+    утгатай байх ёстой."""
+    missing = []
+    if not (t.partner_name or "").strip():
+        missing.append("partner")
+    if not (t.partner_account or "").strip():
+        missing.append("account")
+    if not (t.custom_description or "").strip():
+        missing.append("desc")
+    if not (t.action or "").strip():
+        missing.append("action")
+    # Экспорт төрөл зөвхөн дебит мөрд сонгогдоно (кредит → Авлага автомат)
+    if t.debit > 0 and not (getattr(t, "export_type", "") or "").strip():
+        missing.append("export")
+    # Данс (Дансны код) — тухайн дансны ERP код бүртгэлтэй эсэх
+    if not erp_ok:
+        missing.append("erp")
+    return missing
+
+
 def _ser_stmt(s: BankStatement, include_txns: bool = False, erp_map: Optional[dict] = None, db: Optional[Session] = None) -> dict:
     txns = s.transactions
     main_txns = [t for t in txns if not t.is_fee]
@@ -272,6 +296,21 @@ def _ser_stmt(s: BankStatement, include_txns: bool = False, erp_map: Optional[di
         erp_code = ""
         is_registered = False
 
+    # "Бөглөсөн" = бүх шаардлагатай талбар бүрэн мөрийн тоо + талбар
+    # тус бүрээр хэдэн мөр дутуу байгаагийн задаргаа.
+    missing_counts = {"partner": 0, "account": 0, "desc": 0, "action": 0, "export": 0, "erp": 0}
+    filled = 0
+    for t in main_txns:
+        is_settle = t.credit > 0 and _is_pos_income(t.bank_description or "")
+        # Settlement мөрийн Данс = clearing данс (тохиргоонд үргэлж утгатай)
+        erp_ok = True if is_settle else bool(erp_code)
+        miss = _txn_missing_fields(t, erp_ok)
+        if miss:
+            for k in miss:
+                missing_counts[k] += 1
+        else:
+            filled += 1
+
     d = {
         "id":               s.id,
         "account_number":   s.account_number,
@@ -284,7 +323,8 @@ def _ser_stmt(s: BankStatement, include_txns: bool = False, erp_map: Optional[di
         "fee_count":        len(txns) - len(main_txns),
         "total_credit":     sum(t.credit for t in main_txns),
         "total_debit":      sum(t.debit  for t in main_txns),
-        "filled_count":     sum(1 for t in main_txns if t.partner_name or t.action),
+        "filled_count":     filled,
+        "missing":          missing_counts,
         "erp_account_code": erp_code,
         "is_registered":    is_registered,
     }
@@ -1003,6 +1043,11 @@ async def upload_statement(
             t["partner_account"] = (sc.partner_account or "").strip() or bank_erp
             t["custom_description"] = _settlement_description(sc.custom_description, t.get("bank_description", ""))
             t["action"]          = sc.action or "close"
+        # 3) Бусад бүх мөр — Гүйлгээний утгыг "Дансаар - {банкны утга}"
+        #    форматаар урьдчилан бөглөнө (хэрэглэгч гараар засах/арилгах боломжтой)
+        else:
+            bd = (t.get("bank_description") or "").strip()
+            t["custom_description"] = f"Дансаар - {bd}" if bd else "Дансаар"
         db.add(BankTransaction(statement_id=stmt.id, **t))
 
     db.commit()

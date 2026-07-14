@@ -22,9 +22,21 @@ interface Statement {
   total_credit: number;
   total_debit: number;
   filled_count: number;
+  // Талбар тус бүрээр хэдэн мөр дутуу байгаагийн задаргаа
+  missing?: Record<string, number>;
   erp_account_code: string;
   is_registered: boolean;
 }
+
+// Дутуу талбарын түлхүүр → Монгол нэр (картын задаргаанд)
+const MISSING_FIELD_LABELS: [string, string][] = [
+  ["partner", "Харилцагч"],
+  ["account", "Харьц. данс"],
+  ["desc",    "Гүйлгээний утга"],
+  ["action",  "Үйлдэл"],
+  ["export",  "Экспорт"],
+  ["erp",     "Данс"],
+];
 
 interface Txn {
   id: number;
@@ -964,7 +976,17 @@ export default function BankStatementPage() {
   const mainTxns    = txns.filter(t => !t.is_fee);
   const totalCredit = mainTxns.reduce((s, t) => s + t.credit, 0);
   const totalDebit  = mainTxns.reduce((s, t) => s + t.debit,  0);
-  const filledCount = mainTxns.filter(t => t.partner_name || t.action).length;
+  // "Бөглөсөн" = бүх шаардлагатай талбар бүрэн: Харилцагч, Харьц. данс,
+  // Гүйлгээний утга, Үйлдэл, Экспорт (дебит мөрд), Данс (ERP код)
+  const filledCount = mainTxns.filter(t => {
+    const exportOk = t.debit > 0 ? !!(t.export_type || "").trim() : true;
+    const erpOk    = t.is_settlement ? true : !!openStmt?.erp_account_code;
+    return !!(t.partner_name || "").trim()
+        && !!(t.partner_account || "").trim()
+        && !!(t.custom_description || "").trim()
+        && !!(t.action || "").trim()
+        && exportOk && erpOk;
+  }).length;
 
   // Calendar grid
   const firstDow  = firstDayOfWeek(year, month);
@@ -1253,6 +1275,22 @@ export default function BankStatementPage() {
                               pct === 100 ? "bg-emerald-500" : pct >= 50 ? "bg-[#0071E3]" : "bg-gray-300"
                             }`} style={{ width: `${pct}%` }}/>
                           </div>
+                          {/* Дутуу талбаруудын задаргаа — талбар тус бүр {бөглөсөн}/{нийт} */}
+                          {s.missing && s.filled_count < s.txn_count && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {MISSING_FIELD_LABELS.map(([k, label]) => {
+                                const miss = s.missing?.[k] ?? 0;
+                                if (miss <= 0) return null;
+                                return (
+                                  <span key={k}
+                                    title={`${label}: ${miss} мөр бөглөгдөөгүй`}
+                                    className="rounded-md bg-rose-50 px-1.5 py-0.5 text-[9.5px] font-semibold text-rose-600 ring-1 ring-rose-100">
+                                    {label} {s.txn_count - miss}/{s.txn_count}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
