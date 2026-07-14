@@ -539,6 +539,8 @@ export default function BankStatementPage() {
     setFeeReapplying(true);
     try {
       const r = await api.post("/bank-statements/config/fee/reapply");
+      // Бүх хуулгад нөлөөлсөн тул cache бүхэлдээ хуучирсан
+      txnCacheRef.current.clear();
       if (openStmt) {
         const res = await api.get(`/bank-statements/${openStmt.id}`);
         setTxns(res.data.transactions ?? []);
@@ -566,6 +568,8 @@ export default function BankStatementPage() {
     setReapplying(true);
     try {
       const r = await api.post("/bank-statements/config/settlement/reapply");
+      // Бүх хуулгад нөлөөлсөн тул cache бүхэлдээ хуучирсан
+      txnCacheRef.current.clear();
       // Хуулга нээлттэй бол гүйлгээг дахин ачаална
       if (openStmt) {
         const res = await api.get(`/bank-statements/${openStmt.id}`);
@@ -637,6 +641,28 @@ export default function BankStatementPage() {
     setSelectedDate(null); setDayStmts([]); setOpenStmt(null);
   }
 
+  // ── Гүйлгээний cache — хуулга хооронд шилжихэд дахин ачаалахгүй ────
+  // id → гүйлгээнүүд. Өдөр сонгоход бүх хуулгыг урьдчилан ачаална,
+  // нээхэд cache-ээс шууд харуулаад араас нь чимээгүй шинэчилнэ.
+  const txnCacheRef = useRef<Map<number, Txn[]>>(new Map());
+  const txnFetchRef = useRef<Map<number, Promise<Txn[] | null>>>(new Map());
+
+  function fetchTxns(stmtId: number): Promise<Txn[] | null> {
+    // Нэг хуулгад зэрэг олон хүсэлт явуулахгүй (in-flight dedupe)
+    const inflight = txnFetchRef.current.get(stmtId);
+    if (inflight) return inflight;
+    const p = api.get(`/bank-statements/${stmtId}`)
+      .then(r => {
+        const list: Txn[] = r.data.transactions ?? [];
+        txnCacheRef.current.set(stmtId, list);
+        return list;
+      })
+      .catch(() => null)
+      .finally(() => { txnFetchRef.current.delete(stmtId); });
+    txnFetchRef.current.set(stmtId, p);
+    return p;
+  }
+
   // ── Select day ─────────────────────────────────────────────────────
 
   async function selectDay(dateStr: string) {
@@ -647,6 +673,10 @@ export default function BankStatementPage() {
     try {
       const r = await api.get("/bank-statements/by-date", { params: { date: dateStr } });
       setDayStmts(r.data);
+      // Урьдчилан ачаалалт — картыг нээхэд шууд (spinner-гүй) гарна
+      (r.data as Statement[]).forEach(s => {
+        if (!txnCacheRef.current.has(s.id)) fetchTxns(s.id);
+      });
     } catch { setErr("Хуулга ачааллах амжилтгүй"); }
     finally { setLoadingDay(false); }
   }
@@ -655,13 +685,26 @@ export default function BankStatementPage() {
 
   async function openStatement(stmt: Statement) {
     setOpenStmt(stmt);
-    setTxns([]);
-    setLoadingTxn(true);
-    try {
-      const r = await api.get(`/bank-statements/${stmt.id}`);
-      setTxns(r.data.transactions ?? []);
-    } catch { setErr("Гүйлгээ ачааллах амжилтгүй"); }
-    finally { setLoadingTxn(false); }
+    const cached = txnCacheRef.current.get(stmt.id);
+    if (cached) {
+      // Cache-ээс шууд харуулна; араас нь чимээгүй шинэчилнэ.
+      setTxns(cached);
+      setLoadingTxn(false);
+      fetchTxns(stmt.id).then(list => {
+        if (!list) return;
+        // Зөвхөн хэрэглэгч засвар хийгээгүй, өөр хуулга руу шилжээгүй
+        // үед л шинэ дата-г тавина (reference guard — засвар бүр шинэ
+        // массив үүсгэдэг тул prev === cached хэвээр бол өөрчлөлтгүй).
+        setTxns(prev => (prev === cached ? list : prev));
+      });
+    } else {
+      setTxns([]);
+      setLoadingTxn(true);
+      const list = await fetchTxns(stmt.id);
+      if (list) setTxns(list);
+      else setErr("Гүйлгээ ачааллах амжилтгүй");
+      setLoadingTxn(false);
+    }
   }
 
   // ── Upload ─────────────────────────────────────────────────────────
@@ -703,6 +746,7 @@ export default function BankStatementPage() {
     if (!confirm("Энэ хуулгыг устгах уу?")) return;
     try {
       await api.delete(`/bank-statements/${id}`);
+      txnCacheRef.current.delete(id);
       if (openStmt?.id === id) setOpenStmt(null);
       setDayStmts(prev => prev.filter(s => s.id !== id));
       loadCalendar(year, month);
@@ -722,9 +766,10 @@ export default function BankStatementPage() {
       const r = await api.post(`/bank-statements/${openStmt.id}/swap-debit-credit`);
       const n = r.data?.swapped_count ?? 0;
       alert(`${n} гүйлгээний Дебит↔Кредит солигдлоо ✓`);
-      // Reload the statement detail
+      // Reload the statement detail + хүснэгт (cache write-through автомат)
       const sr = await api.get(`/bank-statements/${openStmt.id}`);
       setOpenStmt(sr.data);
+      setTxns(sr.data.transactions ?? []);
       loadCalendar(year, month);
     } catch (e: any) {
       setErr(e?.response?.data?.detail ?? "Солих амжилтгүй");
@@ -955,8 +1000,10 @@ export default function BankStatementPage() {
 
   // Гүйлгээ засагдах бүрд зүүн талын хуулгын картын "бөглөсөн" статистикийг
   // backend-ээс дахин татахгүйгээр шууд (real-time) шинэчилнэ.
+  // Мөн cache-ийг сүүлийн байдлаар хадгална (write-through).
   useEffect(() => {
     if (!openStmt || loadingTxn || txns.length === 0) return;
+    txnCacheRef.current.set(openStmt.id, txns);
     const { filled, missing } = computeFilledStats(txns, openStmt.erp_account_code || "");
     setDayStmts(prev => prev.map(s =>
       s.id === openStmt.id ? { ...s, filled_count: filled, missing } : s
