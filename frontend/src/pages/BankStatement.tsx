@@ -38,6 +38,28 @@ const MISSING_FIELD_LABELS: [string, string][] = [
   ["erp",     "Данс"],
 ];
 
+/** "Бөглөсөн" статистик — backend-ийн _txn_missing_fields-тэй ижил дүрэм.
+ *  Гүйлгээ засагдах бүрд картын мэдээллийг real-time шинэчлэхэд ашиглана. */
+function computeFilledStats(txns: Txn[], erpCode: string) {
+  const missing: Record<string, number> = { partner: 0, account: 0, desc: 0, action: 0, export: 0, erp: 0 };
+  let filled = 0;
+  const main = txns.filter(t => !t.is_fee);
+  for (const t of main) {
+    const miss: string[] = [];
+    if (!(t.partner_name || "").trim())        miss.push("partner");
+    if (!(t.partner_account || "").trim())     miss.push("account");
+    if (!(t.custom_description || "").trim())  miss.push("desc");
+    if (!(t.action || "").trim())              miss.push("action");
+    // Экспорт зөвхөн дебит мөрд (кредит → Авлага автомат)
+    if (t.debit > 0 && !(t.export_type || "").trim()) miss.push("export");
+    // Данс — settlement мөр clearing данстай (үргэлж OK), бусад нь ERP кодтой эсэх
+    if (!t.is_settlement && !erpCode)          miss.push("erp");
+    if (miss.length) miss.forEach(k => { missing[k]++; });
+    else filled++;
+  }
+  return { filled, missing, total: main.length };
+}
+
 interface Txn {
   id: number;
   txn_date: string | null;
@@ -931,6 +953,16 @@ export default function BankStatementPage() {
     setBulkForm({ partner_name: "", partner_account: "", custom_description: "", action: null, export_type: null });
   }, [openStmt?.id, showFees]);
 
+  // Гүйлгээ засагдах бүрд зүүн талын хуулгын картын "бөглөсөн" статистикийг
+  // backend-ээс дахин татахгүйгээр шууд (real-time) шинэчилнэ.
+  useEffect(() => {
+    if (!openStmt || loadingTxn || txns.length === 0) return;
+    const { filled, missing } = computeFilledStats(txns, openStmt.erp_account_code || "");
+    setDayStmts(prev => prev.map(s =>
+      s.id === openStmt.id ? { ...s, filled_count: filled, missing } : s
+    ));
+  }, [txns, openStmt?.id, loadingTxn]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => { if (tab === "settings") loadAccounts(); }, [tab]);
 
   function openAcctForm(acct?: AccountConfig) {
@@ -978,15 +1010,7 @@ export default function BankStatementPage() {
   const totalDebit  = mainTxns.reduce((s, t) => s + t.debit,  0);
   // "Бөглөсөн" = бүх шаардлагатай талбар бүрэн: Харилцагч, Харьц. данс,
   // Гүйлгээний утга, Үйлдэл, Экспорт (дебит мөрд), Данс (ERP код)
-  const filledCount = mainTxns.filter(t => {
-    const exportOk = t.debit > 0 ? !!(t.export_type || "").trim() : true;
-    const erpOk    = t.is_settlement ? true : !!openStmt?.erp_account_code;
-    return !!(t.partner_name || "").trim()
-        && !!(t.partner_account || "").trim()
-        && !!(t.custom_description || "").trim()
-        && !!(t.action || "").trim()
-        && exportOk && erpOk;
-  }).length;
+  const filledCount = computeFilledStats(txns, openStmt?.erp_account_code || "").filled;
 
   // Calendar grid
   const firstDow  = firstDayOfWeek(year, month);
