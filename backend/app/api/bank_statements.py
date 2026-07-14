@@ -613,13 +613,13 @@ def export_fees(
         ])
         written += 1
 
-    # Огноо баганыг Short Date (MM/DD/YYYY) форматтай болгоно
+    # Огноо баганыг Short Date форматтай болгоно
     if written > 0:
         _apply_date_format(ws, "A", 2, written + 1)
 
     buf = io.BytesIO()
     wb.save(buf)
-    buf.seek(0)
+    data = _postprocess_xlsx(buf.getvalue())
 
     from urllib.parse import quote
     from_lbl = (date_from or "all").replace("-", "")
@@ -628,8 +628,8 @@ def export_fees(
     display  = f"Шимтгэл_{from_lbl}{to_lbl}.xlsx"
 
     return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        io.BytesIO(data),
+        media_type=_XLSX_MIME,
         headers={"Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(display)}"},
     )
 
@@ -1019,6 +1019,104 @@ def list_statements(
     return [_ser_stmt(s, erp_map=erp_map) for s in rows]
 
 
+# ── Өдрийн нэгтгэсэн Эрхэт экспорт ───────────────────────────────────────────
+# АНХААР: эдгээр route нь /{stmt_id}-ээс ӨМНӨ бүртгэгдэх ёстой (path ялгарал).
+
+def _stmts_for_date(db: Session, date: str) -> list:
+    """Тухайн өдрийн бүх хуулга (by-date-тэй ижил дүрэм), дансаар эрэмбэлсэн."""
+    day_expr = func.coalesce(
+        BankStatement.date_from,
+        func.date(BankStatement.uploaded_at),
+    )
+    return db.query(BankStatement).filter(
+        day_expr == date,
+    ).order_by(BankStatement.account_number).all()
+
+
+_COMBINED_FILE_TITLES = {
+    "avlaga":    "Авлага өглөгийн гүйлгээ",
+    "kass":      "Мөнгөн хөрөнгийн кассын гүйлгээ",
+    "hariltsah": "Мөнгөн хөрөнгийн харилцахын гүйлгээ",
+}
+
+
+@router.get("/export-by-date/manifest")
+def export_by_date_manifest(
+    date: str = Query(...),   # "YYYY-MM-DD"
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Тухайн өдрийн нэгтгэсэн экспортод аль файлууд гарахыг урьдчилан хэлнэ.
+    Frontend үүгээр хоосон файлыг татахгүй алгасна."""
+    stmts = _stmts_for_date(db, date)
+    txns = [t for s in stmts for t in s.transactions if not t.is_fee]
+    return {
+        "statements": len(stmts),
+        "avlaga":     sum(1 for t in txns if t.credit > 0),
+        "kass":       sum(1 for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"),
+        "hariltsah":  sum(1 for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"),
+    }
+
+
+@router.get("/export-by-date")
+def export_by_date(
+    date: str = Query(...),   # "YYYY-MM-DD"
+    file: str = Query(...),   # "avlaga" | "kass" | "hariltsah"
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Тухайн өдрийн БҮХ хуулгын гүйлгээг нэгтгэж НЭГ Эрхэт импорт Excel
+    буцаана. Мөр бүрийн "Дансны код" нь тухайн гүйлгээний харьяа дансны
+    ERP код (erp_by_stmt) байна — олон данс нэг файлд зөв кодтойгоо орно."""
+    from datetime import date as dt_date
+    from urllib.parse import quote
+
+    try:
+        eff_date = dt_date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(400, "Буруу огноо")
+    if file not in _COMBINED_FILE_TITLES:
+        raise HTTPException(400, "Буруу файлын төрөл")
+
+    stmts = _stmts_for_date(db, date)
+    if not stmts:
+        raise HTTPException(404, "Энэ өдөр хуулга алга")
+
+    # statement_id → тухайн дансны ERP код
+    erp_map = _build_erp_map(db)
+    erp_by_stmt = {s.id: erp_map.get(s.account_number, "") for s in stmts}
+    sc = _get_settlement_config(db)
+    settlement_account_code = (sc.account_code or "120105")
+    name_to_code = _customer_name_to_code()
+
+    # Данс (statement) дарааллаар, данс дотроо огноогоор эрэмбэлэгдсэн
+    txns = [t for s in stmts for t in s.transactions if not t.is_fee]
+
+    if file == "avlaga":
+        ts = [t for t in txns if t.credit > 0]
+        build = lambda: _build_avlaga_excel(ts, eff_date, "", name_to_code, settlement_account_code, erp_by_stmt)
+    elif file == "kass":
+        ts = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"]
+        build = lambda: _build_kass_hariltsah_excel(ts, eff_date, "", name_to_code, erp_by_stmt)
+    else:  # hariltsah
+        ts = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"]
+        build = lambda: _build_kass_hariltsah_excel(ts, eff_date, "", name_to_code, erp_by_stmt)
+
+    title = _COMBINED_FILE_TITLES[file]
+    if not ts:
+        raise HTTPException(404, f"{title}: гүйлгээ алга")
+
+    data = build()
+    date_label = f"{eff_date.month}-{eff_date.day}-{eff_date.year}"
+    ascii_name = f"{date_label}_combined_{file}.xlsx"
+    display    = f"{date_label}_Нэгтгэл_{title}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=_XLSX_MIME,
+        headers={"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(display)}"},
+    )
+
+
 @router.get("/{stmt_id}")
 def get_statement(
     stmt_id: int,
@@ -1141,11 +1239,48 @@ _KASS_HARILTSAH_HEADERS = [
 # Excel нээхэд системийн Short Date-ээр (жишээ 6/30/2026) харуулна.
 _DATE_FMT = "mm-dd-yy"
 
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 
 def _apply_date_format(ws, col_letter: str, start_row: int, end_row: int) -> None:
     """Тухайн баганы заасан мөрүүдэд Short Date формат тавина."""
     for r in range(start_row, end_row + 1):
         ws[f"{col_letter}{r}"].number_format = _DATE_FMT
+
+
+def _postprocess_xlsx(data: bytes) -> bytes:
+    """styles.xml-ийн cellXfs-д applyNumberFormat="1" дутууг нөхнө.
+
+    openpyxl нь <xf numFmtId="14" .../>-д applyNumberFormat аттрибут
+    бичдэггүй. Excel өөрөө уучилж огноогоор харуулдаг ч Эрхэт зэрэг хатуу
+    parser форматыг үл тоож Огноо баганыг энгийн тоо гэж уншиж алдаа өгдөг.
+    Хэрэглэгч файлыг Excel-ээр нээж Short Date тавиад Save хийхэд яг энэ
+    аттрибут нэмэгддэг байсан — одоо үүнийг экспорт болгонд автоматаар хийнэ.
+    """
+    def _fix_xf(m: "re.Match") -> str:
+        attrs, closing = m.group(1), m.group(2)
+        if "applyNumberFormat" in attrs:
+            return m.group(0)
+        fmt = re.search(r'numFmtId="(\d+)"', attrs)
+        if not fmt or fmt.group(1) == "0":
+            return m.group(0)
+        return f'<xf applyNumberFormat="1" {attrs}{closing}>'
+
+    src = zipfile.ZipFile(io.BytesIO(data))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            content = src.read(item.filename)
+            if item.filename == "xl/styles.xml":
+                xml = content.decode("utf-8")
+                block_m = re.search(r"<cellXfs.*?</cellXfs>", xml, re.S)
+                if block_m:
+                    block = block_m.group(0)
+                    fixed = re.sub(r"<xf ([^>]*?)(/?)>", _fix_xf, block)
+                    xml = xml.replace(block, fixed)
+                content = xml.encode("utf-8")
+            dst.writestr(item, content)
+    return out.getvalue()
 
 
 def _customer_name_to_code() -> dict[str, str]:
@@ -1181,7 +1316,7 @@ def _resolve_partner_field(t, name_to_code: dict[str, str]) -> str:
     return name
 
 
-def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None, settlement_account_code: str = "120105") -> bytes:
+def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None, settlement_account_code: str = "120105", erp_by_stmt: dict | None = None) -> bytes:
     """Авлага өглөгийн гүйлгээ Excel (зөвхөн кредит гүйлгээ).
     Энгийн кредит мөр:
       • Харьцсан данс — хэрэглэгчийн сонгосон данс (120101 г.м.)
@@ -1192,6 +1327,9 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
       • Харилцагч   — "30000"
       • Харьцсан    — банкны ERP код (bank_erp_code)
       • Дансны код  — settlement clearing данс (settlement_account_code, default 120105)
+
+    erp_by_stmt өгвөл (нэгтгэсэн экспорт — олон данс) мөр бүрийн ERP кодыг
+    {statement_id: erp_code} толиноос авна; эс бол bank_erp_code (нэг данс).
     """
     if name_to_code is None:
         name_to_code = _customer_name_to_code()
@@ -1202,6 +1340,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
     for t in txns:
         bd = t.bank_description or ""
         is_pos = _is_pos_income(bd)
+        row_erp = erp_by_stmt.get(t.statement_id, "") if erp_by_stmt is not None else bank_erp_code
 
         # Кредит мөрийн анхдагч action = "Хаах" (хэрэв хэрэглэгч өөрөөр сонгоогүй бол)
         # 2026-05: Хэрэглэгчийн хүсэлтээр O баганы утга шинэчлэгдэв
@@ -1226,7 +1365,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
             partner   = partner_field or "30000"
             # SETTLEMENT POS — "Харьцсан данс" нь үргэлж банкны ERP код байна
             # (хэрэглэгчийн partner_account-ыг override хийнэ)
-            cross     = bank_erp_code or (t.partner_account or "").strip()
+            cross     = row_erp or (t.partner_account or "").strip()
             # custom_description нь parse үед концат хийгдсэн байна, эс бөгөөс bd
             desc_text = (t.custom_description or "").strip() or bd
             # POS-ийн "Дансны код" = settlement clearing данс (Харьцсан нь bank ERP тул)
@@ -1237,7 +1376,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
             cross     = t.partner_account or ""
             desc_text = t.custom_description or bd
             # Энгийн Авлага мөрийн "Дансны код" = мөнгө орж ирсэн дансны ERP код
-            main_acct = bank_erp_code
+            main_acct = row_erp
 
         ws.append([
             row_date,        # Огноо — date object (POS бол bank_description-ийн огноо)
@@ -1259,11 +1398,13 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
         _apply_date_format(ws, "A", 2, len(txns) + 1)
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    return _postprocess_xlsx(buf.getvalue())
 
 
-def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None) -> bytes:
-    """Кассын / Харилцахын гүйлгээ Excel (дебит гүйлгээ)."""
+def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None, erp_by_stmt: dict | None = None) -> bytes:
+    """Кассын / Харилцахын гүйлгээ Excel (дебит гүйлгээ).
+    erp_by_stmt өгвөл (нэгтгэсэн экспорт) мөр бүрийн "Дансны код"-г
+    {statement_id: erp_code} толиноос авна; эс бол bank_erp_code."""
     if name_to_code is None:
         name_to_code = _customer_name_to_code()
     wb = Workbook()
@@ -1274,6 +1415,7 @@ def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", n
         desc = t.custom_description or t.bank_description or ""
         # "Харилцагч" багана: код priority, нэрээр хайж олох, эс бөгөөс нэр
         partner_field = _resolve_partner_field(t, name_to_code)
+        row_erp = erp_by_stmt.get(t.statement_id, "") if erp_by_stmt is not None else bank_erp_code
         ws.append([
             eff_date,                # Огноо — date object
             desc,                    # Гүйлгээний утга
@@ -1283,7 +1425,7 @@ def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", n
             "", "", "", "",          # НӨАТ 4 col
             "", "", "", "",          # НХАТ 4 col
             2,                       # Орлого бол 1 Зарлага бол 2 — always 2 (зарлага)
-            bank_erp_code,           # Дансны код — банкны ERP код
+            row_erp,                 # Дансны код — банкны ERP код
             "",                      # Валютын дүн (хоосон — Валют холбоотой)
             "",                      # Авах / Зарах ханш
             "",                      # Олз / Гарзын дансны код
@@ -1293,7 +1435,7 @@ def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", n
         _apply_date_format(ws, "A", 2, len(txns) + 1)
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    return _postprocess_xlsx(buf.getvalue())
 
 
 @router.get("/{stmt_id}/export")
@@ -1345,7 +1487,7 @@ def export_erkhet(
     kass_txns      = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"]
     hariltsah_txns = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"]
 
-    XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    XLSX_MIME = _XLSX_MIME
 
     # Файл бүрийн (Монгол title, гүйлгээний жагсаалт, бэлдэгч) тодорхойлолт
     file_defs = {

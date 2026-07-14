@@ -748,6 +748,49 @@ export default function BankStatementPage() {
     finally { setExporting(false); }
   }
 
+  // ── Өдрийн нэгтгэсэн экспорт ───────────────────────────────────────
+  // Сонгосон өдрийн БҮХ хуулгыг нэгтгэж төрөл тус бүр ГАНЦ файл татна
+  // (гүйлгээгүй төрлийн файл татагдахгүй).
+  const [combinedExporting, setCombinedExporting] = useState(false);
+
+  async function exportCombinedDay() {
+    if (!selectedDate) return;
+    setCombinedExporting(true);
+    try {
+      const m = await api.get("/bank-statements/export-by-date/manifest", {
+        params: { date: selectedDate },
+      });
+      const fileList: { key: string; title: string }[] = [];
+      if (m.data.avlaga > 0)    fileList.push({ key: "avlaga",    title: "Авлага өглөгийн гүйлгээ" });
+      if (m.data.kass > 0)      fileList.push({ key: "kass",      title: "Мөнгөн хөрөнгийн кассын гүйлгээ" });
+      if (m.data.hariltsah > 0) fileList.push({ key: "hariltsah", title: "Мөнгөн хөрөнгийн харилцахын гүйлгээ" });
+      if (fileList.length === 0) { setErr("Энэ өдөр экспортлох гүйлгээ алга"); return; }
+
+      const shortDate = fmtShortDateFile(selectedDate);
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        const r = await api.get("/bank-statements/export-by-date", {
+          params: { date: selectedDate, file: f.key },
+          responseType: "blob",
+        });
+        const url = URL.createObjectURL(new Blob([r.data], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${shortDate}_Нэгтгэл_${f.title}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        // Browser олон файл зэрэг татахад блоклохгүйн тулд бага зэрэг хүлээнэ
+        if (i < fileList.length - 1) await new Promise(res => setTimeout(res, 400));
+      }
+      setErr("");
+    } catch { setErr("Нэгтгэсэн экспорт амжилтгүй"); }
+    finally { setCombinedExporting(false); }
+  }
+
   // ── Fee export ─────────────────────────────────────────────────────
 
   async function exportFees() {
@@ -1101,6 +1144,15 @@ export default function BankStatementPage() {
                       className="flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors">
                       <Download size={12}/>Шимтгэл
                     </button>
+                    {dayStmts.length > 0 && (
+                      <button onClick={exportCombinedDay} disabled={combinedExporting}
+                        title="Энэ өдрийн бүх хуулгыг нэгтгэж төрөл тус бүр нэг Эрхэт файл татна"
+                        className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60 transition-colors">
+                        {combinedExporting
+                          ? <><RefreshCw size={12} className="animate-spin"/>Татаж…</>
+                          : <><Download size={12}/>Нэгтгэсэн экспорт</>}
+                      </button>
+                    )}
                   </div>
                 </div>
 
