@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 import io
 import re
+import threading
 import zipfile
 from openpyxl import Workbook
 
@@ -619,7 +620,7 @@ def export_fees(
 
     buf = io.BytesIO()
     wb.save(buf)
-    data = _postprocess_xlsx(buf.getvalue())
+    data = _excel_resave_shortdate(_postprocess_xlsx(buf.getvalue()))
 
     from urllib.parse import quote
     from_lbl = (date_from or "all").replace("-", "")
@@ -1243,9 +1244,21 @@ _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _apply_date_format(ws, col_letter: str, start_row: int, end_row: int) -> None:
-    """Тухайн баганы заасан мөрүүдэд Short Date формат тавина."""
+    """Тухайн баганы заасан мөрүүдэд Short Date формат тавина.
+
+    Мөн толгойн нүд (1-р мөр) болон баганын түвшний форматыг тавина —
+    Excel-д А баганыг БҮХЭЛД нь сонгож Short Date тавихтай ижил үр дүн.
+    Эрхэтийн импорт баганын төрлийг толгой/баганын style-аас таамагладаг
+    тул зөвхөн дата нүднүүдийг форматлахад хүрэлцдэггүй."""
     for r in range(start_row, end_row + 1):
         ws[f"{col_letter}{r}"].number_format = _DATE_FMT
+    # Толгойн нүд (текст хэвээр үлдэнэ, зөвхөн формат)
+    ws[f"{col_letter}1"].number_format = _DATE_FMT
+    # Баганын түвшний формат → sheet XML-д <col style=...> бичигдэнэ
+    try:
+        ws.column_dimensions[col_letter].number_format = _DATE_FMT
+    except Exception:
+        pass
 
 
 def _postprocess_xlsx(data: bytes) -> bytes:
@@ -1281,6 +1294,61 @@ def _postprocess_xlsx(data: bytes) -> bytes:
                 content = xml.encode("utf-8")
             dst.writestr(item, content)
     return out.getvalue()
+
+
+# Excel COM нэг зэрэг нэг л resave хийнэ (Excel instance-ууд мөргөлдөхгүй)
+_excel_resave_lock = threading.Lock()
+
+
+def _excel_resave_shortdate(data: bytes) -> bytes:
+    """Файлыг серверийн Excel-ээр нээж А баганыг БҮХЭЛД нь Short Date
+    болгоод дахин хадгална — хэрэглэгчийн гар засварыг яг давтана.
+
+    Эрхэтийн импорт openpyxl-ийн үүсгэсэн файлын зарим бүтцийг (inlineStr,
+    col style г.м.) уншиж чаддаггүй тул Excel-ийн өөрийнх нь бичсэн файл
+    гаргах нь хамгийн баталгаатай. Excel байхгүй / алдаа гарвал анхны
+    (openpyxl) файлыг буцаана — экспорт хэзээ ч тасрахгүй."""
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        print("[export] pywin32 суугаагүй — Excel resave алгасав")
+        return data
+
+    import os
+    import shutil
+    import tempfile
+
+    with _excel_resave_lock:
+        tmpdir = tempfile.mkdtemp(prefix="erp_xlsx_")
+        path = os.path.join(tmpdir, "export.xlsx")
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            pythoncom.CoInitialize()
+            try:
+                xl = win32com.client.DispatchEx("Excel.Application")
+                try:
+                    xl.Visible = False
+                    xl.DisplayAlerts = False
+                    wb = xl.Workbooks.Open(path)
+                    try:
+                        for ws in wb.Worksheets:
+                            ws.Columns("A").NumberFormat = "m/d/yyyy"
+                        wb.Save()
+                    finally:
+                        wb.Close(False)
+                finally:
+                    xl.Quit()
+            finally:
+                pythoncom.CoUninitialize()
+            with open(path, "rb") as f:
+                return f.read()
+        except Exception as e:
+            print(f"[export] Excel resave алдаа — анхны файлыг ашиглана: {e}")
+            return data
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _customer_name_to_code() -> dict[str, str]:
@@ -1398,7 +1466,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
         _apply_date_format(ws, "A", 2, len(txns) + 1)
     buf = io.BytesIO()
     wb.save(buf)
-    return _postprocess_xlsx(buf.getvalue())
+    return _excel_resave_shortdate(_postprocess_xlsx(buf.getvalue()))
 
 
 def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None, erp_by_stmt: dict | None = None) -> bytes:
@@ -1435,7 +1503,7 @@ def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", n
         _apply_date_format(ws, "A", 2, len(txns) + 1)
     buf = io.BytesIO()
     wb.save(buf)
-    return _postprocess_xlsx(buf.getvalue())
+    return _excel_resave_shortdate(_postprocess_xlsx(buf.getvalue()))
 
 
 @router.get("/{stmt_id}/export")

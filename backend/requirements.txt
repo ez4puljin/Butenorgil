@@ -18,3 +18,6 @@ openai>=1.0.0
 Pillow>=10.0.0
 
 python-calamine
+# Excel COM automation — экспорт файлыг Excel-ээр дахин хадгалж Эрхэт-д
+# шууд импортлогддог болгоход (Windows + Excel суулттай сервер дээр)
+pywin32; sys_platform == "win32"
