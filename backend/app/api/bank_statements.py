@@ -1093,17 +1093,9 @@ def export_by_date_manifest(
     _: User = Depends(get_current_user),
 ):
     """Тухайн өдрийн нэгтгэсэн экспортод аль файлууд гарахыг урьдчилан хэлнэ.
-    Frontend үүгээр хоосон файлыг татахгүй алгасна; данс жагсаалтыг
-    файлын нэрэнд ашиглана."""
+    Frontend үүгээр хоосон файлыг татахгүй алгасна."""
     stmts = _stmts_for_date(db, date)
     txns = [t for s in stmts for t in s.transactions if not t.is_fee]
-
-    def _accounts(pred) -> list[str]:
-        """Тухайн төрлийн гүйлгээтэй хуулгуудын дансны дугаарууд (эрэмбээр)."""
-        return [
-            s.account_number for s in stmts
-            if any(pred(t) for t in s.transactions if not t.is_fee)
-        ]
 
     is_kass = lambda t: t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"
     is_har  = lambda t: t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"
@@ -1112,9 +1104,6 @@ def export_by_date_manifest(
         "avlaga":     sum(1 for t in txns if t.credit > 0),
         "kass":       sum(1 for t in txns if is_kass(t)),
         "hariltsah":  sum(1 for t in txns if is_har(t)),
-        "avlaga_accounts":    _accounts(lambda t: t.credit > 0),
-        "kass_accounts":      _accounts(is_kass),
-        "hariltsah_accounts": _accounts(is_har),
     }
 
 
@@ -1167,17 +1156,9 @@ def export_by_date(
         raise HTTPException(404, f"{title}: гүйлгээ алга")
 
     data = build()
-    # Файлд орсон дансуудын дугаарыг нэрэнд оруулна
-    acct_by_stmt = {s.id: s.account_number for s in stmts}
-    accounts: list[str] = []
-    for t in ts:
-        a = acct_by_stmt.get(t.statement_id, "")
-        if a and a not in accounts:
-            accounts.append(a)
-    acct_label = ("_".join(accounts) + "_") if accounts else ""
     date_label = f"{eff_date.month}-{eff_date.day}-{eff_date.year}"
     ascii_name = f"{date_label}_combined_{file}.xlsx"
-    display    = f"{date_label}_Нэгтгэл_{acct_label}{title}.xlsx"
+    display    = f"{date_label}_Нэгтгэл_{title}.xlsx"
     return StreamingResponse(
         io.BytesIO(data),
         media_type=_XLSX_MIME,

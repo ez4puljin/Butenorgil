@@ -839,10 +839,10 @@ export default function BankStatementPage() {
       const m = await api.get("/bank-statements/export-by-date/manifest", {
         params: { date: selectedDate },
       });
-      const fileList: { key: string; title: string; accounts: string[] }[] = [];
-      if (m.data.avlaga > 0)    fileList.push({ key: "avlaga",    title: "Авлага өглөгийн гүйлгээ",               accounts: m.data.avlaga_accounts ?? [] });
-      if (m.data.kass > 0)      fileList.push({ key: "kass",      title: "Мөнгөн хөрөнгийн кассын гүйлгээ",       accounts: m.data.kass_accounts ?? [] });
-      if (m.data.hariltsah > 0) fileList.push({ key: "hariltsah", title: "Мөнгөн хөрөнгийн харилцахын гүйлгээ",  accounts: m.data.hariltsah_accounts ?? [] });
+      const fileList: { key: string; title: string }[] = [];
+      if (m.data.avlaga > 0)    fileList.push({ key: "avlaga",    title: "Авлага өглөгийн гүйлгээ" });
+      if (m.data.kass > 0)      fileList.push({ key: "kass",      title: "Мөнгөн хөрөнгийн кассын гүйлгээ" });
+      if (m.data.hariltsah > 0) fileList.push({ key: "hariltsah", title: "Мөнгөн хөрөнгийн харилцахын гүйлгээ" });
       if (fileList.length === 0) { setErr("Энэ өдөр экспортлох гүйлгээ алга"); return; }
 
       const shortDate = fmtShortDateFile(selectedDate);
@@ -857,9 +857,7 @@ export default function BankStatementPage() {
         }));
         const a = document.createElement("a");
         a.href = url;
-        // Файлд орсон дансуудын дугаарыг нэрэнд оруулна
-        const acctPart = f.accounts.length ? `${f.accounts.join("_")}_` : "";
-        a.download = `${shortDate}_Нэгтгэл_${acctPart}${f.title}.xlsx`;
+        a.download = `${shortDate}_Нэгтгэл_${f.title}.xlsx`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
