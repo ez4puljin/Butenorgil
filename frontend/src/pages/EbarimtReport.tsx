@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, RefreshCw, AlertCircle, X, Check,
   ReceiptText, FileSpreadsheet, Download, Trash2, Search, Users, Phone,
+  RotateCcw, UserX,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -31,7 +32,13 @@ interface ReportRow {
   diff_harhorin: number;
   cnt_harhorin: number;
   note: string;
+  is_orphan?: boolean;
+  // Гараар засварласан талбарын АНХНЫ (Data файлын) утга — санамжид харуулна
+  defaults?: Record<string, string>;
 }
+
+// Data-д байхгүй ч худалдан авалттай харилцагчдын бүлэг (backend-тэй ижил)
+const ORPHAN_EMP = "Data-д байхгүй";
 
 interface ReportData {
   rows: ReportRow[];
@@ -90,6 +97,53 @@ function NoteCell({ value, onSave }: { value: string; onSave: (v: string) => voi
         value ? "text-gray-800" : "text-gray-300 italic"
       }`}>
       {value || "Тайлбар…"}
+    </div>
+  );
+}
+
+/** Засварлаж болох нүд — дарж засна. Гараар засварласан бол доор нь
+ *  анхны (Data файлын) утгыг санамж болгон харуулж, дарахад буцаана. */
+function EditableCell({ value, defaultValue, placeholder, mono, onSave, onRevert }: {
+  value: string;
+  defaultValue?: string;          // засварласан үед л ирнэ (анхны утга)
+  placeholder: string;
+  mono?: boolean;
+  onSave: (v: string) => void;
+  onRevert: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => { if (editing) ref.current?.focus(); }, [editing]);
+  const edited = defaultValue !== undefined;
+  function commit() {
+    setEditing(false);
+    if (draft.trim() !== value.trim()) onSave(draft.trim());
+  }
+  return (
+    <div>
+      {editing ? (
+        <input ref={ref} value={draft} placeholder={placeholder}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setDraft(value); setEditing(false); } }}
+          className={`w-full rounded border border-blue-400 bg-white px-1 py-0.5 text-[11px] outline-none ring-2 ring-blue-200 ${mono ? "font-mono" : ""}`}/>
+      ) : (
+        <div onClick={() => setEditing(true)} title={value || placeholder}
+          className={`cursor-pointer truncate rounded px-1 py-0.5 text-[11px] hover:bg-blue-50 hover:text-blue-700 ${mono ? "font-mono" : ""} ${
+            value ? (edited ? "font-semibold text-blue-700" : "text-gray-700") : "text-gray-300 italic"
+          }`}>
+          {value || placeholder}
+        </div>
+      )}
+      {edited && (
+        <button onClick={onRevert} title="Анхны утгад буцаах"
+          className="mt-0.5 flex w-full items-center gap-0.5 truncate px-1 text-left text-[9px] text-gray-400 hover:text-rose-500">
+          <RotateCcw size={7} className="shrink-0"/>
+          <span className="truncate">{defaultValue || "(хоосон)"}</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -197,6 +251,16 @@ export default function EbarimtReportPage() {
         rows: prev.rows.map(x => x.code === code ? { ...x, note: r.data.note ?? note } : x),
       } : prev);
     } catch { setErr("Тайлбар хадгалах амжилтгүй"); }
+  }
+
+  // Харилцагчийн мэдээллийн гар засвар (Ажилтан/Регистр/Утас/Тайлбар).
+  // value=null → анхны (Data) утгад буцаана. Регистр солигдвол Ebarimt дүн
+  // дахин тооцоологддог тул тайланг backend-ээс шинэчилж авна.
+  async function saveOverride(code: string, field: string, value: string | null) {
+    try {
+      await api.put("/ebarimt/customer-override", { code, field, value });
+      await loadReport();
+    } catch { setErr("Засвар хадгалах амжилтгүй"); }
   }
 
   function prevMonth() {
@@ -433,16 +497,25 @@ export default function EbarimtReportPage() {
             }`}>
             <Users size={11}/>Бүгд ({rows.length})
           </button>
-          {(report?.employees ?? []).map(e => (
-            <button key={e.name} onClick={() => setSelectedEmp(e.name)}
-              className={`rounded-full px-2.5 py-1 text-[11.5px] font-semibold transition-colors ${
-                selectedEmp === e.name
-                  ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/25"
-                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-              }`}>
-              {e.name} ({e.customers})
-            </button>
-          ))}
+          {(report?.employees ?? []).map(e => {
+            const orphan = e.name === ORPHAN_EMP;
+            return (
+              <button key={e.name} onClick={() => setSelectedEmp(e.name)}
+                title={orphan ? "Худалдан авалт байгаа ч Data файлд бүртгэлгүй харилцагчид" : undefined}
+                className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold transition-colors ${
+                  selectedEmp === e.name
+                    ? orphan
+                      ? "bg-amber-500 text-white shadow-sm shadow-amber-500/25"
+                      : "bg-indigo-600 text-white shadow-sm shadow-indigo-500/25"
+                    : orphan
+                      ? "bg-amber-100 text-amber-700 hover:bg-amber-200"
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}>
+                {orphan && <UserX size={11}/>}
+                {e.name} ({e.customers})
+              </button>
+            );
+          })}
         </div>
 
         <div className="ml-auto flex items-center gap-2">
@@ -534,20 +607,57 @@ export default function EbarimtReportPage() {
                 return (
                   <tr key={`${r.code}-${i}`}
                     className={`border-b border-gray-50 transition-colors ${
-                      hasMissing ? "bg-rose-50/30 hover:bg-rose-50/60" : "hover:bg-gray-50/60"
+                      r.is_orphan ? "bg-amber-50/40 hover:bg-amber-50/70"
+                      : hasMissing ? "bg-rose-50/30 hover:bg-rose-50/60"
+                      : "hover:bg-gray-50/60"
                     }`}>
                     <td className="px-2 py-1.5 text-center text-[10px] text-gray-300">{i + 1}</td>
-                    <td className="px-2 py-1.5 whitespace-nowrap">
-                      <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-[10.5px] font-semibold text-indigo-700">{r.employee}</span>
+                    <td className="px-1 py-1 min-w-[112px]">
+                      <EditableCell
+                        value={r.employee === ORPHAN_EMP ? "" : r.employee}
+                        defaultValue={r.defaults?.employee}
+                        placeholder={r.is_orphan ? "Ажилтан оноох…" : "Ажилтан…"}
+                        onSave={v => saveOverride(r.code, "employee", v)}
+                        onRevert={() => saveOverride(r.code, "employee", null)}/>
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-[11px] text-gray-500">{r.code}</td>
+                    <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px] text-gray-500">
+                      {r.is_orphan && (
+                        <span title="Data файлд байхгүй харилцагч"
+                          className="mr-1 inline-flex items-center rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold text-amber-700">
+                          <UserX size={8}/>
+                        </span>
+                      )}
+                      {r.code}
+                    </td>
                     <td className="px-2 py-1.5 max-w-[220px]">
-                      <div className="truncate font-medium text-gray-900" title={r.name}>{r.name}</div>
-                      {r.tailbar && <div className="truncate text-[10px] text-gray-400" title={r.tailbar}>{r.tailbar}</div>}
+                      <div className="truncate font-medium text-gray-900" title={r.name}>{r.name || "—"}</div>
+                      <EditableCell
+                        value={r.tailbar} defaultValue={r.defaults?.tailbar}
+                        placeholder="Тайлбар (Data)…"
+                        onSave={v => saveOverride(r.code, "tailbar", v)}
+                        onRevert={() => saveOverride(r.code, "tailbar", null)}/>
                     </td>
-                    <td className="px-2 py-1.5 max-w-[110px] truncate font-mono text-[10.5px] text-gray-500" title={r.registry}>{r.registry || "—"}</td>
-                    <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[10.5px] text-gray-500">
-                      {r.phone ? <a href={`tel:${r.phone}`} className="flex items-center gap-0.5 hover:text-blue-600"><Phone size={9}/>{r.phone}</a> : "—"}
+                    <td className="px-1 py-1 min-w-[104px]">
+                      <EditableCell
+                        value={r.registry} defaultValue={r.defaults?.registry}
+                        placeholder="Регистр…" mono
+                        onSave={v => saveOverride(r.code, "registry", v)}
+                        onRevert={() => saveOverride(r.code, "registry", null)}/>
+                    </td>
+                    <td className="px-1 py-1 min-w-[96px]">
+                      <div className="flex items-center gap-0.5">
+                        {r.phone && (
+                          <a href={`tel:${r.phone}`} title="Залгах"
+                            className="shrink-0 text-gray-400 hover:text-blue-600"><Phone size={9}/></a>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <EditableCell
+                            value={r.phone} defaultValue={r.defaults?.phone}
+                            placeholder="Утас…" mono
+                            onSave={v => saveOverride(r.code, "phone", v)}
+                            onRevert={() => saveOverride(r.code, "phone", null)}/>
+                        </div>
+                      </div>
                     </td>
                     <td className="border-l border-blue-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700">{fmtMnt(r.purchase_orgil)}</td>
                     <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700" title={`${r.cnt_orgil} баримт`}>{fmtMnt(r.vat_orgil)}</td>

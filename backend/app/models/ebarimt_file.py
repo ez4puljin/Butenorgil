@@ -11,7 +11,7 @@
 (mtime cache-тэй) тооцоолно. (жил, сар, төрөл) тус бүрд нэг л идэвхтэй файл —
 дахин оруулбал солигдоно.
 """
-from sqlalchemy import Integer, String, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 
@@ -65,3 +65,29 @@ class EbarimtNote(Base):
     __table_args__ = (
         UniqueConstraint("year", "month", "code", name="uq_ebarimt_note_ym_code"),
     )
+
+
+class EbarimtCustomerOverride(Base):
+    """Харилцагчийн мэдээллийн гар засвар — Код-оор (бүх сард нийтлэг).
+
+    Data.xlsx-д дутуу/буруу байгаа мэдээллийг (Регистр, Утас, хариуцсан
+    ажилтан, тайлбар) гараар засна. Жишээ: регистргүй харилцагчид регистр
+    оруулбал Ebarimt шивэлт нь шууд тооцоологдож эхэлнэ.
+
+    NULL = засвар байхгүй (Data файлын утгыг ашиглана).
+    ""   = зориуд хоосон болгосон (Data-д утга байсан ч хоосон гэж үзнэ).
+    Код болон Харилцагчийн нэрийг засахгүй (эх файлын түлхүүр).
+    """
+    __tablename__ = "ebarimt_customer_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(30), unique=True, index=True, nullable=False)
+
+    # Python 3.14 + SQLAlchemy дээр Mapped[str | None] асуудалтай тул plain Column
+    registry = Column(String(200), nullable=True)
+    phone    = Column(String(60),  nullable=True)
+    employee = Column(String(120), nullable=True)
+    tailbar  = Column(String(300), nullable=True)
+
+    updated_by_name: Mapped[str] = mapped_column(String(120), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import threading
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -35,7 +36,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
-from app.models.ebarimt_file import EbarimtFile, EbarimtNote, EBARIMT_KINDS
+from app.models.ebarimt_file import (
+    EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EBARIMT_KINDS,
+)
 
 
 router = APIRouter(prefix="/ebarimt", tags=["ebarimt"])
@@ -114,8 +117,11 @@ def _parse_data(path: Path) -> list[dict]:
     return out
 
 
-def _parse_purchases(path: Path) -> dict[str, float]:
-    """orgil/harhorin.xls → {Код: Гүйлгээ Кредит}. Header мөрийг автоматаар олно."""
+def _parse_purchases(path: Path) -> tuple[dict[str, float], dict[str, str]]:
+    """orgil/harhorin.xls → ({Код: Гүйлгээ Кредит}, {Код: Нэр}).
+
+    Header мөрийг автоматаар олно. Эхний дата мөр нь дансны нийт дүнгийн мөр
+    (310101 'Байгууллагад өгөх өглөг' / 310104) тул ХАСНА — тэр нь харилцагч биш."""
     import pandas as pd
     raw = _read_excel(path, header=None)
     start = 2  # анхдагч: 'Код' header + 'Дебет/Кредит' мөрийн дараа
@@ -123,17 +129,26 @@ def _parse_purchases(path: Path) -> dict[str, float]:
         if str(raw.iloc[i, 0]).strip() == "Код":
             start = i + 2
             break
-    out: dict[str, float] = {}
+    amounts: dict[str, float] = {}
+    names: dict[str, str] = {}
+    first_data = True
     for i in range(start, len(raw)):
         code = raw.iloc[i, 0]
         if pd.isna(code):
             continue
+        if first_data:
+            # Дансны нийт дүнгийн мөр — алгасна
+            first_data = False
+            continue
         try:
             v = raw.iloc[i, 5]  # Гүйлгээ Кредит
-            out[_norm_code(code)] = float(v) if pd.notna(v) else 0.0
+            c = _norm_code(code)
+            amounts[c] = float(v) if pd.notna(v) else 0.0
+            nm = raw.iloc[i, 1]
+            names[c] = "" if pd.isna(nm) else str(nm).strip()
         except Exception:
             continue
-    return out
+    return amounts, names
 
 
 def _parse_ebarimt(path: Path) -> tuple[dict[str, float], dict[str, int]]:
@@ -186,34 +201,39 @@ def _stored_paths(db: Session, year: int, month: int) -> dict[str, Path | None]:
     return out
 
 
+# Data.xlsx-д байхгүй ч худалдан авалттай харилцагчдын "ажилтан" шошго
+ORPHAN_EMP = "Data-д байхгүй"
+EMPTY_EMP = "(хоосон)"
+
+
+def _vat_for(regs: list[str], vmap: dict[str, float], cmap: dict[str, int]) -> tuple[float, int]:
+    return float(sum(vmap.get(t, 0.0) for t in regs)), int(sum(cmap.get(t, 0) for t in regs))
+
+
 def _compute_report(paths: dict[str, Path | None]) -> dict:
     if paths.get("data") is None:
-        return {"rows": [], "employees": [], "error": "Data файл (харилцагчийн мэдээлэл) оруулаагүй байна."}
+        return {"rows": [], "employees": [], "maps": None,
+                "error": "Data файл (харилцагчийн мэдээлэл) оруулаагүй байна."}
 
     customers = _parse_data(paths["data"])  # type: ignore[arg-type]
-    o_map = _parse_purchases(paths["orgil"]) if paths.get("orgil") else {}
-    h_map = _parse_purchases(paths["harhorin"]) if paths.get("harhorin") else {}
+    o_map, o_names = _parse_purchases(paths["orgil"]) if paths.get("orgil") else ({}, {})
+    h_map, h_names = _parse_purchases(paths["harhorin"]) if paths.get("harhorin") else ({}, {})
     v1, c1 = _parse_ebarimt(paths["ebarimt"]) if paths.get("ebarimt") else ({}, {})
     v2, c2 = _parse_ebarimt(paths["ebarimt2"]) if paths.get("ebarimt2") else ({}, {})
 
-    rows = []
-    employees: dict[str, int] = {}
-    for c in customers:
-        po = float(o_map.get(c["code"], 0.0))
-        ph = float(h_map.get(c["code"], 0.0))
-        vo = float(sum(v1.get(t, 0.0) for t in c["regs"]))
-        vh = float(sum(v2.get(t, 0.0) for t in c["regs"]))
-        no = int(sum(c1.get(t, 0) for t in c["regs"]))
-        nh = int(sum(c2.get(t, 0) for t in c["regs"]))
-        emp = c["emp"] or "(хоосон)"
-        employees[emp] = employees.get(emp, 0) + 1
-        rows.append({
+    def mk_row(code, name, registry, regs, phone, tailbar, emp, is_orphan=False):
+        po = float(o_map.get(code, 0.0))
+        ph = float(h_map.get(code, 0.0))
+        vo, no = _vat_for(regs, v1, c1)
+        vh, nh = _vat_for(regs, v2, c2)
+        return {
             "employee":          emp,
-            "code":              c["code"],
-            "name":              c["name"],
-            "registry":          c["registry"],
-            "phone":             c["phone"],
-            "tailbar":           c["tailbar"],
+            "code":              code,
+            "name":              name,
+            "registry":          registry,
+            "phone":             phone,
+            "tailbar":           tailbar,
+            "is_orphan":         is_orphan,
             "purchase_orgil":    po,
             "vat_orgil":         vo,
             "diff_orgil":        po - vo,
@@ -222,16 +242,44 @@ def _compute_report(paths: dict[str, Path | None]) -> dict:
             "vat_harhorin":      vh,
             "diff_harhorin":     ph - vh,
             "cnt_harhorin":      nh,
-        })
+        }
+
+    rows = [
+        mk_row(c["code"], c["name"], c["registry"], c["regs"],
+               c["phone"], c["tailbar"], c["emp"] or EMPTY_EMP)
+        for c in customers
+    ]
+
+    # ── Data-д байхгүй ч худалдан авалттай харилцагчид ───────────────
+    known = {c["code"] for c in customers}
+    orphan_codes = {
+        k for k, v in list(o_map.items()) + list(h_map.items())
+        if k not in known and abs(v) > 0.5
+    }
+    for code in sorted(orphan_codes):
+        name = o_names.get(code) or h_names.get(code) or ""
+        rows.append(mk_row(code, name, "", [], "", "", ORPHAN_EMP, is_orphan=True))
 
     return {
         "rows": rows,
-        "employees": [
-            {"name": k, "customers": v}
-            for k, v in sorted(employees.items(), key=lambda x: (-x[1], x[0]))
-        ],
+        # Регистрийн гар засвар үед Ebarimt дүнг дахин тооцоолоход хэрэгтэй
+        "maps": {"v1": v1, "c1": c1, "v2": v2, "c2": c2},
         "error": None,
     }
+
+
+def _build_employees(rows: list[dict]) -> list[dict]:
+    """Ажилтан бүрийн харилцагчийн тоо. Data-д байхгүй бүлэг үргэлж сүүлд."""
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["employee"]] = counts.get(r["employee"], 0) + 1
+    return [
+        {"name": k, "customers": v}
+        for k, v in sorted(
+            counts.items(),
+            key=lambda x: (x[0] == ORPHAN_EMP, x[0] == EMPTY_EMP, -x[1], x[0]),
+        )
+    ]
 
 
 def get_report(db: Session, year: int, month: int) -> dict:
@@ -435,9 +483,10 @@ def report(
     хариуцсан ажилтнаар шүүх боломжтой. Файлууд өөрчлөгдөөгүй бол cache-ээс."""
     _validate_ym(year, month)
     payload = get_report(db, year, month)
+    maps = payload.get("maps") or {}
 
-    # Хэрэглэгчийн тэмдэглэлүүд — cache-ээс ГАДУУР overlay хийнэ
-    # (тэмдэглэл өөрчлөгдөхөд файлын cache хүчинтэй хэвээр байдаг тул)
+    # Тэмдэглэл + гар засварыг cache-ээс ГАДУУР overlay хийнэ
+    # (эдгээр өөрчлөгдөхөд файлын cache хүчинтэй хэвээр байдаг тул)
     notes = {
         n.code: n.note
         for n in db.query(EbarimtNote).filter(
@@ -445,7 +494,35 @@ def report(
         ).all()
         if (n.note or "").strip()
     }
-    out_rows = [{**r, "note": notes.get(r["code"], "")} for r in payload["rows"]]
+    ovr = {o.code: o for o in db.query(EbarimtCustomerOverride).all()}
+
+    out_rows = []
+    for r in payload["rows"]:
+        row = {**r, "note": notes.get(r["code"], ""), "defaults": {}}
+        o = ovr.get(r["code"])
+        if o is not None:
+            for fld, attr in (("employee", "employee"), ("registry", "registry"),
+                              ("phone", "phone"), ("tailbar", "tailbar")):
+                val = getattr(o, attr, None)
+                if val is None:
+                    continue                      # засвар байхгүй
+                if val == row[fld]:
+                    continue                      # утга ижил — санамж харуулах шаардлагагүй
+                row["defaults"][fld] = row[fld]   # анхны (Data) утгыг санамжид
+                row[fld] = val
+            # Ажилтан хоосон болговол шошгыг сэргээнэ
+            if not (row["employee"] or "").strip():
+                row["employee"] = ORPHAN_EMP if r.get("is_orphan") else EMPTY_EMP
+            # Регистр өөрчлөгдсөн бол Ebarimt дүнг дахин тооцоолно
+            if "registry" in row["defaults"]:
+                regs = _split_registry(row["registry"])
+                vo, no = _vat_for(regs, maps.get("v1", {}), maps.get("c1", {}))
+                vh, nh = _vat_for(regs, maps.get("v2", {}), maps.get("c2", {}))
+                row.update({
+                    "vat_orgil": vo, "cnt_orgil": no, "diff_orgil": row["purchase_orgil"] - vo,
+                    "vat_harhorin": vh, "cnt_harhorin": nh, "diff_harhorin": row["purchase_harhorin"] - vh,
+                })
+        out_rows.append(row)
 
     rows = db.query(EbarimtFile).filter(
         EbarimtFile.year == year, EbarimtFile.month == month,
@@ -454,7 +531,58 @@ def report(
     for r in rows:
         if r.kind in files:
             files[r.kind] = _file_info(r)
-    return {**payload, "rows": out_rows, "files": files, "year": year, "month": month}
+    return {
+        **{k: v for k, v in payload.items() if k != "maps"},
+        "rows": out_rows,
+        "employees": _build_employees(out_rows),
+        "files": files, "year": year, "month": month,
+    }
+
+
+class OverrideIn(BaseModel):
+    code:  str
+    field: str            # employee | registry | phone | tailbar
+    value: Optional[str]  # None → засварыг цуцалж Data-ийн утгад буцаана
+
+
+@router.put("/customer-override")
+def save_override(
+    body: OverrideIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Харилцагчийн мэдээллийг гараар засах (бүх сард нийтлэг).
+    value=None бол засварыг цуцалж Data файлын утгыг сэргээнэ."""
+    code = (body.code or "").strip()
+    if not code:
+        raise HTTPException(400, "code хоосон байна.")
+    if body.field not in ("employee", "registry", "phone", "tailbar"):
+        raise HTTPException(400, "Зөвхөн Ажилтан/Регистр/Утас/Тайлбар засна.")
+
+    r = db.query(EbarimtCustomerOverride).filter(
+        EbarimtCustomerOverride.code == code,
+    ).first()
+
+    if body.value is None:
+        if r:
+            setattr(r, body.field, None)
+            # Бүх талбар цэвэрлэгдсэн бол бичлэгийг устгана
+            if all(getattr(r, f) is None for f in ("employee", "registry", "phone", "tailbar")):
+                db.delete(r)
+            else:
+                r.updated_by_name = str(getattr(u, "username", "") or "")
+                r.updated_at = datetime.utcnow()
+            db.commit()
+        return {"ok": True, "field": body.field, "value": None}
+
+    if not r:
+        r = EbarimtCustomerOverride(code=code)
+        db.add(r)
+    setattr(r, body.field, body.value.strip()[:300])
+    r.updated_by_name = str(getattr(u, "username", "") or "")
+    r.updated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "field": body.field, "value": getattr(r, body.field)}
 
 
 class NoteIn(BaseModel):
