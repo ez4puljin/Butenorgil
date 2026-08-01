@@ -42,3 +42,26 @@ class EbarimtFile(Base):
     __table_args__ = (
         UniqueConstraint("year", "month", "kind", name="uq_ebarimt_file_ym_kind"),
     )
+
+
+class EbarimtNote(Base):
+    """Хэрэглэгчийн гараар бичсэн тайлбар — (жил, сар, харилцагчийн код) бүрээр.
+
+    Data.xlsx-ийн "Тайлбар" баганаас ТУСДАА: эх файлыг дахин оруулахад
+    алга болохгүй, DB-д хадгалагдана. Ажилтан харилцагчтайгаа ярьсан
+    тэмдэглэлээ энд бичнэ."""
+    __tablename__ = "ebarimt_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year:  Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    month: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    code:  Mapped[str] = mapped_column(String(30), nullable=False, index=True)   # харилцагчийн код
+
+    note: Mapped[str] = mapped_column(String(500), default="")
+
+    updated_by_name: Mapped[str] = mapped_column(String(120), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("year", "month", "code", name="uq_ebarimt_note_ym_code"),
+    )

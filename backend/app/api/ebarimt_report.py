@@ -29,12 +29,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
-from app.models.ebarimt_file import EbarimtFile, EBARIMT_KINDS
+from app.models.ebarimt_file import EbarimtFile, EbarimtNote, EBARIMT_KINDS
 
 
 router = APIRouter(prefix="/ebarimt", tags=["ebarimt"])
@@ -434,6 +435,18 @@ def report(
     хариуцсан ажилтнаар шүүх боломжтой. Файлууд өөрчлөгдөөгүй бол cache-ээс."""
     _validate_ym(year, month)
     payload = get_report(db, year, month)
+
+    # Хэрэглэгчийн тэмдэглэлүүд — cache-ээс ГАДУУР overlay хийнэ
+    # (тэмдэглэл өөрчлөгдөхөд файлын cache хүчинтэй хэвээр байдаг тул)
+    notes = {
+        n.code: n.note
+        for n in db.query(EbarimtNote).filter(
+            EbarimtNote.year == year, EbarimtNote.month == month,
+        ).all()
+        if (n.note or "").strip()
+    }
+    out_rows = [{**r, "note": notes.get(r["code"], "")} for r in payload["rows"]]
+
     rows = db.query(EbarimtFile).filter(
         EbarimtFile.year == year, EbarimtFile.month == month,
     ).all()
@@ -441,4 +454,42 @@ def report(
     for r in rows:
         if r.kind in files:
             files[r.kind] = _file_info(r)
-    return {**payload, "files": files, "year": year, "month": month}
+    return {**payload, "rows": out_rows, "files": files, "year": year, "month": month}
+
+
+class NoteIn(BaseModel):
+    year:  int
+    month: int
+    code:  str
+    note:  str = ""
+
+
+@router.put("/note")
+def save_note(
+    body: NoteIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Харилцагчийн тайлбарыг хадгална (upsert). Хоосон → устгана."""
+    _validate_ym(body.year, body.month)
+    code = body.code.strip()
+    if not code:
+        raise HTTPException(400, "code хоосон байна.")
+    r = db.query(EbarimtNote).filter(
+        EbarimtNote.year == body.year, EbarimtNote.month == body.month,
+        EbarimtNote.code == code,
+    ).first()
+    note = (body.note or "").strip()
+    if not note:
+        if r:
+            db.delete(r)
+            db.commit()
+        return {"ok": True, "note": ""}
+    if not r:
+        r = EbarimtNote(year=body.year, month=body.month, code=code)
+        db.add(r)
+    r.note = note[:500]
+    r.updated_by_name = str(getattr(u, "username", "") or "")
+    r.updated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "note": r.note}

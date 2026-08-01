@@ -30,6 +30,7 @@ interface ReportRow {
   vat_harhorin: number;
   diff_harhorin: number;
   cnt_harhorin: number;
+  note: string;
 }
 
 interface ReportData {
@@ -63,6 +64,91 @@ function fmtDT(s: string | null) {
   return s.replace("T", " ").slice(0, 16);
 }
 
+// Гараар бичих тайлбарын нүд — дарж засна, Enter/blur-ээр хадгална
+function NoteCell({ value, onSave }: { value: string; onSave: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => { if (editing) ref.current?.focus(); }, [editing]);
+  function commit() {
+    setEditing(false);
+    if (draft.trim() !== value.trim()) onSave(draft.trim());
+  }
+  if (editing) {
+    return (
+      <input ref={ref} value={draft} placeholder="Тайлбар…"
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setDraft(value); setEditing(false); } }}
+        className="w-full rounded border border-blue-400 bg-white px-1.5 py-0.5 text-[11px] outline-none ring-2 ring-blue-200"/>
+    );
+  }
+  return (
+    <div onClick={() => setEditing(true)} title={value || "Тайлбар бичих"}
+      className={`cursor-pointer min-h-[22px] rounded px-1.5 py-0.5 text-[11px] hover:bg-blue-50 hover:text-blue-700 ${
+        value ? "text-gray-800" : "text-gray-300 italic"
+      }`}>
+      {value || "Тайлбар…"}
+    </div>
+  );
+}
+
+// Баганын толгойн жижиг шүүлтийн input
+function ColFilterInput({ value, onChange, placeholder = "Шүүх…" }: {
+  value: string; onChange: (v: string) => void; placeholder?: string;
+}) {
+  return (
+    <div className="relative">
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        className={`w-full rounded-md border px-1.5 py-0.5 text-[10px] font-normal outline-none placeholder:text-gray-300 ${
+          value ? "border-blue-300 bg-blue-50/50 text-blue-800" : "border-gray-200 bg-white text-gray-700"
+        } focus:border-blue-400 focus:ring-1 focus:ring-blue-200`}/>
+      {value && (
+        <button onClick={() => onChange("")} tabIndex={-1}
+          className="absolute right-1 top-1/2 -translate-y-1/2 grid h-3 w-3 place-items-center rounded-full text-gray-400 hover:text-red-500">
+          <X size={8}/>
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Тоон баганын шүүлт (Бүгд / >0 / =0)
+function NumFilterSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className={`w-full cursor-pointer rounded-md border px-1 py-0.5 text-[10px] font-normal outline-none ${
+        value ? "border-blue-300 bg-blue-50/50 text-blue-800" : "border-gray-200 bg-white text-gray-500"
+      }`}>
+      <option value="">Бүгд</option>
+      <option value="pos">&gt; 0</option>
+      <option value="zero">= 0</option>
+    </select>
+  );
+}
+
+// Зөрүүний баганын шүүлт (Бүгд / Дутуу / Бүрэн / Илүү)
+function DiffFilterSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className={`w-full cursor-pointer rounded-md border px-1 py-0.5 text-[10px] font-normal outline-none ${
+        value ? "border-blue-300 bg-blue-50/50 text-blue-800" : "border-gray-200 bg-white text-gray-500"
+      }`}>
+      <option value="">Бүгд</option>
+      <option value="missing">Дутуу</option>
+      <option value="ok">Бүрэн ✓</option>
+      <option value="over">Илүү</option>
+    </select>
+  );
+}
+
+// Баганын шүүлтүүдийн анхны утга
+const EMPTY_COL_FILTERS = {
+  employee: "", code: "", name: "", registry: "", phone: "", note: "",
+  po: "", vo: "", do_: "", ph: "", vh: "", dh: "",
+};
+
 export default function EbarimtReportPage() {
   const now = new Date();
   const [year, setYear]   = useState(now.getFullYear());
@@ -76,6 +162,9 @@ export default function EbarimtReportPage() {
   const [selectedEmp, setSelectedEmp] = useState<string>("all");
   const [search, setSearch]           = useState("");
   const [onlyMissing, setOnlyMissing] = useState(false);
+  const [colFilters, setColFilters]   = useState({ ...EMPTY_COL_FILTERS });
+  const setCF = (k: keyof typeof EMPTY_COL_FILTERS) => (v: string) =>
+    setColFilters(f => ({ ...f, [k]: v }));
 
   // Upload
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -97,7 +186,18 @@ export default function EbarimtReportPage() {
   useEffect(() => { loadReport(year, month); }, [year, month]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Сар солигдоход шүүлтийг цэвэрлэнэ (ажилтны сонголт хадгална — өдөр тутмын хэрэглээ)
-  useEffect(() => { setSearch(""); }, [year, month]);
+  useEffect(() => { setSearch(""); setColFilters({ ...EMPTY_COL_FILTERS }); }, [year, month]);
+
+  // Тайлбар хадгалах — DB-д (Data файл дахин оруулахад алга болохгүй)
+  async function saveNote(code: string, note: string) {
+    try {
+      const r = await api.put("/ebarimt/note", { year, month, code, note });
+      setReport(prev => prev ? {
+        ...prev,
+        rows: prev.rows.map(x => x.code === code ? { ...x, note: r.data.note ?? note } : x),
+      } : prev);
+    } catch { setErr("Тайлбар хадгалах амжилтгүй"); }
+  }
 
   function prevMonth() {
     if (month === 1) { setYear(y => y - 1); setMonth(12); }
@@ -159,12 +259,33 @@ export default function EbarimtReportPage() {
 
   const rows = report?.rows ?? [];
   const q = search.trim().toLowerCase();
+  // Тоон баганын шүүлт: "" бүгд, "pos" >0, "zero" =0
+  const numOk  = (v: number, f: string) => !f || (f === "pos" ? v > 0.5 : Math.abs(v) <= 0.5);
+  // Зөрүүний шүүлт: "missing" дутуу, "ok" бүрэн, "over" илүү шивсэн
+  const diffOk = (v: number, f: string) =>
+    !f || (f === "missing" ? v > 0.5 : f === "ok" ? Math.abs(v) <= 0.5 : v < -0.5);
+  const txtOk  = (v: string, f: string) => !f || (v || "").toLowerCase().includes(f.toLowerCase());
+  const cf = colFilters;
   const filtered = rows.filter(r => {
     if (selectedEmp !== "all" && r.employee !== selectedEmp) return false;
     if (onlyMissing && !(r.diff_orgil > 0.5 || r.diff_harhorin > 0.5)) return false;
-    if (q && !(`${r.name} ${r.code} ${r.registry} ${r.phone}`.toLowerCase().includes(q))) return false;
+    if (q && !(`${r.name} ${r.code} ${r.registry} ${r.phone} ${r.note}`.toLowerCase().includes(q))) return false;
+    // Багана тус бүрийн шүүлтүүд
+    if (!txtOk(r.employee, cf.employee)) return false;
+    if (!txtOk(r.code, cf.code)) return false;
+    if (!txtOk(`${r.name} ${r.tailbar}`, cf.name)) return false;
+    if (!txtOk(r.registry, cf.registry)) return false;
+    if (!txtOk(r.phone, cf.phone)) return false;
+    if (!txtOk(r.note, cf.note)) return false;
+    if (!numOk(r.purchase_orgil, cf.po)) return false;
+    if (!numOk(r.vat_orgil, cf.vo)) return false;
+    if (!diffOk(r.diff_orgil, cf.do_)) return false;
+    if (!numOk(r.purchase_harhorin, cf.ph)) return false;
+    if (!numOk(r.vat_harhorin, cf.vh)) return false;
+    if (!diffOk(r.diff_harhorin, cf.dh)) return false;
     return true;
   });
+  const hasColFilters = Object.values(colFilters).some(v => v !== "");
 
   const tot = filtered.reduce((a, r) => ({
     po: a.po + r.purchase_orgil, vo: a.vo + r.vat_orgil,
@@ -368,18 +489,43 @@ export default function EbarimtReportPage() {
           <table className="w-full border-collapse text-[12px]">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_#f3f4f6]">
               <tr>
-                <th className="px-2 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-gray-400">#</th>
-                <th className="px-2 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Ажилтан</th>
-                <th className="px-2 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Код</th>
-                <th className="px-2 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Харилцагч</th>
-                <th className="px-2 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Регистр</th>
-                <th className="px-2 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Утас</th>
-                <th className="border-l border-blue-100 bg-blue-50/40 px-2 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Оргил ХА</th>
-                <th className="bg-blue-50/40 px-2 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Оргил Ebarimt</th>
-                <th className="border-r border-blue-100 bg-blue-50/40 px-2 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Зөрүү</th>
-                <th className="bg-violet-50/40 px-2 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Хархорин ХА</th>
-                <th className="bg-violet-50/40 px-2 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Хархорин Ebarimt</th>
-                <th className="border-r border-violet-100 bg-violet-50/40 px-2 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Зөрүү</th>
+                <th className="px-2 pt-2.5 pb-1 text-center text-[10px] font-bold uppercase tracking-wider text-gray-400">#</th>
+                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Ажилтан</th>
+                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Код</th>
+                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Харилцагч</th>
+                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Регистр</th>
+                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Утас</th>
+                <th className="border-l border-blue-100 bg-blue-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Оргил ХА</th>
+                <th className="bg-blue-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Оргил Ebarimt</th>
+                <th className="border-r border-blue-100 bg-blue-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Зөрүү</th>
+                <th className="bg-violet-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Хархорин ХА</th>
+                <th className="bg-violet-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Хархорин Ebarimt</th>
+                <th className="border-r border-violet-100 bg-violet-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Зөрүү</th>
+                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Тайлбар</th>
+              </tr>
+              {/* Багана тус бүрийн шүүлтийн мөр */}
+              <tr className="border-b border-gray-100">
+                <th className="px-1 pb-1.5 text-center align-middle">
+                  {hasColFilters && (
+                    <button onClick={() => setColFilters({ ...EMPTY_COL_FILTERS })}
+                      title="Бүх баганын шүүлтийг цэвэрлэх"
+                      className="grid h-4 w-4 mx-auto place-items-center rounded-full bg-rose-50 text-rose-500 hover:bg-rose-100">
+                      <X size={9}/>
+                    </button>
+                  )}
+                </th>
+                <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.employee} onChange={setCF("employee")}/></th>
+                <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.code} onChange={setCF("code")}/></th>
+                <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.name} onChange={setCF("name")}/></th>
+                <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.registry} onChange={setCF("registry")}/></th>
+                <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.phone} onChange={setCF("phone")}/></th>
+                <th className="border-l border-blue-100 bg-blue-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.po} onChange={setCF("po")}/></th>
+                <th className="bg-blue-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.vo} onChange={setCF("vo")}/></th>
+                <th className="border-r border-blue-100 bg-blue-50/40 px-1 pb-1.5"><DiffFilterSelect value={colFilters.do_} onChange={setCF("do_")}/></th>
+                <th className="bg-violet-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.ph} onChange={setCF("ph")}/></th>
+                <th className="bg-violet-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.vh} onChange={setCF("vh")}/></th>
+                <th className="border-r border-violet-100 bg-violet-50/40 px-1 pb-1.5"><DiffFilterSelect value={colFilters.dh} onChange={setCF("dh")}/></th>
+                <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.note} onChange={setCF("note")}/></th>
               </tr>
             </thead>
             <tbody>
@@ -409,6 +555,9 @@ export default function EbarimtReportPage() {
                     <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700">{fmtMnt(r.purchase_harhorin)}</td>
                     <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700" title={`${r.cnt_harhorin} баримт`}>{fmtMnt(r.vat_harhorin)}</td>
                     <td className="border-r border-violet-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px]">{diffCell(r.diff_harhorin)}</td>
+                    <td className="px-1 py-1 min-w-[140px] max-w-[220px]">
+                      <NoteCell value={r.note || ""} onSave={v => saveNote(r.code, v)}/>
+                    </td>
                   </tr>
                 );
               })}
@@ -425,6 +574,7 @@ export default function EbarimtReportPage() {
                   <td className="bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums text-violet-800">{fmtMnt(tot.ph)}</td>
                   <td className="bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums text-violet-800">{fmtMnt(tot.vh)}</td>
                   <td className="border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums">{diffCell(tot.ph - tot.vh)}</td>
+                  <td/>
                 </tr>
               </tfoot>
             )}
