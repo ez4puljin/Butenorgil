@@ -25,6 +25,7 @@ PERMISSION_MANIFEST = [
     {"key": "inventory_count",     "label": "Тооллогоны тайлан"},
     {"key": "erkhet_auto",         "label": "Erkhet автомат"},
     {"key": "bank_statements",     "label": "Тооцоо хаах"},
+    {"key": "ebarimt",             "label": "Ebarimt"},
     {"key": "expiration_tracking", "label": "Хугацааны хяналт", "universal": True},
     {"key": "attendance",          "label": "Цаг бүртгэл",      "universal": True},
     {"key": "attendance_admin",    "label": "Цаг бүртгэл (Админ)"},

@@ -42,6 +42,7 @@ const ErkhetAuto         = page(() => import("./pages/ErkhetAuto"));
 const ReceivingList      = page(() => import("./pages/ReceivingList"));
 const ReceivingDetail    = page(() => import("./pages/ReceivingDetail"));
 const BankStatement      = page(() => import("./pages/BankStatement"));
+const EbarimtReport      = page(() => import("./pages/EbarimtReport"));
 const ExpirationTracking = page(() => import("./pages/ExpirationTracking"));
 const Documents          = page(() => import("./pages/Documents"));
 const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
@@ -92,6 +93,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "inventory_count",     path: "/inventory-count" },
   { key: "erkhet_auto",         path: "/erkhet-auto" },
   { key: "bank_statements",     path: "/bank-statements" },
+  { key: "ebarimt",             path: "/ebarimt" },
   { key: "expiration_tracking", path: "/expiration" },
   { key: "documents",           path: "/documents" },
   { key: "attendance",          path: "/attendance" },
@@ -304,6 +306,10 @@ export default function App() {
                 <Route
                   path="/bank-statements"
                   element={can("bank_statements") ? <BankStatement /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/ebarimt"
+                  element={can("ebarimt") ? <EbarimtReport /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/expiration"
