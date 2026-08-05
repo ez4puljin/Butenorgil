@@ -886,6 +886,9 @@ def export_erp_excel(
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
     from urllib.parse import quote
+    from app.services.erkhet_xlsx import (
+        XLSX_MIME, apply_date_format, finalize_erkhet_xlsx,
+    )
 
     s = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
     if not s:
@@ -1011,16 +1014,22 @@ def export_erp_excel(
     for ci, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
+    # "Огноо" (A) баганыг Эрхэтийн танидаг built-in Short Date болгоно —
+    # эс бөгөөс openpyxl custom формат бичиж, импорт үед алдаа өгдөг.
+    if current_row > 2:
+        apply_date_format(ws, "A", 2, current_row - 1)
+
     buf = io.BytesIO()
     wb.save(buf)
-    buf.seek(0)
+    # Эрхэт рүү ШУУД импортлогддог болгож эцэслэнэ (гар засвар шаардахгүй)
+    data = finalize_erkhet_xlsx(buf.getvalue())
     date_str = s.date.strftime("%Y%m%d")
     brand_part = re.sub(r"[\\/:*?\"<>|]", "_", brand_filter) if brand_filter else "all"
     filename = f"{date_str}_RECV{s.id}_{brand_part}.xlsx"
     ascii_fallback = re.sub(r"[^\w\-.]", "_", filename.encode("ascii", "ignore").decode("ascii")) or f"RECV{s.id}.xlsx"
     utf8_quoted = quote(filename, safe="")
     return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        io.BytesIO(data),
+        media_type=XLSX_MIME,
         headers={"Content-Disposition": f"attachment; filename={ascii_fallback}; filename*=UTF-8''{utf8_quoted}"},
     )
