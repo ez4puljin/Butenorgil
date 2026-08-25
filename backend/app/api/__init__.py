@@ -26,3 +26,4 @@ from app.api.tag_location_check import router as tag_location_check_router
 from app.api.attendance import router as attendance_router
 from app.api.ebarimt_report import router as ebarimt_router
 from app.api.ai_chat import router as ai_chat_router
+from app.api.pos_sync import router as pos_sync_router

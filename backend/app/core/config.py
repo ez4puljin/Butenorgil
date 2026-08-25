@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # Шөнийн автомат sync ажиллах цаг (0-23). env: ERKHET_SYNC_HOUR
     erkhet_sync_hour: int = 3
 
+    # ── erxes (POS) GraphQL ──────────────────────────────────────────────
+    # Хоосон бол POS sync цэс идэвхгүй.
+    erxes_url: str = "https://erxes.bto.mn/gateway"   # env: ERXES_URL
+    erxes_email: str = ""                              # env: ERXES_EMAIL
+    erxes_password: str = ""                           # env: ERXES_PASSWORD
+
     # ── Систем асалт мониторинг (heartbeat + Telegram мэдэгдэл) ──────────
     # heartbeat_url хоосон бол мониторинг идэвхгүй (юу ч илгээхгүй).
     heartbeat_url: str = ""            # env: HEARTBEAT_URL — Healthchecks.io ping URL
