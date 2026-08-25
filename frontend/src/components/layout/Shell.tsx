@@ -40,6 +40,7 @@ const navItems: NavItem[] = [
   { to: "/erkhet-auto",         label: "Erkhet автомат",     icon: Bot,            pageKey: "erkhet_auto" },
   { to: "/bank-statements",    label: "Тооцоо хаах",        icon: Landmark,       pageKey: "bank_statements" },
   { to: "/ebarimt",            label: "Ebarimt",             icon: ReceiptText,    pageKey: "ebarimt" },
+  { to: "/ai-chat",            label: "AI туслах",           icon: Sparkles,       pageKey: "ai_chat" },
   { to: "/expiration",         label: "Хугацааны хяналт",    icon: Timer,          pageKey: "expiration_tracking" },
   { to: "/attendance",         label: "Цаг бүртгэл",         icon: Clock,          pageKey: "attendance" },
   { to: "/attendance/admin",   label: "Цаг бүртгэл (Админ)", icon: CalendarClock,  pageKey: "attendance_admin" },

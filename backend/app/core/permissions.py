@@ -26,6 +26,7 @@ PERMISSION_MANIFEST = [
     {"key": "erkhet_auto",         "label": "Erkhet автомат"},
     {"key": "bank_statements",     "label": "Тооцоо хаах"},
     {"key": "ebarimt",             "label": "Ebarimt"},
+    {"key": "ai_chat",             "label": "AI туслах"},
     {"key": "expiration_tracking", "label": "Хугацааны хяналт", "universal": True},
     {"key": "attendance",          "label": "Цаг бүртгэл",      "universal": True},
     {"key": "attendance_admin",    "label": "Цаг бүртгэл (Админ)"},

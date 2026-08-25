@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     access_token_minutes: int = 720  # 12 цаг
     cors_origins: list[str] = ["*"]
     gemini_api_key: str = ""   # env: GEMINI_API_KEY (aistudio.google.com-д үнэгүй авна)
+    # AI чатын модел — function calling дэмждэг байх ёстой. env: GEMINI_CHAT_MODEL
+    gemini_chat_model: str = "gemini-3.6-flash"
 
     # ── Систем асалт мониторинг (heartbeat + Telegram мэдэгдэл) ──────────
     # heartbeat_url хоосон бол мониторинг идэвхгүй (юу ч илгээхгүй).

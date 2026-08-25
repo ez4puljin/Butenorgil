@@ -76,6 +76,7 @@ const FALLBACK_PAGE_KEYS = [
   { key: "erkhet_auto",         label: "Erkhet автомат" },
   { key: "bank_statements",     label: "Тооцоо хаах" },
   { key: "ebarimt",             label: "Ebarimt" },
+  { key: "ai_chat",             label: "AI туслах" },
   { key: "expiration_tracking", label: "Хугацааны хяналт" },
   { key: "attendance",          label: "Цаг бүртгэл" },
   { key: "attendance_admin",    label: "Цаг бүртгэл (Админ)" },
