@@ -22,7 +22,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user
@@ -33,6 +33,40 @@ router = APIRouter(prefix="/ai-chat", tags=["ai-chat"])
 
 MAX_ROWS = 40          # нэг tool-оос буцаах дээд мөр (token хэмнэнэ)
 MAX_HISTORY = 12       # харилцааны түүхээс авах дээд мессеж
+
+
+# ── Крилл ↔ латин хайлт ──────────────────────────────────────────────────────
+# Барааны нэр ихэвчлэн латинаар хадгалагддаг ("Coca cola"), харин хэрэглэгч
+# кириллээр асуудаг ("Кока кола"). Хөрвүүлсэн хувилбаруудаар мөн хайна.
+_CYR2LAT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "j", "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "ө": "o", "п": "p", "р": "r", "с": "s", "т": "t",
+    "у": "u", "ү": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh",
+    "щ": "sch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def _search_terms(query: str) -> list[str]:
+    """Хайх үгийн боломжит хувилбарууд (эх, латин-k, латин-c)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    out = {q}
+    if any(ch in _CYR2LAT for ch in q):
+        for k_as in ("k", "c"):
+            out.add("".join(k_as if ch == "к" else _CYR2LAT.get(ch, ch) for ch in q))
+    return [t for t in out if t]
+
+
+def _product_filter(Product, query: str):
+    """Product-ийг нэр/код/бренд/barcode-оор, крилл-латин хувилбар бүрээр хайх нөхцөл."""
+    clauses = []
+    for t in _search_terms(query):
+        like = f"%{t}%"
+        clauses += [Product.name.ilike(like), Product.item_code.ilike(like),
+                    Product.brand.ilike(like), Product.barcode.ilike(like)]
+    return or_(*clauses) if clauses else None
 
 
 # ── Tool-ууд (db-г closure-аар барина) ───────────────────────────────────────
@@ -55,11 +89,8 @@ def _build_tools(db: Session, calls: list[str]):
         """
         from app.models.product import Product
         _log("search_products", query)
-        q = f"%{query.strip()}%"
-        rows = db.query(Product).filter(
-            (Product.name.ilike(q)) | (Product.item_code.ilike(q)) |
-            (Product.brand.ilike(q)) | (Product.barcode.ilike(q))
-        ).limit(MAX_ROWS).all()
+        cond = _product_filter(Product, query)
+        rows = db.query(Product).filter(cond).limit(MAX_ROWS).all() if cond is not None else []
         return {"count": len(rows), "products": [{
             "item_code": p.item_code, "name": p.name, "brand": p.brand,
             "pack_ratio": p.pack_ratio, "last_purchase_price": p.last_purchase_price,
@@ -80,10 +111,11 @@ def _build_tools(db: Session, calls: list[str]):
         smap = get_location_stock_map(db, loc)
         if not smap:
             return {"error": "Үлдэгдлийн файл оруулаагүй байна (Файл оруулалт → Үлдэгдлийн файл)."}
-        q = f"%{query.strip()}%"
-        prods = db.query(Product).filter(
-            (Product.name.ilike(q)) | (Product.item_code.ilike(q)) | (Product.brand.ilike(q))
-        ).limit(MAX_ROWS).all()
+        cond = _product_filter(Product, query)
+        prods = db.query(Product).filter(cond).limit(MAX_ROWS).all() if cond is not None else []
+        if not prods:
+            return {"error": f"'{query}' нэртэй бараа олдсонгүй. Өөр нэр/кодоор хайж үзнэ үү "
+                             f"(барааны нэр ихэвчлэн латинаар бичигдсэн байдаг)."}
         out = []
         for p in prods:
             qty = float(smap.get(str(p.item_code).strip(), 0.0))
@@ -102,10 +134,8 @@ def _build_tools(db: Session, calls: list[str]):
         from app.models.product import Product
         from app.models.product_monthly_sales import ProductMonthlySales
         _log("get_product_sales", f"{query}, {months}с")
-        q = f"%{query.strip()}%"
-        codes = [c for (c,) in db.query(Product.item_code).filter(
-            (Product.name.ilike(q)) | (Product.item_code.ilike(q)) | (Product.brand.ilike(q))
-        ).limit(MAX_ROWS).all()]
+        cond = _product_filter(Product, query)
+        codes = [c for (c,) in db.query(Product.item_code).filter(cond).limit(MAX_ROWS).all()] if cond is not None else []
         if not codes:
             return {"error": f"'{query}' нэртэй бараа олдсонгүй."}
         n = max(1, min(int(months or 3), 24))
@@ -267,8 +297,51 @@ def _build_tools(db: Session, calls: list[str]):
                 "total_credit": round(sum(o["credit"] for o in out)),
                 "total_debit": round(sum(o["debit"] for o in out)), "accounts": out}
 
+    # ── Дата хэр шинэ вэ ─────────────────────────────────────────────
+    def get_data_freshness() -> dict:
+        """Эрхэт/erxes-ээс орж ирдэг файлууд хэзээ сүүлд шинэчлэгдсэнийг харна.
+
+        Үлдэгдэл, борлуулалт, хөдөлгөөн зэрэг өгөгдөл нь гараар оруулсан
+        Excel файлаас ирдэг тул ХУУЧИРСАН байж болно. Үлдэгдэл, борлуулалтын
+        тоо хэлэхийн ӨМНӨ энэ tool-ыг дуудаж, дата хуучин бол хэрэглэгчид
+        хэдэн хоногийн өмнөх мэдээлэл болохыг заавал сануул."""
+        from app.models.balance_file import BalanceFile
+        from app.models.income_file import IncomeFile
+        from app.models.movement_file import MovementFile
+        from app.models.ebarimt_file import EbarimtFile
+        _log("get_data_freshness")
+        now = datetime.utcnow()
+
+        def age(dt) -> dict | None:
+            if not dt:
+                return None
+            hours = (now - dt).total_seconds() / 3600
+            return {"uploaded_at": dt.isoformat(timespec="minutes"),
+                    "age_hours": round(hours, 1), "age_days": round(hours / 24, 1)}
+
+        out: dict[str, object] = {}
+        names = {"warehouse": "Бүх агуулахын үлдэгдэл", "main": "Үндсэн заалны үлдэгдэл",
+                 "liquor": "Архины заалны үлдэгдэл"}
+        out["balance_files"] = [
+            {"kind": names.get(b.kind, b.kind), "filename": b.original_filename, **(age(b.uploaded_at) or {})}
+            for b in db.query(BalanceFile).all()
+        ]
+        inc = db.query(IncomeFile).order_by(IncomeFile.year.desc()).first()
+        out["income_file"] = ({"year": inc.year, "filename": inc.original_filename,
+                               **(age(inc.uploaded_at) or {})} if inc else None)
+        mv = db.query(MovementFile).order_by(MovementFile.year.desc()).first()
+        out["movement_file"] = ({"year": mv.year, **(age(mv.uploaded_at) or {})} if mv else None)
+        eb = db.query(EbarimtFile).order_by(
+            EbarimtFile.year.desc(), EbarimtFile.month.desc()).first()
+        out["ebarimt_file"] = ({"year": eb.year, "month": eb.month,
+                                **(age(eb.uploaded_at) or {})} if eb else None)
+        out["note"] = ("Эдгээр нь Эрхэт/erxes-ээс гараар оруулсан файлууд. "
+                       "age_days их байвал дата хуучирсан гэсэн үг.")
+        return out
+
     return [search_products, get_stock, get_product_sales, get_expiring_items,
-            get_orders_summary, get_receivings_summary, get_ebarimt_summary, get_bank_summary]
+            get_orders_summary, get_receivings_summary, get_ebarimt_summary,
+            get_bank_summary, get_data_freshness]
 
 
 SYSTEM_PROMPT = """Чи бол "Бүтэн-Оргил" компанийн ERP системийн туслах.
@@ -280,7 +353,10 @@ SYSTEM_PROMPT = """Чи бол "Бүтэн-Оргил" компанийн ERP с
 4. Олон мөр байвал хүснэгт (markdown table) хэрэглэ.
 5. Хэрэв tool өгөгдөл олохгүй бол шууд "олдсонгүй" гэж хэл — таамаглахгүй.
 6. Хэрэглэгчийн асуулт тодорхойгүй бол тодруулах асуулт асуу.
-7. Өнөөдрийн огноо: {today}
+7. ҮЛДЭГДЭЛ, БОРЛУУЛАЛТ-ын тоо хэлэхдээ get_data_freshness-ээр дата хэр
+   шинэ болохыг шалга. Хэрэв 2 хоногоос хуучин бол хариултын төгсгөлд
+   "⚠️ Энэ дата N хоногийн өмнөх файлаас" гэж заавал сануул.
+8. Өнөөдрийн огноо: {today}
 """
 
 
