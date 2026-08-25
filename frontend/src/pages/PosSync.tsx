@@ -26,7 +26,7 @@ function fmt(n: number) { return Math.round(n || 0).toLocaleString("mn-MN"); }
 export default function PosSyncPage() {
   const [posList, setPosList] = useState<Pos[]>([]);
   const [posId, setPosId] = useState("");
-  const [start, setStart] = useState(daysAgo(7));
+  const [start, setStart] = useState(today());
   const [end, setEnd] = useState(today());
 
   const [result, setResult]   = useState<CheckResult | null>(null);
@@ -66,6 +66,7 @@ export default function PosSyncPage() {
     try {
       const r = await api.get("/pos-sync/check", {
         params: { pos_id: posId, paid_start: start, paid_end: end },
+        timeout: 600000,   // өдөр тутам ~1800 захиалга, шалгалт удаан явдаг
       });
       setResult(r.data);
     } catch (e: any) {
@@ -139,6 +140,9 @@ export default function PosSyncPage() {
           <input type="date" value={end} onChange={e => setEnd(e.target.value)}
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-100"/>
         </div>
+        <p className="w-full text-[10.5px] text-gray-400">
+          Нэг өдөр ~5-10 сек. Олон хоног сонговол хэдэн минут болно (өдөрт ~1,800 гүйлгээ).
+        </p>
         <button onClick={() => doCheck()} disabled={checking || job?.running}
           className="flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-[12.5px] font-semibold text-white hover:bg-blue-600 disabled:opacity-60 shadow-sm shadow-blue-500/25">
           {checking ? <><RefreshCw size={13} className="animate-spin"/>Шалгаж…</> : <><Search size={13}/>Шалгах</>}

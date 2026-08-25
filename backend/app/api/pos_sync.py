@@ -80,7 +80,7 @@ def check(
     """Хугацаанд хэдэн гүйлгээ байгаа, тэдгээрээс хэд нь sync хийгдээгүйг тоолно."""
     try:
         c = get_client()
-        orders = c.pos_orders(pos_id, paid_start, paid_end, per_page=per_page)
+        orders = c.pos_orders_all(pos_id, paid_start, paid_end, page_size=per_page)
         ids = [o["_id"] for o in orders if o.get("_id")]
         checked = c.check_synced(ids)
         synced_ids = {r["_id"] for r in checked if r.get("isSynced")}
@@ -112,7 +112,7 @@ def _run_sync(pos_id: str, pos_name: str, paid_start: str, paid_end: str) -> Non
     c = get_client()
     try:
         _job["message"] = "Гүйлгээ шалгаж байна…"
-        orders = c.pos_orders(pos_id, paid_start, paid_end, per_page=2000)
+        orders = c.pos_orders_all(pos_id, paid_start, paid_end)
         ids = [o["_id"] for o in orders if o.get("_id")]
         checked = c.check_synced(ids)
         synced = {r["_id"] for r in checked if r.get("isSynced")}

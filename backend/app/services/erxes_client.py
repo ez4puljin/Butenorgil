@@ -102,21 +102,91 @@ class ErxesClient:
         data = self.gql("{ posList { _id name description token } }")
         return data.get("posList") or []
 
+    @staticmethod
+    def _day_bounds(day: str) -> tuple[str, str]:
+        """'YYYY-MM-DD' → тухайн өдрийн эхлэл/төгсгөл ISO datetime.
+
+        erxes-ийн Date скаляр нь ЗӨВХӨН бүтэн ISO datetime хүлээж авдаг —
+        'YYYY-MM-DD' дамжуулбал шүүлт ажиллахгүй, 0 мөр буцаана
+        (туршилтаар тогтоосон)."""
+        d = (day or "").strip()[:10]
+        return f"{d}T00:00:00.000Z", f"{d}T23:59:59.999Z"
+
     def pos_orders(self, pos_id: str = "", paid_start: str = "", paid_end: str = "",
                    page: int = 1, per_page: int = 200) -> list[dict]:
-        """Тухайн POS-ийн төлсөн огнооны хязгаар доторх захиалгууд."""
+        """Тухайн POS-ийн төлсөн огнооны хязгаар доторх ЗАХИАЛГУУД.
+
+        posOrderRecords биш posOrders — эхнийх нь захиалгын МӨР (нэг захиалга
+        олон мөр) буцаадаг тул тоолоход тохирохгүй."""
+        s = self._day_bounds(paid_start)[0] if paid_start else None
+        e = self._day_bounds(paid_end)[1] if paid_end else None
         q = """
         query($posId:String, $s:Date, $e:Date, $page:Int, $perPage:Int){
-          posOrderRecords(posId:$posId, paidStartDate:$s, paidEndDate:$e,
-                          page:$page, perPage:$perPage) {
+          posOrders(posId:$posId, paidStartDate:$s, paidEndDate:$e,
+                    page:$page, perPage:$perPage) {
             _id number paidDate totalAmount
           }
         }"""
-        data = self.gql(q, {"posId": pos_id or None, "s": paid_start or None,
-                            "e": paid_end or None, "page": page, "perPage": per_page})
-        return data.get("posOrderRecords") or []
+        data = self.gql(q, {"posId": pos_id or None, "s": s, "e": e,
+                            "page": page, "perPage": per_page})
+        return data.get("posOrders") or []
 
-    def check_synced(self, ids: list[str]) -> list[dict]:
+    def pos_orders_all(self, pos_id: str = "", paid_start: str = "", paid_end: str = "",
+                       page_size: int = 200, max_pages: int = 40,
+                       on_day=None) -> list[dict]:
+        """Хугацаанд байгаа БҮХ захиалгыг ӨДӨР ТУС БҮРЭЭР татна.
+
+        Яагаад өдрөөр хуваадаг вэ: erxes-ийн сервер олон хоногийн хүсэлтэд
+        504 Gateway Timeout өгдөг (туршилтаар тогтоосон). Нэг өдөр ~1 секунд
+        тул хуваахад найдвартай бөгөөд явцыг ч харуулах боломжтой.
+
+        on_day(day, count) дуудагдвал явцыг мэдээлнэ."""
+        from datetime import date as _date, timedelta as _td
+
+        try:
+            d0 = _date.fromisoformat((paid_start or "")[:10])
+            d1 = _date.fromisoformat((paid_end or "")[:10])
+        except ValueError:
+            raise ErxesError("Огноо буруу — 'YYYY-MM-DD' хэлбэрээр өгнө үү.")
+        if d1 < d0:
+            d0, d1 = d1, d0
+
+        out: list[dict] = []
+        seen: set[str] = set()
+        day = d0
+        while day <= d1:
+            ds = day.isoformat()
+            day_rows: list[dict] = []
+            for page in range(1, max_pages + 1):
+                batch = self.pos_orders(pos_id, ds, ds, page=page, per_page=page_size)
+                if not batch:
+                    break
+                day_rows += batch
+                if len(batch) < page_size:
+                    break
+            for o in day_rows:
+                oid = o.get("_id")
+                if oid and oid not in seen:
+                    seen.add(oid)
+                    out.append(o)
+            if on_day:
+                try:
+                    on_day(ds, len(day_rows))
+                except Exception:
+                    pass
+            day += _td(days=1)
+        return out
+
+    def check_synced(self, ids: list[str], chunk: int = 100) -> list[dict]:
+        """Захиалгууд sync хийгдсэн эсэх. Их хэмжээний id-г багцлан асууна."""
+        if len(ids) > chunk:
+            out: list[dict] = []
+            for i in range(0, len(ids), chunk):
+                out += self._check_synced(ids[i:i + chunk])
+            return out
+        return self._check_synced(ids)
+
+    def _check_synced(self, ids: list[str]) -> list[dict]:
         """Захиалгууд Эрхэт рүү sync хийгдсэн эсэхийг шалгана."""
         if not ids:
             return []
