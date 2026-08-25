@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     # илүү хүчтэй Flash. env: GEMINI_VISION_MODEL
     gemini_vision_model: str = "gemini-3.5-flash"
 
+    # ── Эрхэт (erkhet.bto.mn) HTTP клиент ────────────────────────────────
+    # Хоосон бол Эрхэтээс дата татах функцууд идэвхгүй.
+    erkhet_url: str = "https://erkhet.bto.mn"   # env: ERKHET_URL
+    erkhet_username: str = ""                    # env: ERKHET_USERNAME
+    erkhet_password: str = ""                    # env: ERKHET_PASSWORD
+    erkhet_company_id: str = ""                  # env: ERKHET_COMPANY_ID (нэвтрэхэд автомат олдоно)
+
     # ── Систем асалт мониторинг (heartbeat + Telegram мэдэгдэл) ──────────
     # heartbeat_url хоосон бол мониторинг идэвхгүй (юу ч илгээхгүй).
     heartbeat_url: str = ""            # env: HEARTBEAT_URL — Healthchecks.io ping URL
