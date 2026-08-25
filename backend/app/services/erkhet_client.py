@@ -180,7 +180,8 @@ class ErkhetClient:
         return ""
 
     # ── тайлан ───────────────────────────────────────────────────────
-    def report_html(self, path: str, params: dict[str, str | Iterable[str]]) -> str:
+    def report_html(self, path: str, params: dict[str, str | Iterable[str]],
+                    timeout: int | None = None) -> str:
         """Тайлангийн формыг POST хийж, буцаж ирсэн HTML-ийг өгнө."""
         with self._lock:
             s = self._session()
@@ -198,7 +199,7 @@ class ErkhetClient:
             t0 = time.time()
             r = s.post(url, data=payload,
                        headers={"Referer": url, "Origin": self.base},
-                       timeout=self.timeout)
+                       timeout=timeout or self.timeout)
             if "/login" in r.url:
                 raise ErkhetError("Session дууссан байна — дахин оролдоно уу.")
             r.raise_for_status()
@@ -246,6 +247,58 @@ class ErkhetClient:
                 r = r + [""] * (len(head) - len(r))
             out.append({(head[i] or f"col{i}"): r[i] for i in range(len(head))})
         return out
+
+
+    def report_excel(self, path: str, params: dict[str, str | Iterable[str]],
+                     timeout: int | None = None) -> bytes:
+        """Тайланг Эрхэтийн ӨӨРИЙНХ нь Excel (.xls) хэлбэрээр татна.
+
+        Эрхэтийн "Excel файл" товч нь хүснэгтийг JSON болгож
+        POST /reports/to-excel/ рүү илгээдэг. Тэр JS-ийн логикийг яг давтана —
+        ингэснээр гараар татсантай ЯГ ижил бүтэцтэй файл гарна (ERP-ийн
+        одоогийн задлагч өөрчлөх шаардлагагүй)."""
+        import json
+
+        raw = self.report_html(path, params, timeout=timeout)
+
+        # JS: $('table tr').each → children('td, th') → {text, colspan, rowspan}
+        rows: list[list[dict]] = []
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", raw, re.S | re.I):
+            row: list[dict] = []
+            for cell in re.finditer(r"<(td|th)([^>]*)>(.*?)</\1>", tr, re.S | re.I):
+                attrs = cell.group(2)
+                cs = re.search(r"colspan=[\"']?(\d+)", attrs, re.I)
+                rs = re.search(r"rowspan=[\"']?(\d+)", attrs, re.I)
+                row.append({
+                    "text": _text(cell.group(3)),
+                    "colspan": int(cs.group(1)) if cs else 1,
+                    "rowspan": int(rs.group(1)) if rs else 1,
+                })
+            rows.append(row)
+        if not rows:
+            raise ErkhetError("Тайлан хоосон байна — параметрээ шалгана уу.")
+
+        nm = re.search(r'name="report_name"\s+value="([^"]*)"', raw)
+        report_name = nm.group(1) if nm else "Тайлан"
+
+        with self._lock:
+            s = self._session()
+            url = f"{self.base}/{self._cid}/reports/to-excel/"
+            r = s.post(
+                url,
+                data={
+                    "csrfmiddlewaretoken": s.cookies.get("csrftoken", ""),
+                    "data": json.dumps(rows, ensure_ascii=False),
+                    "report_name": report_name,
+                },
+                headers={"Referer": self.base, "Origin": self.base},
+                timeout=timeout or self.timeout,
+            )
+            r.raise_for_status()
+            if b"<html" in r.content[:400].lower():
+                raise ErkhetError("Excel-ийн оронд HTML ирлээ — session дууссан байж магадгүй.")
+            print(f"[erkhet] excel: {len(rows)} мөр -> {len(r.content)/1024:.0f}KB")
+            return r.content
 
 
 # ── Дундын instance (session дахин ашиглана) ─────────────────────────────────

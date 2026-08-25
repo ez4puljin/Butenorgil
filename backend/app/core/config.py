@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     erkhet_username: str = ""                    # env: ERKHET_USERNAME
     erkhet_password: str = ""                    # env: ERKHET_PASSWORD
     erkhet_company_id: str = ""                  # env: ERKHET_COMPANY_ID (нэвтрэхэд автомат олдоно)
+    # Шөнийн автомат sync ажиллах цаг (0-23). env: ERKHET_SYNC_HOUR
+    erkhet_sync_hour: int = 3
 
     # ── Систем асалт мониторинг (heartbeat + Telegram мэдэгдэл) ──────────
     # heartbeat_url хоосон бол мониторинг идэвхгүй (юу ч илгээхгүй).

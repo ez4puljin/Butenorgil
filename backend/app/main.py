@@ -991,6 +991,41 @@ async def schedule_heartbeat():
     asyncio.create_task(_heartbeat_loop())
 
 
+async def _erkhet_nightly_loop():
+    """Өдөр бүр тогтсон цагт Эрхэтээс өчигдрийн үлдэгдлийг татаж ERP-д оруулна.
+
+    Тайлан ~1-3 минут боловсруулагддаг тул тусдаа thread-д ажиллуулж
+    event loop-ыг блоклохгүй. Алдаа гарвал loop унтрахгүй — маргааш
+    дахин оролдоно."""
+    from app.core.config import settings
+    from app.services import erkhet_sync
+
+    hour = int(getattr(settings, "erkhet_sync_hour", 3) or 3)
+    if not (settings.erkhet_username and settings.erkhet_password):
+        print("[erkhet-sync] тохиргоо дутуу — шөнийн sync идэвхгүй")
+        return
+    print(f"[erkhet-sync] шөнийн sync идэвхтэй — өдөр бүр {hour:02d}:00 цагт")
+
+    last_day = None
+    await asyncio.sleep(30)                      # серверийн бүрэн асалтыг хүлээнэ
+    while True:
+        try:
+            now = datetime.now()
+            # Тухайн цаг болсон ба өнөөдөр хараахан ажиллаагүй бол
+            if now.hour == hour and last_day != now.date():
+                last_day = now.date()
+                await asyncio.to_thread(erkhet_sync.run_nightly_sync)
+        except Exception as e:
+            print(f"[erkhet-sync] loop алдаа: {e}")
+        await asyncio.sleep(300)                 # 5 минут тутам шалгана
+
+
+@app.on_event("startup")
+async def schedule_erkhet_sync():
+    """Эрхэтийн шөнийн автомат sync-ийг бүртгэнэ."""
+    asyncio.create_task(_erkhet_nightly_loop())
+
+
 def ensure_calendar_labels_seeded():
     """Calendar label default-уудыг суулгана (зөвхөн хоосон үед).
 
