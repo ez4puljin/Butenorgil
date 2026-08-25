@@ -26,6 +26,7 @@ from app.models.movement_file import MovementFile  # noqa: F401 – registers ta
 from app.models.income_file import IncomeFile  # noqa: F401 – registers table
 from app.models.balance_file import BalanceFile  # noqa: F401 – registers table
 from app.models.ebarimt_file import EbarimtFile  # noqa: F401 – registers table
+from app.models.ai_chat_log import AiChatLog  # noqa: F401 – registers table
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)

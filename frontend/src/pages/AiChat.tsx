@@ -110,10 +110,32 @@ function Markdown({ text }: { text: string }) {
   return <div className="text-[12.5px] text-gray-800">{out}</div>;
 }
 
+// ── Түүх (зөвхөн энэ browser-т) ────────────────────────────────────────────
+// Серверт хадгалахгүй — 7 хэрэглэгч нэг бүртгэл хуваалцаж байгаа тул
+// хүн бүрийн асуулт нэг урсгалд холилдох, нууцлалын асуудал үүсэхээс
+// сэргийлж зөвхөн төхөөрөмж дээр нь үлдээнэ. Refresh хийхэд алдагдахгүй.
+const HISTORY_KEY = "ai_chat_history";
+const HISTORY_MAX = 40;          // хэт урт болж localStorage дүүргэхээс сэргийлнэ
+
+function loadHistory(): Msg[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.slice(-HISTORY_MAX) : [];
+  } catch { return []; }
+}
+
+function saveHistory(msgs: Msg[]) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(msgs.slice(-HISTORY_MAX))); }
+  catch { /* дүүрсэн бол алгасна */ }
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 export default function AiChatPage() {
-  const [msgs, setMsgs]       = useState<Msg[]>([]);
+  const [msgs, setMsgs]       = useState<Msg[]>(loadHistory);
+  const [topQuestions, setTopQuestions] = useState<string[]>([]);
   const [input, setInput]     = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr]         = useState("");
@@ -130,6 +152,16 @@ export default function AiChatPage() {
   }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, sending]);
+
+  // Түүхийг browser-т хадгална (refresh хийхэд алдагдахгүй)
+  useEffect(() => { saveHistory(msgs); }, [msgs]);
+
+  // Хамгийн их асуудаг АСУУЛТУУДЫГ санал болгоно (бодит логоос)
+  useEffect(() => {
+    api.get("/ai-chat/log", { params: { limit: 6 } })
+      .then(r => setTopQuestions((r.data.top ?? []).map((x: any) => x.question).slice(0, 4)))
+      .catch(() => {});
+  }, []);
 
   async function send(text?: string) {
     const q = (text ?? input).trim();
@@ -173,7 +205,7 @@ export default function AiChatPage() {
           </p>
         </div>
         {msgs.length > 0 && (
-          <button onClick={() => { setMsgs([]); setErr(""); }}
+          <button onClick={() => { setMsgs([]); setErr(""); try { localStorage.removeItem(HISTORY_KEY); } catch {} }}
             title="Харилцааг цэвэрлэх"
             className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
             <Trash2 size={13}/>Цэвэрлэх
@@ -210,7 +242,7 @@ export default function AiChatPage() {
               <p className="mt-0.5 text-[12px] text-gray-400">Үлдэгдэл, борлуулалт, захиалга, Ebarimt, хугацааны хяналт…</p>
             </div>
             <div className="flex max-w-xl flex-wrap justify-center gap-2">
-              {SUGGESTIONS.map(s => (
+              {(topQuestions.length ? topQuestions : SUGGESTIONS).map(s => (
                 <button key={s} onClick={() => send(s)} disabled={sending || enabled === false}
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[11.5px] text-gray-600 hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 disabled:opacity-50 transition-colors">
                   {s}

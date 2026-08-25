@@ -387,7 +387,7 @@ def status(_: User = Depends(get_current_user)):
 def ask(
     body: AskIn,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    u: User = Depends(get_current_user),
 ):
     """Асуултад ERP-ийн өгөгдөл дээр тулгуурлан хариулна."""
     api_key = (settings.gemini_api_key or "").strip()
@@ -411,6 +411,8 @@ def ask(
             contents.append(types.Content(role=role, parts=[types.Part(text=m.text[:4000])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=body.question)]))
 
+    import time as _time
+    _t0 = _time.time()
     client = genai.Client(api_key=api_key)
     cfg_kwargs = dict(
         system_instruction=SYSTEM_PROMPT.format(today=date.today().isoformat()),
@@ -439,6 +441,7 @@ def ask(
             except Exception:
                 pass   # fallback бүтэлгүйтвэл эхний хариултаа хэвээр ашиглана
     except Exception as e:
+        _log_question(db, u, body.question, [], ok=0, ms=int((_time.time() - _t0) * 1000))
         err = str(e)
         if "quota" in err.lower() or "429" in err or "RESOURCE_EXHAUSTED" in err:
             raise HTTPException(429, "Gemini-ийн үнэгүй хязгаарт хүрлээ. Хэсэг хүлээгээд дахин оролдоно уу.")
@@ -448,4 +451,56 @@ def ask(
 
     if not answer:
         answer = "Уучлаарай, хариулт үүсгэж чадсангүй. Асуултаа өөрөөр асууж үзнэ үү."
+    _log_question(db, u, body.question, calls, ok=1, ms=int((_time.time() - _t0) * 1000))
     return {"answer": answer, "tools_used": calls}
+
+
+def _log_question(db: Session, user, question: str, tools: list[str],
+                  ok: int = 1, ms: int = 0) -> None:
+    """Асуулт + ашигласан tool-ыг бүртгэнэ (ХАРИУЛТ ХАДГАЛАХГҮЙ).
+    Алдаа гарвал чимээгүй өнгөрнө — лог нь чатыг хэзээ ч зогсоохгүй."""
+    try:
+        from app.models.ai_chat_log import AiChatLog
+        # tool нэрийг л авна (аргументгүй) — бүлэглэхэд тохиромжтой
+        names = sorted({t.split("(")[0] for t in tools})
+        db.add(AiChatLog(
+            username=str(getattr(user, "username", "") or "")[:80],
+            question=(question or "").strip()[:500],
+            tools=",".join(names)[:300], ok=ok, ms=ms,
+        ))
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+@router.get("/log")
+def chat_log(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Хамгийн их асуудаг асуултууд + сүүлийн үеийн асуултууд.
+
+    Хамгийн их асуудгийг чатын эхлэлийн санал болгох хэсэгт харуулна —
+    хүмүүс бодитоор юу асуудгийг тусгана."""
+    from sqlalchemy import func as _f
+    from app.models.ai_chat_log import AiChatLog
+    n = max(1, min(int(limit or 20), 50))
+    top = db.query(
+        AiChatLog.question, _f.count(AiChatLog.id).label("cnt"),
+    ).filter(AiChatLog.ok == 1, AiChatLog.question != "").group_by(
+        AiChatLog.question,
+    ).order_by(_f.count(AiChatLog.id).desc(), AiChatLog.question).limit(n).all()
+    recent = db.query(AiChatLog).order_by(AiChatLog.created_at.desc()).limit(n).all()
+    return {
+        "top": [{"question": q, "count": c} for q, c in top],
+        "recent": [{
+            "at": r.created_at.isoformat(timespec="minutes") if r.created_at else None,
+            "user": r.username, "question": r.question,
+            "tools": [x for x in (r.tools or "").split(",") if x],
+            "ok": bool(r.ok), "ms": r.ms,
+        } for r in recent],
+    }
