@@ -96,6 +96,12 @@ class ErxesClient:
                 raise ErxesError(msg[:200])
             return j.get("data") or {}
 
+    def _is_transient(self, e: Exception) -> bool:
+        """erxes-ийн сервер ачаалалтай үед 504/timeout өгдөг — түр зуурын алдаа."""
+        s = str(e)
+        return ("504" in s or "Gateway Time-out" in s or "timed out" in s.lower()
+                or "502" in s or "Bad Gateway" in s)
+
     # ── POS ──────────────────────────────────────────────────────────
     def pos_list(self) -> list[dict]:
         """Бүх POS-ийн жагсаалт (сонголтод)."""
@@ -178,13 +184,30 @@ class ErxesClient:
         return out
 
     def check_synced(self, ids: list[str], chunk: int = 100) -> list[dict]:
-        """Захиалгууд sync хийгдсэн эсэх. Их хэмжээний id-г багцлан асууна."""
-        if len(ids) > chunk:
-            out: list[dict] = []
-            for i in range(0, len(ids), chunk):
-                out += self._check_synced(ids[i:i + chunk])
-            return out
-        return self._check_synced(ids)
+        """Захиалгууд sync хийгдсэн эсэх. Их хэмжээний id-г багцлан асууна.
+
+        erxes ачаалалтай үед 504 өгдөг тул алдаа гарсан багцыг ХОЁР ХУВААН
+        дахин оролдоно (25 хүртэл). Ингэснээр бүтэн өдрийн ~1,800 гүйлгээг
+        ч найдвартай шалгана."""
+        out: list[dict] = []
+        for i in range(0, len(ids), chunk):
+            out += self._check_chunk(ids[i:i + chunk])
+        return out
+
+    def _check_chunk(self, ids: list[str], min_size: int = 25) -> list[dict]:
+        if not ids:
+            return []
+        try:
+            return self._check_synced(ids)
+        except Exception as e:
+            if not self._is_transient(e) or len(ids) <= min_size:
+                if self._is_transient(e):
+                    print(f"[erxes] {len(ids)} id шалгаж чадсангүй — алгасав")
+                    return []
+                raise
+            mid = len(ids) // 2
+            print(f"[erxes] 504 — {len(ids)} багцыг хуваан дахин оролдож байна")
+            return self._check_chunk(ids[:mid], min_size) + self._check_chunk(ids[mid:], min_size)
 
     def _check_synced(self, ids: list[str]) -> list[dict]:
         """Захиалгууд Эрхэт рүү sync хийгдсэн эсэхийг шалгана."""

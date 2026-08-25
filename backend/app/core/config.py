@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     erxes_url: str = "https://erxes.bto.mn/gateway"   # env: ERXES_URL
     erxes_email: str = ""                              # env: ERXES_EMAIL
     erxes_password: str = ""                           # env: ERXES_PASSWORD
+    # Өчигдрийн бүх POS гүйлгээг автоматаар татах цаг. env: POS_SYNC_HOUR
+    pos_sync_hour: int = 4
+
+    # ── Өглөөний тайлан ──────────────────────────────────────────────────
+    # Бүх анхаарах зүйлийг Telegram-аар илгээх цаг. env: DIGEST_HOUR
+    digest_hour: int = 8
 
     # ── Систем асалт мониторинг (heartbeat + Telegram мэдэгдэл) ──────────
     # heartbeat_url хоосон бол мониторинг идэвхгүй (юу ч илгээхгүй).

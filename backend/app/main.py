@@ -991,39 +991,60 @@ async def schedule_heartbeat():
     asyncio.create_task(_heartbeat_loop())
 
 
-async def _erkhet_nightly_loop():
-    """Өдөр бүр тогтсон цагт Эрхэтээс өчигдрийн үлдэгдлийг татаж ERP-д оруулна.
+async def _nightly_jobs_loop():
+    """Өдөр бүр тогтсон цагуудад ажиллах автомат ажлууд.
 
-    Тайлан ~1-3 минут боловсруулагддаг тул тусдаа thread-д ажиллуулж
-    event loop-ыг блоклохгүй. Алдаа гарвал loop унтрахгүй — маргааш
-    дахин оролдоно."""
+      03:00  Эрхэтээс өчигдрийн үлдэгдлийг татаж ERP-д оруулах
+      04:00  Өчигдрийн БҮХ POS гүйлгээг Эрхэт рүү автоматаар татах
+      08:00  Өглөөний тайлан — бүх анхаарах зүйлийг Telegram-аар
+
+    Ажил бүр удаан үргэлжилж болох тул тусдаа thread-д ажиллуулж event
+    loop-ыг блоклохгүй. Аль нэг нь алдвал бусад нь болон loop өөрөө
+    үргэлжилнэ — маргааш дахин оролдоно."""
     from app.core.config import settings
-    from app.services import erkhet_sync
+    from app.services import erkhet_sync, pos_auto_sync, daily_digest
 
-    hour = int(getattr(settings, "erkhet_sync_hour", 3) or 3)
-    if not (settings.erkhet_username and settings.erkhet_password):
-        print("[erkhet-sync] тохиргоо дутуу — шөнийн sync идэвхгүй")
-        return
-    print(f"[erkhet-sync] шөнийн sync идэвхтэй — өдөр бүр {hour:02d}:00 цагт")
+    has_erkhet = bool(settings.erkhet_username and settings.erkhet_password)
+    has_erxes  = bool(settings.erxes_email and settings.erxes_password)
 
-    last_day = None
-    await asyncio.sleep(30)                      # серверийн бүрэн асалтыг хүлээнэ
+    jobs = []
+    if has_erkhet:
+        jobs.append((int(getattr(settings, "erkhet_sync_hour", 3) or 3),
+                     "Эрхэт үлдэгдэл", erkhet_sync.run_nightly_sync))
+    if has_erxes:
+        jobs.append((int(getattr(settings, "pos_sync_hour", 4) or 4),
+                     "POS татах", pos_auto_sync.run_nightly_pos_sync))
+    jobs.append((int(getattr(settings, "digest_hour", 8) or 8),
+                 "Өглөөний тайлан", daily_digest.send_daily_digest))
+
+    print("[хуваарь] " + " · ".join(f"{h:02d}:00 {n}" for h, n, _ in jobs))
+    if not has_erkhet:
+        print("[хуваарь] Эрхэтийн тохиргоо дутуу — тэр ажил идэвхгүй")
+    if not has_erxes:
+        print("[хуваарь] erxes тохиргоо дутуу — POS татах идэвхгүй")
+
+    done: dict[str, object] = {}          # ажлын нэр -> сүүлд ажилласан өдөр
+    await asyncio.sleep(30)               # серверийн бүрэн асалтыг хүлээнэ
     while True:
         try:
             now = datetime.now()
-            # Тухайн цаг болсон ба өнөөдөр хараахан ажиллаагүй бол
-            if now.hour == hour and last_day != now.date():
-                last_day = now.date()
-                await asyncio.to_thread(erkhet_sync.run_nightly_sync)
+            for hour, name, fn in jobs:
+                if now.hour == hour and done.get(name) != now.date():
+                    done[name] = now.date()
+                    print(f"[хуваарь] {name} эхэлж байна ({now:%H:%M})")
+                    try:
+                        await asyncio.to_thread(fn)
+                    except Exception as e:
+                        print(f"[хуваарь] {name} алдаа: {e}")
         except Exception as e:
-            print(f"[erkhet-sync] loop алдаа: {e}")
-        await asyncio.sleep(300)                 # 5 минут тутам шалгана
+            print(f"[хуваарь] loop алдаа: {e}")
+        await asyncio.sleep(300)          # 5 минут тутам шалгана
 
 
 @app.on_event("startup")
-async def schedule_erkhet_sync():
-    """Эрхэтийн шөнийн автомат sync-ийг бүртгэнэ."""
-    asyncio.create_task(_erkhet_nightly_loop())
+async def schedule_nightly_jobs():
+    """Шөнийн автомат ажлууд + өглөөний тайланг бүртгэнэ."""
+    asyncio.create_task(_nightly_jobs_loop())
 
 
 def ensure_calendar_labels_seeded():
