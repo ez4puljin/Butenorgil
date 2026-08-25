@@ -348,6 +348,10 @@ SYSTEM_PROMPT = """Чи бол "Бүтэн-Оргил" компанийн ERP с
 
 Дүрэм:
 1. ЗААВАЛ өгөгдсөн tool-уудыг ашиглаж бодит өгөгдөл ав. Тоо ЗОХИОХГҮЙ.
+   Өгөгдөл хэрэгтэй бол tool-ыг ЗААВАЛ дууд. Tool дуудалгүйгээр "алдаа гарлаа",
+   "мэдээлэл татаж чадсангүй" гэж бичихийг ХОРИГЛОНО — эхлээд tool-оо дууд.
+   Хэрэглэгчийн заасан тоог (хоног, сар, он) tool-ийн параметрт ЯГ дамжуул —
+   "14 хоног" гэвэл days=14, анхдагч утгыг бүү ашигла.
 2. Хариултаа МОНГОЛООР, товч, ойлгомжтой бич.
 3. Тоог мянгатаар таслаж бич (жишээ: 1,234,567₮).
 4. Олон мөр байвал хүснэгт (markdown table) хэрэглэ.
@@ -375,7 +379,7 @@ def status(_: User = Depends(get_current_user)):
     """AI чат ашиглах боломжтой эсэх (API key тохируулагдсан уу)."""
     return {
         "enabled": bool((settings.gemini_api_key or "").strip()),
-        "model": getattr(settings, "gemini_chat_model", "gemini-3.6-flash"),
+        "model": getattr(settings, "gemini_chat_model", "gemini-3.5-flash-lite"),
     }
 
 
@@ -396,9 +400,8 @@ def ask(
     except ImportError:
         raise HTTPException(500, "google-genai сан суугаагүй байна.")
 
-    calls: list[str] = []
-    tools = _build_tools(db, calls)
-    model = getattr(settings, "gemini_chat_model", "") or "gemini-3.6-flash"
+    model = getattr(settings, "gemini_chat_model", "") or "gemini-3.5-flash-lite"
+    fallback = (getattr(settings, "gemini_chat_fallback_model", "") or "").strip()
 
     # Харилцааны түүх + шинэ асуулт
     contents = []
@@ -409,17 +412,32 @@ def ask(
     contents.append(types.Content(role="user", parts=[types.Part(text=body.question)]))
 
     client = genai.Client(api_key=api_key)
-    try:
+    cfg_kwargs = dict(
+        system_instruction=SYSTEM_PROMPT.format(today=date.today().isoformat()),
+        temperature=0.2,
+    )
+
+    def run(model_name: str) -> tuple[str, list[str]]:
+        """Нэг модел дээр асуултыг ажиллуулж (хариулт, дуудсан tool) буцаана."""
+        calls: list[str] = []
         resp = client.models.generate_content(
-            model=model,
+            model=model_name,
             contents=contents,
-            config=types.GenerateContentConfig(
-                tools=tools,
-                system_instruction=SYSTEM_PROMPT.format(today=date.today().isoformat()),
-                temperature=0.2,
-            ),
+            config=types.GenerateContentConfig(tools=_build_tools(db, calls), **cfg_kwargs),
         )
-        answer = (resp.text or "").strip()
+        return (resp.text or "").strip(), calls
+
+    try:
+        answer, calls = run(model)
+        # Flash-Lite заримдаа tool дуудалгүй "алдаа гарлаа" гэж хариулдаг.
+        # Tool огт дуудагдаагүй бол илүү найдвартай модел дээр НЭГ удаа давтана.
+        if not calls and fallback and fallback != model:
+            try:
+                answer2, calls2 = run(fallback)
+                if calls2 or not answer:
+                    answer, calls = answer2, calls2
+            except Exception:
+                pass   # fallback бүтэлгүйтвэл эхний хариултаа хэвээр ашиглана
     except Exception as e:
         err = str(e)
         if "quota" in err.lower() or "429" in err or "RESOURCE_EXHAUSTED" in err:

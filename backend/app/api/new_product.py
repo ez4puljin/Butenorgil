@@ -139,8 +139,9 @@ def _analyze_with_gemini(photos_b64: list[str], brand: str, categories: list[str
     try:
         # Моделыг тохиргооноос авна — Google хуучин моделыг (1.5/2.0-flash)
         # тогтмол хаадаг тул нэг газраас солиход бүх AI функц шинэчлэгдэнэ.
+        # Зураг таних нь чанар шаарддаг тул чатаас тусдаа (илүү хүчтэй) модел.
         response = client.models.generate_content(
-            model=(settings.gemini_chat_model or "gemini-3.6-flash"),
+            model=(settings.gemini_vision_model or "gemini-3.5-flash"),
             contents=parts,
         )
         raw = response.text or "{}"

@@ -8,7 +8,17 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     gemini_api_key: str = ""   # env: GEMINI_API_KEY (aistudio.google.com-д үнэгүй авна)
     # AI чатын модел — function calling дэмждэг байх ёстой. env: GEMINI_CHAT_MODEL
-    gemini_chat_model: str = "gemini-3.6-flash"
+    # Flash-Lite: хамгийн хямд ($0.30/$2.50 vs $0.75/$3.75) бөгөөд үнэгүй
+    # багц дээр 15 RPM (3.x Flash-ийн 10-аас их). Чат нь хэрэглээ ихтэй тул энд.
+    gemini_chat_model: str = "gemini-3.5-flash-lite"
+    # Flash-Lite заримдаа tool дуудалгүй "алдаа гарлаа" гэж хариулдаг (хэмжилтээр
+    # 1/3 л зөв). Tool дуудагдаагүй үед энэ илүү найдвартай модел дээр нэг удаа
+    # давтана — ихэнх хүсэлт хямдаар, шаардлагатай үед найдвартайгаар ажиллана.
+    # Хоосон болговол fallback хийхгүй. env: GEMINI_CHAT_FALLBACK_MODEL
+    gemini_chat_fallback_model: str = "gemini-3.5-flash"
+    # Зураг таних модел (Шинэ бараа цэс) — хэрэглээ бага, чанар чухал тул
+    # илүү хүчтэй Flash. env: GEMINI_VISION_MODEL
+    gemini_vision_model: str = "gemini-3.5-flash"
 
     # ── Систем асалт мониторинг (heartbeat + Telegram мэдэгдэл) ──────────
     # heartbeat_url хоосон бол мониторинг идэвхгүй (юу ч илгээхгүй).
