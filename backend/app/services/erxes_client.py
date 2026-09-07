@@ -32,6 +32,13 @@ class ErxesError(RuntimeError):
     pass
 
 
+class ErxesCancelled(RuntimeError):
+    """Хэрэглэгч ажиллагааг цуцалсан — АЛДАА БИШ.
+
+    ErxesError-оос удамшуулаагүй нь санаатай: `except ErxesError` барьж
+    502 буцаадаг газрууд цуцлалтыг алдаа мэт харуулахгүй байх ёстой."""
+
+
 class ErxesClient:
     """Session/токеноо дахин ашиглана; хугацаа дуусахад автоматаар дахин нэвтэрнэ."""
 
@@ -139,14 +146,16 @@ class ErxesClient:
 
     def pos_orders_all(self, pos_id: str = "", paid_start: str = "", paid_end: str = "",
                        page_size: int = 200, max_pages: int = 40,
-                       on_day=None) -> list[dict]:
+                       on_day=None, should_cancel=None) -> list[dict]:
         """Хугацаанд байгаа БҮХ захиалгыг ӨДӨР ТУС БҮРЭЭР татна.
 
         Яагаад өдрөөр хуваадаг вэ: erxes-ийн сервер олон хоногийн хүсэлтэд
         504 Gateway Timeout өгдөг (туршилтаар тогтоосон). Нэг өдөр ~1 секунд
         тул хуваахад найдвартай бөгөөд явцыг ч харуулах боломжтой.
 
-        on_day(day, count) дуудагдвал явцыг мэдээлнэ."""
+        on_day(day, count) дуудагдвал явцыг мэдээлнэ.
+        should_cancel() True буцаавал ErxesCancelled шиднэ — хуудас бүрийн
+        завсарт шалгадаг тул хэрэглэгч хэдэн секундэд зогсоох боломжтой."""
         from datetime import date as _date, timedelta as _td
 
         try:
@@ -164,6 +173,8 @@ class ErxesClient:
             ds = day.isoformat()
             day_rows: list[dict] = []
             for page in range(1, max_pages + 1):
+                if should_cancel and should_cancel():
+                    raise ErxesCancelled("Шалгалт цуцлагдлаа")
                 batch = self.pos_orders(pos_id, ds, ds, page=page, per_page=page_size)
                 if not batch:
                     break
@@ -183,14 +194,59 @@ class ErxesClient:
             day += _td(days=1)
         return out
 
-    def check_synced(self, ids: list[str], chunk: int = 100) -> list[dict]:
+    def pos_order_ids(self, pos_id: str, day: str, page_size: int = 1000,
+                      max_pages: int = 20, should_cancel=None) -> list[str]:
+        """Тухайн ӨДРИЙН захиалгын id-ууд — зөвхөн `_id` талбар.
+
+        Яагаад тусад нь вэ: perPage-ийг өсгөж, талбарын тоог багасгахад
+        эрс хурдасдаг. 942 захиалгыг хэмжихэд —
+            perPage=200,  4 талбар : 43.3 сек
+            perPage=500,  1 талбар : 17.7 сек
+            perPage=1000, 1 талбар :  9.0 сек
+        Тулгалт/sync шалгалтад id-аас өөр юм хэрэггүй тул хамгийн хурдныг
+        нь ашиглана."""
+        s, e = self._day_bounds(day)
+        q = ("query($posId:String,$s:Date,$e:Date,$pg:Int,$pp:Int){"
+             " posOrders(posId:$posId, paidStartDate:$s, paidEndDate:$e,"
+             " page:$pg, perPage:$pp){ _id } }")
+        out: list[str] = []
+        for page in range(1, max_pages + 1):
+            if should_cancel and should_cancel():
+                raise ErxesCancelled("Шалгалт цуцлагдлаа")
+            data = self.gql(q, {"posId": pos_id or None, "s": s, "e": e,
+                                "pg": page, "pp": page_size})
+            batch = data.get("posOrders") or []
+            out += [o["_id"] for o in batch if o.get("_id")]
+            if len(batch) < page_size:
+                break
+        return out
+
+    def pos_orders_count(self, pos_id: str = "", paid_start: str = "",
+                         paid_end: str = "") -> int:
+        """Хугацаанд төлөгдсөн захиалгын ТОО.
+
+        pos_orders_all-аас олон дахин хурдан — бүх мөрийг 200-гаар хуудаслан
+        татахгүй, зөвхөн тоог асууна. Тоо тулгалтад мөр биш тоо л хэрэгтэй."""
+        s = self._day_bounds(paid_start)[0] if paid_start else None
+        e = self._day_bounds(paid_end)[1] if paid_end else None
+        q = ("query($posId:String,$s:Date,$e:Date){ posOrdersTotalCount("
+             "posId:$posId, paidStartDate:$s, paidEndDate:$e) }")
+        data = self.gql(q, {"posId": pos_id or None, "s": s, "e": e})
+        return int(data.get("posOrdersTotalCount") or 0)
+
+    def check_synced(self, ids: list[str], chunk: int = 100,
+                     should_cancel=None) -> list[dict]:
         """Захиалгууд sync хийгдсэн эсэх. Их хэмжээний id-г багцлан асууна.
 
         erxes ачаалалтай үед 504 өгдөг тул алдаа гарсан багцыг ХОЁР ХУВААН
         дахин оролдоно (25 хүртэл). Ингэснээр бүтэн өдрийн ~1,800 гүйлгээг
-        ч найдвартай шалгана."""
+        ч найдвартай шалгана.
+
+        should_cancel() True буцаавал багц хооронд зогсоно."""
         out: list[dict] = []
         for i in range(0, len(ids), chunk):
+            if should_cancel and should_cancel():
+                raise ErxesCancelled("Шалгалт цуцлагдлаа")
             out += self._check_chunk(ids[i:i + chunk])
         return out
 
@@ -227,6 +283,116 @@ class ErxesClient:
         data = self.gql("mutation($ids:[String]){ toSyncOrders(orderIds:$ids) }",
                         {"ids": order_ids})
         return data.get("toSyncOrders")
+
+    # ── Е-баримтын буцаалт / устгал ──────────────────────────────────
+    # putResponses = Е-баримтын бичлэг. Буцаалтын бичлэг нь `id` ХООСОН,
+    # `inactiveId` ДҮҮРЭН байдаг (эх баримтыг идэвхгүй болгосон). erxes-ийн
+    # /put-responses хуудас эдгээрийг billIdRule="01"-ээр шүүдэг — бусад
+    # утга (02, 03, хоосон) огт шүүлт хийхгүй тул зөвхөн энэ утга ажиллана.
+    RETURN_RULE = "01"
+
+    _PR_FIELDS = (
+        "_id number contentType contentId totalAmount type status "
+        "inactiveId id date createdAt modifiedAt userId "
+        "user { _id username email details { fullName } }"
+    )
+    _PR_DECL = ("$page:Int,$perPage:Int,$search:String,$billIdRule:String,"
+                "$contentType:String,$createdStartDate:Date,$createdEndDate:Date")
+    _PR_PASS = ("page:$page,perPage:$perPage,search:$search,billIdRule:$billIdRule,"
+                "contentType:$contentType,createdStartDate:$createdStartDate,"
+                "createdEndDate:$createdEndDate")
+
+    @staticmethod
+    def _pr_bounds(start_day: str, end_day: str = "") -> tuple[str, str]:
+        """'YYYY-MM-DD' → erxes-ийн хүлээж авдаг 'YYYY-MM-DD HH:MM' хязгаар.
+
+        Төгсгөлийг ДАРААГИЙН өдрийн 00:00 болгоно — эс тэгвээс сүүлийн
+        өдрийн бичлэгүүд орхигдоно (erxes-ийн UI ч яг ингэдэг)."""
+        from datetime import date as _date, timedelta as _td
+        try:
+            s = _date.fromisoformat((start_day or "")[:10])
+            e = _date.fromisoformat((end_day or start_day or "")[:10])
+        except ValueError:
+            raise ErxesError("Огноо буруу — 'YYYY-MM-DD' хэлбэрээр өгнө үү.")
+        if e < s:
+            s, e = e, s
+        return f"{s.isoformat()} 00:00", f"{(e + _td(days=1)).isoformat()} 00:00"
+
+    def put_responses(self, start_day: str, end_day: str = "",
+                      bill_id_rule: str | None = None, search: str | None = None,
+                      content_type: str | None = None,
+                      page: int = 1, per_page: int = 200) -> list[dict]:
+        """Е-баримтын бичлэгүүд.
+
+        Огнооны шүүлт нь БИЧЛЭГ үүссэн огноогоор ажиллана — өөрөөр хэлбэл
+        буцаалт хайхад ЗАХИАЛГЫН биш БУЦААСАН өдрөөр шүүгдэнэ."""
+        a, b = self._pr_bounds(start_day, end_day)
+        q = "query putResponses(%s){ putResponses(%s){ %s } }" % (
+            self._PR_DECL, self._PR_PASS, self._PR_FIELDS)
+        data = self.gql(q, {
+            "page": page, "perPage": per_page, "search": search,
+            "billIdRule": bill_id_rule, "contentType": content_type,
+            "createdStartDate": a, "createdEndDate": b,
+        })
+        return data.get("putResponses") or []
+
+    @staticmethod
+    def _who(row: dict) -> str:
+        """Бичлэг хийсэн хүний харагдах нэр."""
+        u = row.get("user") or {}
+        d = u.get("details") or {}
+        return (str(d.get("fullName") or "").strip()
+                or u.get("email") or u.get("username")
+                or (f"userId={row['userId']}" if row.get("userId") else "—"))
+
+    def pos_returns(self, start_day: str, end_day: str = "", enrich: bool = True,
+                    max_enrich: int = 60, lookback: int = 45) -> list[dict]:
+        """Тухайн хугацаанд ХИЙГДСЭН буцаалт/устгалууд — хэн хийсэн нь оруулаад.
+
+        Буцаалтын бичлэгт дүн байдаггүй тул эх баримтыг дугаараар хайж
+        дүн болон анхны кассчинг нөхнө. Дугаар POS хооронд ДАВХЦДАГ тул
+        contentId-аар тааруулна — зөвхөн дугаараар тааруулбал өөр POS-ийн
+        баримтын дүн орж ирнэ (туршилтаар тогтоосон).
+
+        Эх баримт буцаалтаас ӨМНӨХ өдөр үүссэн байж болох тул хайлтын
+        цонхыг lookback хоногоор ухраана."""
+        from datetime import date as _date, timedelta as _td
+
+        rows = self.put_responses(start_day, end_day, bill_id_rule=self.RETURN_RULE)
+        out = [{
+            "_id": r.get("_id"),
+            "number": r.get("number"),
+            "content_id": r.get("contentId"),
+            "content_type": r.get("contentType"),
+            "inactive_id": r.get("inactiveId"),
+            "returned_at": r.get("createdAt"),
+            "returned_by": self._who(r),
+            "status": r.get("status"),
+            "amount": None,
+            "cashier": "",
+        } for r in rows]
+
+        if not enrich or not out:
+            return out
+        try:
+            back = (_date.fromisoformat(start_day[:10]) - _td(days=lookback)).isoformat()
+        except ValueError:
+            return out
+        for item in out[:max_enrich]:
+            num = item.get("number")
+            if not num:
+                continue
+            try:
+                cand = self.put_responses(back, end_day or start_day,
+                                          search=num, per_page=20)
+            except Exception:
+                continue          # нөхөх нь заавал биш — буцаалт нь өөрөө чухал
+            for c in cand:
+                if c.get("contentId") == item["content_id"] and c.get("id"):
+                    item["amount"] = c.get("totalAmount")
+                    item["cashier"] = self._who(c)
+                    break
+        return out
 
 
 _client: ErxesClient | None = None

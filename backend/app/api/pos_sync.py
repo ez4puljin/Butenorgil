@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_role
 from app.core.config import settings
 from app.models.user import User
-from app.services.erxes_client import ErxesError, get_client
+from app.services.erxes_client import ErxesCancelled, ErxesError, get_client
 
 router = APIRouter(prefix="/pos-sync", tags=["pos-sync"])
 
@@ -36,6 +36,27 @@ _job: dict = {
 
 BATCH = 20          # нэг удаад хэдэн захиалга sync хийх
 MAX_LOG = 40
+
+# ── Шалгалтыг цуцлах ─────────────────────────────────────────────────
+# /check нь синхрон бөгөөд «Бүх POS» + олон хоног сонговол хэдэн минут
+# үргэлжилнэ. Санамсаргүй буруу сонголт хийсэн хэрэглэгч хүлээх ёсгүй.
+# Үеийн дугаараар (generation) цуцална: цуцлах хүсэлт ирэхэд, эсвэл ШИНЭ
+# шалгалт эхлэхэд хуучин нь автоматаар зогсоно (хоёр шалгалт зэрэг
+# erxes-ийг ачаалахгүй).
+_check_state = {"gen": 0, "cancel_gen": -1}
+_check_lock = threading.Lock()
+
+
+def _begin_check() -> int:
+    with _check_lock:
+        _check_state["gen"] += 1
+        return _check_state["gen"]
+
+
+def _cancelled(my_gen: int) -> bool:
+    with _check_lock:
+        return (_check_state["cancel_gen"] >= my_gen
+                or _check_state["gen"] != my_gen)
 
 
 def _reset_job(pos_name: str, total: int) -> None:
@@ -77,15 +98,24 @@ def check(
     per_page: int = Query(500, ge=1, le=2000),
     _: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Хугацаанд хэдэн гүйлгээ байгаа, тэдгээрээс хэд нь sync хийгдээгүйг тоолно."""
+    """Хугацаанд хэдэн гүйлгээ байгаа, тэдгээрээс хэд нь sync хийгдээгүйг тоолно.
+
+    Цуцлагдах боломжтой — /cancel-check дуудахад хуудас/багцын завсарт зогсоно."""
+    my_gen = _begin_check()
+
+    def cancel() -> bool:
+        return _cancelled(my_gen)
+
     try:
         c = get_client()
-        orders = c.pos_orders_all(pos_id, paid_start, paid_end, page_size=per_page)
+        orders = c.pos_orders_all(pos_id, paid_start, paid_end,
+                                  page_size=per_page, should_cancel=cancel)
         ids = [o["_id"] for o in orders if o.get("_id")]
-        checked = c.check_synced(ids)
+        checked = c.check_synced(ids, should_cancel=cancel)
         synced_ids = {r["_id"] for r in checked if r.get("isSynced")}
         unsynced = [o for o in orders if o["_id"] not in synced_ids]
         return {
+            "cancelled": False,
             "total": len(orders),
             "synced": len(synced_ids),
             "unsynced_count": len(unsynced),
@@ -96,8 +126,20 @@ def check(
                 for o in unsynced[:200]
             ],
         }
+    except ErxesCancelled:
+        # Цуцлалт бол алдаа биш — UI хоосон үр дүнг харуулалгүй өмнөхөө хадгална.
+        return {"cancelled": True, "total": 0, "synced": 0, "unsynced_count": 0,
+                "unsynced_amount": 0, "unsynced": []}
     except ErxesError as e:
         raise HTTPException(502, f"erxes: {e}")
+
+
+@router.post("/cancel-check")
+def cancel_check(_: User = Depends(require_role("admin", "supervisor", "manager"))):
+    """Явж буй шалгалтыг зогсооно."""
+    with _check_lock:
+        _check_state["cancel_gen"] = _check_state["gen"]
+    return {"ok": True, "cancelled": True}
 
 
 class StartIn(BaseModel):
@@ -161,3 +203,26 @@ def start(
         daemon=True,
     ).start()
     return {"ok": True, "started": True}
+
+
+@router.get("/returns")
+def returns(
+    start: str = Query(..., description="Буцаасан огноо эхлэл YYYY-MM-DD"),
+    end: str = Query("", description="Төгсгөл. Хоосон бол start-тай ижил."),
+    _: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Хугацаанд хийгдсэн Е-баримтын буцаалт/устгал — хэн хийсэн нь оруулаад.
+
+    Яагаад хэрэгтэй вэ: захиалга erxes рүү очсон ч хэрэглэгч буцаавал
+    posOrders-оос алга болно. Ингэснээр sync-ийн тоо төгс таарч байхад
+    борлуулалт чимээгүй хасагдана. Огноог БУЦААСАН өдрөөр шүүнэ —
+    захиалгын өдөр өөр байж болно (маргааш нь буцаасан тохиолдол гардаг)."""
+    try:
+        rows = get_client().pos_returns(start, end or start)
+    except ErxesError as e:
+        raise HTTPException(502, f"erxes: {e}")
+    return {
+        "count": len(rows),
+        "amount": round(sum(float(r.get("amount") or 0) for r in rows)),
+        "rows": rows,
+    }

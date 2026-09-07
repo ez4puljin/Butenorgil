@@ -45,6 +45,8 @@ const BankStatement      = page(() => import("./pages/BankStatement"));
 const EbarimtReport      = page(() => import("./pages/EbarimtReport"));
 const AiChat             = page(() => import("./pages/AiChat"));
 const PosSync            = page(() => import("./pages/PosSync"));
+const PosRecon           = page(() => import("./pages/PosRecon"));
+const PriceCheck         = page(() => import("./pages/PriceCheck"));
 const ExpirationTracking = page(() => import("./pages/ExpirationTracking"));
 const Documents          = page(() => import("./pages/Documents"));
 const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
@@ -98,6 +100,8 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "ebarimt",             path: "/ebarimt" },
   { key: "ai_chat",             path: "/ai-chat" },
   { key: "pos_sync",            path: "/pos-sync" },
+  { key: "pos_recon",           path: "/pos-recon" },
+  { key: "price_check",         path: "/price-check" },
   { key: "expiration_tracking", path: "/expiration" },
   { key: "documents",           path: "/documents" },
   { key: "attendance",          path: "/attendance" },
@@ -322,6 +326,14 @@ export default function App() {
                 <Route
                   path="/pos-sync"
                   element={can("pos_sync") ? <PosSync /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/pos-recon"
+                  element={can("pos_recon") ? <PosRecon /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/price-check"
+                  element={can("price_check") ? <PriceCheck /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/expiration"

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Store, RefreshCw, AlertCircle, X, Download, CheckCircle2, Search, Loader2,
+  Store, RefreshCw, AlertCircle, X, Download, CheckCircle2, Search, Loader2, Undo2,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -10,6 +10,11 @@ interface CheckResult {
   total: number; synced: number; unsynced_count: number;
   unsynced_amount: number; unsynced: UnsyncedRow[];
 }
+interface ReturnRow {
+  _id: string; number?: string; amount?: number | null;
+  returned_at?: string; returned_by: string; cashier?: string;
+}
+interface ReturnResult { count: number; amount: number; rows: ReturnRow[] }
 interface JobStatus {
   enabled: boolean; running: boolean; total: number; done: number;
   ok: number; failed: number; message: string; error: string;
@@ -33,8 +38,11 @@ export default function PosSyncPage() {
   const [checking, setChecking] = useState(false);
   const [err, setErr]         = useState("");
   const [job, setJob]         = useState<JobStatus | null>(null);
+  const [rets, setRets]       = useState<ReturnResult | null>(null);
+  const [retLoading, setRetLoading] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // ── Анхны ачаалалт ────────────────────────────────────────────────
   useEffect(() => {
@@ -61,17 +69,49 @@ export default function PosSyncPage() {
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [job?.running]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // «Бүх POS» × олон хоног сонговол хэдэн минут үргэлжилнэ. Тиймээс хүсэлтийг
+  // client талд таслахаас гадна backend руу ч зогсоох дохио явуулна — эс тэгвээс
+  // сервер дээр erxes рүү дэмий хүсэлт үргэлжилсээр байна.
   async function doCheck(silent = false) {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     if (!silent) { setChecking(true); setErr(""); }
     try {
       const r = await api.get("/pos-sync/check", {
         params: { pos_id: posId, paid_start: start, paid_end: end },
         timeout: 600000,   // өдөр тутам ~1800 захиалга, шалгалт удаан явдаг
+        signal: ac.signal,
       });
-      setResult(r.data);
+      if (!r.data?.cancelled) setResult(r.data);   // цуцалсан бол өмнөх үр дүн хэвээр
     } catch (e: any) {
+      if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return;
       if (!silent) setErr(e?.response?.data?.detail ?? "Шалгах амжилтгүй");
-    } finally { if (!silent) setChecking(false); }
+    } finally {
+      if (abortRef.current === ac) abortRef.current = null;
+      if (!silent) setChecking(false);
+    }
+  }
+
+  async function cancelCheck() {
+    abortRef.current?.abort();
+    setChecking(false);
+    try { await api.post("/pos-sync/cancel-check"); } catch { /* silent */ }
+  }
+
+  // Буцаалт нь sync-ээс ТУСДАА асуудал: гүйлгээ Эрхэт рүү зөв очсон ч
+  // дараа нь буцаагдвал борлуулалт хасагдана. Огноог БУЦААСАН өдрөөр
+  // шүүнэ — захиалгын өдөр өөр байж болно.
+  async function doReturns() {
+    setRetLoading(true); setErr("");
+    try {
+      const r = await api.get("/pos-sync/returns", {
+        params: { start, end }, timeout: 300000,
+      });
+      setRets(r.data);
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? "Буцаалт татах амжилтгүй");
+    } finally { setRetLoading(false); }
   }
 
   async function startSync() {
@@ -142,10 +182,25 @@ export default function PosSyncPage() {
         </div>
         <p className="w-full text-[10.5px] text-gray-400">
           Нэг өдөр ~5-10 сек. Олон хоног сонговол хэдэн минут болно (өдөрт ~1,800 гүйлгээ).
+          {!posId && (
+            <span className="font-semibold text-amber-600">
+              {" "}«Бүх POS» сонгосон — хамгийн удаан хувилбар.
+            </span>
+          )}
         </p>
         <button onClick={() => doCheck()} disabled={checking || job?.running}
           className="flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-[12.5px] font-semibold text-white hover:bg-blue-600 disabled:opacity-60 shadow-sm shadow-blue-500/25">
           {checking ? <><RefreshCw size={13} className="animate-spin"/>Шалгаж…</> : <><Search size={13}/>Шалгах</>}
+        </button>
+        {checking && (
+          <button onClick={cancelCheck}
+            className="flex items-center gap-1.5 rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-[12.5px] font-semibold text-rose-700 hover:bg-rose-100">
+            <X size={13}/>Цуцлах
+          </button>
+        )}
+        <button onClick={doReturns} disabled={retLoading}
+          className="flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-[12.5px] font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-60">
+          {retLoading ? <><RefreshCw size={13} className="animate-spin"/>Татаж…</> : <><Undo2 size={13}/>Буцаалт</>}
         </button>
       </div>
 
@@ -181,13 +236,61 @@ export default function PosSyncPage() {
 
       {/* Үр дүн */}
       <div className="flex-1 overflow-auto p-4">
-        {!result ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-gray-400">
-            <div className="grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-teal-50 to-emerald-50">
-              <Store size={28} className="text-teal-400"/>
+        {rets && (
+          <div className="mb-4 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50/40">
+            <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2">
+              <Undo2 size={13} className="shrink-0 text-amber-700"/>
+              <span className="text-[12.5px] font-bold text-amber-900">
+                Буцаалт / устгал — {start}{end !== start ? ` … ${end}` : ""}
+              </span>
+              <span className="ml-auto shrink-0 font-mono text-[12px] font-bold text-amber-800">
+                {fmt(rets.count)} ш · {fmt(rets.amount)}₮
+              </span>
+              <button onClick={() => setRets(null)} className="shrink-0 text-amber-600 hover:text-amber-900">
+                <X size={12}/>
+              </button>
             </div>
-            <p className="text-[14px] font-semibold text-gray-700">POS болон огноогоо сонгоод «Шалгах» дарна уу</p>
+            {rets.count === 0 ? (
+              <p className="px-3 py-4 text-center text-[12px] text-amber-700">
+                Энэ хугацаанд буцаалт хийгдээгүй байна
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-[12px]">
+                  <thead>
+                    <tr className="bg-amber-50/60">
+                      {["Дугаар", "Дүн ₮", "Буцаасан цаг", "ХЭН буцаасан", "Анхны касс"].map((h, i) => (
+                        <th key={h} className={`whitespace-nowrap px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-700 ${i === 1 ? "text-right" : "text-left"}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rets.rows.map(r => (
+                      <tr key={r._id} className="border-t border-amber-100 hover:bg-amber-50/60">
+                        <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-gray-700">{r.number || r._id.slice(-8)}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] font-semibold text-rose-700">
+                          {r.amount == null ? "?" : fmt(r.amount)}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-gray-500">{(r.returned_at || "").replace("T", " ").slice(0, 16)}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] font-semibold text-amber-900">{r.returned_by}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] text-gray-600">{r.cashier || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
+        )}
+        {!result ? (
+          rets ? null : (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-gray-400">
+              <div className="grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-teal-50 to-emerald-50">
+                <Store size={28} className="text-teal-400"/>
+              </div>
+              <p className="text-[14px] font-semibold text-gray-700">POS болон огноогоо сонгоод «Шалгах» дарна уу</p>
+            </div>
+          )
         ) : (
           <>
             <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">

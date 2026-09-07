@@ -6,7 +6,7 @@ import {
   FileText, Building2, Truck, X, CalendarDays, CheckSquare,
   BadgeCheck, Settings2, Sparkles, BarChart3, MoreHorizontal,
   ChevronRight, User, Menu, ClipboardCheck, Bot, PackageCheck, Landmark, History, Timer,
-  Clock, CalendarClock, ReceiptText, Store,
+  Clock, CalendarClock, ReceiptText, Store, CalendarCheck, Tag,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 import ConnectionBanner from "../ConnectionBanner";
@@ -42,6 +42,8 @@ const navItems: NavItem[] = [
   { to: "/ebarimt",            label: "Ebarimt",             icon: ReceiptText,    pageKey: "ebarimt" },
   { to: "/ai-chat",            label: "AI туслах",           icon: Sparkles,       pageKey: "ai_chat" },
   { to: "/pos-sync",           label: "POS татах",           icon: Store,          pageKey: "pos_sync" },
+  { to: "/pos-recon",          label: "POS тулгалт",         icon: CalendarCheck,  pageKey: "pos_recon" },
+  { to: "/price-check",        label: "Үнэ харах",           icon: Tag,            pageKey: "price_check" },
   { to: "/expiration",         label: "Хугацааны хяналт",    icon: Timer,          pageKey: "expiration_tracking" },
   { to: "/attendance",         label: "Цаг бүртгэл",         icon: Clock,          pageKey: "attendance" },
   { to: "/attendance/admin",   label: "Цаг бүртгэл (Админ)", icon: CalendarClock,  pageKey: "attendance_admin" },

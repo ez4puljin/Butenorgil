@@ -36,6 +36,25 @@ class Settings(BaseSettings):
     erxes_password: str = ""                           # env: ERXES_PASSWORD
     # Өчигдрийн бүх POS гүйлгээг автоматаар татах цаг. env: POS_SYNC_HOUR
     pos_sync_hour: int = 4
+    # ── Локал (offline) POS-уудын GraphQL хаяг, таслалаар тусгаарлана ────
+    # Касс эхлээд ЛОКАЛ POS-д бичигдээд дараа нь erxes рүү sync хийгддэг.
+    # Энэ шатанд гацсан захиалгыг erxes талаас олж харах БОЛОМЖГҮЙ тул
+    # локал POS бүрээс шууд тоо аваад тулгана. env: POS_LOCAL_URLS
+    pos_local_urls: str = ("http://192.168.1.254:4030,"
+                           "http://192.168.1.254:4031")
+    # ── Үнийн шошго (erxes document template) ────────────────────────────
+    # Шошгон дээрх бөөний ширхэг/үнэ нь erxes дотор бодогддог тул шошгыг
+    # erxes-ийн бэлэн загвараас татна. Утгууд нь худалдагчийн ашигладаг
+    # хэвлэх URL-ээс авсан. env: ERXES_LABEL_*
+    erxes_label_template_id: str = "63e0d1c289900a8db3052d6b"
+    erxes_label_branch_id: str = "EfehYyZsLHGuHMT8n"
+    erxes_label_department_id: str = "gaSBcgxE9qFiKKs9g"
+    erxes_label_width: int = 80          # мм — чек принтерийн өргөн
+
+    # Тулгалт ажиллах цаг. POS ТАТСАНЫ ДАРАА байх ёстой — эс тэгвээс дөнгөж
+    # татсан гүйлгээг "Эрхэт рүү ороогүй" гэж буруу тэмдэглэнэ.
+    # env: POS_RECON_HOUR
+    pos_recon_hour: int = 5
 
     # ── Өглөөний тайлан ──────────────────────────────────────────────────
     # Бүх анхаарах зүйлийг Telegram-аар илгээх цаг. env: DIGEST_HOUR

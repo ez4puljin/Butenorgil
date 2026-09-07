@@ -27,3 +27,6 @@ from app.api.attendance import router as attendance_router
 from app.api.ebarimt_report import router as ebarimt_router
 from app.api.ai_chat import router as ai_chat_router
 from app.api.pos_sync import router as pos_sync_router
+from app.api.digest import router as digest_router
+from app.api.pos_recon import router as pos_recon_router
+from app.api.price_check import router as price_check_router

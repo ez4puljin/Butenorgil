@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router, digest_router, pos_recon_router, price_check_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -27,6 +27,7 @@ from app.models.income_file import IncomeFile  # noqa: F401 – registers table
 from app.models.balance_file import BalanceFile  # noqa: F401 – registers table
 from app.models.ebarimt_file import EbarimtFile  # noqa: F401 – registers table
 from app.models.ai_chat_log import AiChatLog  # noqa: F401 – registers table
+from app.models.pos_recon import PosReconDay  # noqa: F401 – registers table
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
@@ -997,13 +998,14 @@ async def _nightly_jobs_loop():
 
       03:00  Эрхэтээс өчигдрийн үлдэгдлийг татаж ERP-д оруулах
       04:00  Өчигдрийн БҮХ POS гүйлгээг Эрхэт рүү автоматаар татах
+      05:00  POS тулгалт — касс↔erxes↔Эрхэт хоёр шатыг шалгаж хадгалах
       08:00  Өглөөний тайлан — бүх анхаарах зүйлийг Telegram-аар
 
     Ажил бүр удаан үргэлжилж болох тул тусдаа thread-д ажиллуулж event
     loop-ыг блоклохгүй. Аль нэг нь алдвал бусад нь болон loop өөрөө
     үргэлжилнэ — маргааш дахин оролдоно."""
     from app.core.config import settings
-    from app.services import erkhet_sync, pos_auto_sync, daily_digest
+    from app.services import erkhet_sync, pos_auto_sync, pos_reconcile, daily_digest
 
     has_erkhet = bool(settings.erkhet_username and settings.erkhet_password)
     has_erxes  = bool(settings.erxes_email and settings.erxes_password)
@@ -1015,6 +1017,10 @@ async def _nightly_jobs_loop():
     if has_erxes:
         jobs.append((int(getattr(settings, "pos_sync_hour", 4) or 4),
                      "POS татах", pos_auto_sync.run_nightly_pos_sync))
+        # POS татсаны ДАРАА тулгана — эс тэгвээс дөнгөж татсан гүйлгээг
+        # "Эрхэт рүү ороогүй" гэж буруу тэмдэглэнэ.
+        jobs.append((int(getattr(settings, "pos_recon_hour", 5) or 5),
+                     "POS тулгалт", pos_reconcile.run_and_save))
     jobs.append((int(getattr(settings, "digest_hour", 8) or 8),
                  "Өглөөний тайлан", daily_digest.send_daily_digest))
 
@@ -1121,6 +1127,9 @@ app.include_router(attendance_router)
 app.include_router(ebarimt_router)
 app.include_router(ai_chat_router)
 app.include_router(pos_sync_router)
+app.include_router(digest_router)
+app.include_router(pos_recon_router)
+app.include_router(price_check_router)
 
 @app.get("/health")
 def health():

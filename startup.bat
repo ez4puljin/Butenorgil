@@ -38,6 +38,11 @@ if exist "%ROOT%\backend\run_server_loop.bat" (
 REM First pass: kill processes listening on port 8000.
 call :kill_port_8000
 
+REM Signal the kiosk wrapper to stop as well (separate port 8100).
+if exist "%ROOT%\backend\run_kiosk_loop.bat" (
+    type nul > "%ROOT%\backend\kiosk_stop.flag" 2>nul
+)
+
 REM Second pass: kill ALL python.exe (this is a server box - only ERP runs here).
 REM This is brute force but reliable: catches uvicorn parent + reload workers
 REM + multiprocessing children that often slip out of netstat's PID listing.
@@ -273,6 +278,18 @@ if "!USE_HTTPS!"=="1" (
     echo.
     start "ERP-Server" /D "%ROOT%\backend" cmd /k run_server_loop.bat
 )
+
+REM ---- Price-check KIOSK on a SEPARATE port (8100) ----
+REM Hall tablets open this instead of the main app, so customers never
+REM see the internal menu. It serves ONLY the price page + lookup.
+del /q "%ROOT%\backend\kiosk_stop.flag" >nul 2>&1
+if "!USE_HTTPS!"=="1" (
+    echo   Price kiosk ^(HTTPS^): https://!LAN_IP!:8100/
+) else (
+    echo   Price kiosk ^(HTTP^):  http://!LAN_IP!:8100/   [camera needs HTTPS]
+)
+start "ERP-Kiosk" /D "%ROOT%\backend" /MIN cmd /k run_kiosk_loop.bat
+echo.
 
 REM Helper for cert download (port 8080, plain HTTP) — only useful when HTTPS is on
 if "!USE_HTTPS!"=="1" (

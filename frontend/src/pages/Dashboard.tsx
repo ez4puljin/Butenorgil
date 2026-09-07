@@ -27,6 +27,7 @@ import {
   Truck,
   Package,
   CheckCircle2,
+  Clock,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -128,6 +129,35 @@ type ARStats = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+// ── Өглөөний тайлан ───────────────────────────────────────────────────────────
+// Telegram-аар өглөө бүр явдаг тайлантай ижил датаг картаар харуулна.
+type DigestStatus = "ok" | "warn" | "bad" | "none";
+type DigestSection = {
+  key: string;
+  status: DigestStatus;
+  label: string;
+  value: string;
+  note: string;
+  items: string[];
+  link: string;
+};
+type DigestData = {
+  date: string;
+  day: string;
+  cached?: boolean;
+  counts: Record<DigestStatus, number>;
+  sections: DigestSection[];
+};
+
+const DIGEST_TONE: Record<DigestStatus, {
+  icon: typeof CheckCircle2; iconCls: string; valCls: string; ring: string;
+}> = {
+  ok:   { icon: CheckCircle2,  iconCls: "text-emerald-500", valCls: "text-emerald-600", ring: "border-emerald-100" },
+  warn: { icon: AlertTriangle, iconCls: "text-amber-500",   valCls: "text-amber-600",   ring: "border-amber-200" },
+  bad:  { icon: AlertTriangle, iconCls: "text-rose-500",    valCls: "text-rose-600",    ring: "border-rose-200" },
+  none: { icon: Clock,         iconCls: "text-gray-300",    valCls: "text-gray-400",    ring: "border-gray-100" },
+};
+
 const METRICS: {
   key: FlagKey;
   label: string;
@@ -189,6 +219,8 @@ export default function Dashboard() {
   const [arStats, setArStats] = useState<ARStats | null>(null);
   const [whStats, setWhStats] = useState<WhStats | null>(null);
   const [poStats, setPoStats] = useState<PODashStats | null>(null);
+  const [digest, setDigest] = useState<DigestData | null>(null);
+  const [digestLoading, setDigestLoading] = useState(false);
 
   // Modal state
   const [selectedWarehouse, setSelectedWarehouse] = useState<string | null>(null);
@@ -234,7 +266,24 @@ export default function Dashboard() {
     }
   };
 
-  useEffect(() => { load(); loadArStats(); loadWhStats(); loadPoStats(); }, []);
+  // Буцаалтын хэсэг erxes рүү ханддаг тул анхны цуглуулалт удаан — backend
+  // талдаа 5 мин кэштэй. «Шинэчлэх» дарвал кэшийг алгасана.
+  const loadDigest = async (refresh = false) => {
+    setDigestLoading(true);
+    try {
+      const res = await api.get("/digest", {
+        params: refresh ? { refresh: true } : {},
+        timeout: 120000,
+      });
+      setDigest(res.data);
+    } catch {
+      setDigest(null);
+    } finally {
+      setDigestLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); loadArStats(); loadWhStats(); loadPoStats(); loadDigest(); }, []);
 
   const handleWarehouseClick = async (warehouse: string) => {
     setSelectedWarehouse(warehouse);
@@ -338,6 +387,71 @@ export default function Dashboard() {
           Шинэчлэх
         </button>
       </div>
+
+      {/* ── Өглөөний тайлан ──────────────────────────────────────────────── */}
+      {digest && digest.sections.length > 0 && (
+        <div className="mt-6">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h2 className="text-base font-semibold text-gray-900 sm:text-lg">
+              Өглөөний тайлан
+            </h2>
+            <span className="text-xs text-gray-400">{digest.day}</span>
+            {digest.counts.bad > 0 && (
+              <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                {digest.counts.bad} яаралтай
+              </span>
+            )}
+            {digest.counts.warn > 0 && (
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                {digest.counts.warn} анхаарах
+              </span>
+            )}
+            <button
+              onClick={() => loadDigest(true)}
+              disabled={digestLoading}
+              className="ml-auto flex items-center gap-1 text-xs text-[#0071E3] hover:underline disabled:opacity-50"
+            >
+              <RefreshCw size={12} className={digestLoading ? "animate-spin" : ""} />
+              Шинэчлэх
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {digest.sections.map((s) => {
+              const tone = DIGEST_TONE[s.status] ?? DIGEST_TONE.none;
+              const Icon = tone.icon;
+              const card = (
+                <div
+                  className={`flex h-full flex-col gap-1 rounded-apple border ${tone.ring} bg-white p-4 shadow-sm transition hover:shadow-md`}
+                >
+                  <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                    <Icon size={13} className={`shrink-0 ${tone.iconCls}`} />
+                    <span className="truncate">{s.label}</span>
+                  </div>
+                  <div className={`text-2xl font-bold leading-tight ${tone.valCls}`}>
+                    {s.value}
+                  </div>
+                  <div className="text-xs text-gray-400">{s.note}</div>
+                  {s.items.length > 0 && (
+                    <ul className="mt-1.5 space-y-0.5 border-t border-gray-100 pt-1.5">
+                      {s.items.map((it, i) => (
+                        <li key={i} className="truncate text-[11px] text-gray-500">
+                          └ {it}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+              return s.link ? (
+                <Link key={s.key} to={s.link} className="block">{card}</Link>
+              ) : (
+                <div key={s.key}>{card}</div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Loading */}
       {loading && (
