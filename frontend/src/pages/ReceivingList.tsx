@@ -132,7 +132,11 @@ function BrandChips({ brands, max = 3 }: { brands: Session["brands"]; max?: numb
 }
 
 export default function ReceivingList() {
-  const { role } = useAuthStore();
+  const { role, baseRole} = useAuthStore();
+  // Эрхийн шалгалт бүр ҮР НӨЛӨӨТЭЙ түвшнээр — backend-ийн
+  // require_role нь base_role-оор шийддэг. Түүхий `role` нь
+  // захиалгат нэр (driver, cashier, hudaldagch...).
+  const eff = baseRole || role || "";
   const navigate = useNavigate();
   const [tab, setTab] = useState("");
   const [rows, setRows] = useState<Session[]>([]);
@@ -215,8 +219,8 @@ export default function ReceivingList() {
     }
   };
 
-  const canArchive = ["admin", "manager", "supervisor"].includes(role ?? "");
-  const canDelete = role === "admin";
+  const canArchive = ["admin", "manager", "supervisor"].includes(eff);
+  const canDelete = eff === "admin";
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="pb-24 sm:pb-0">

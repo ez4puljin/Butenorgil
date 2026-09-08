@@ -106,7 +106,11 @@ function fmtBalance(val: number | null): string {
 
 export default function AccountsReceivable() {
   const role     = localStorage.getItem("role");
-  const isAdmin  = role === "admin";
+  const baseRole = localStorage.getItem("baseRole");
+  // Эрхийн шалгалт ҮР НӨЛӨӨТЭЙ түвшнээр — backend-ийн require_role нь
+  // base_role-оор шийддэг. Түүхий `role` нь захиалгат нэр байж болно.
+  const eff = baseRole || role || "";
+  const isAdmin  = eff === "admin";
 
   // Import logs (status display only)
   const [logs, setLogs] = useState<ImportLogRow[]>([]);

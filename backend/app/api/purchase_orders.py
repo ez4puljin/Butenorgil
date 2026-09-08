@@ -4,7 +4,7 @@ from typing import Optional, List
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -83,10 +83,24 @@ def _serialize_order(o: PurchaseOrder, db: Session) -> dict:
     }
 
 
+def _detail_response(data: dict) -> JSONResponse:
+    """Захиалгын дэлгэрэнгүйг FastAPI-ийн jsonable_encoder-ыг АЛГАСААД буцаана.
+
+    Яагаад: энгийн dict буцаавал FastAPI автоматаар `jsonable_encoder`-оор
+    гүйлгэдэг. 22,283 мөртэй захиалга дээр энэ нь 2.34 СЕКУНД иддэг (хэмжсэн) —
+    serializer-ээс ч удаан. `_serialize_order_detail` нь аль хэдийн зөвхөн
+    анхдагч төрөл (str/int/float/bool/None/list/dict) буцаадаг тул хөрвүүлэх
+    зүйл байхгүй. Response объект буцаавал FastAPI хөндөхгүй өнгөрөөнө.
+    Хатуу json.dumps-аар (default=str-гүй) шалгаж баталгаажуулсан.
+    """
+    return JSONResponse(content=data)
+
+
 def _serialize_order_detail(
     o: PurchaseOrder,
     db: Session,
     filter_tag_ids: Optional[List[int]] = None,
+    all_lines_at_preparing: bool = True,
 ) -> dict:
     """Full detail including product info for each line.
     If filter_tag_ids is provided, only lines whose product belongs to those warehouses are returned.
@@ -123,22 +137,43 @@ def _serialize_order_detail(
     # Load lines via explicit query (NOT lazy o.lines which loads ALL 10K+ rows)
     # For preparing stage: load all lines (user needs to enter quantities for any product)
     # For other stages: only load lines with order_qty_box > 0 (or supplier_qty > 0 for cancelled tracking)
+    # preparing статуст БҮХ мөрийг (тоо=0 ч гэсэн) илгээдэг — учир нь нярав
+    # дурын бараанд тоо оруулах ёстой. Гэхдээ БУСАД хэрэглэгчийн UI нь
+    # тоо=0 мөрийг ямар ч байсан нуудаг (baseLines шүүлт) тул тэдэнд илгээх нь
+    # цэвэр дэмий: захиалга #106 дээр 22,283 мөр илгээгээд 171 нь л
+    # харагддаг. Тиймээс зөвхөн шаардлагатай үед нь бүгдийг илгээнэ.
+    # Ороогүй барааг харах бол /unordered зам бий.
     lines_q = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == o.id)
-    if o.status not in ("preparing",):
+    if o.status not in ("preparing",) or not all_lines_at_preparing:
         lines_q = lines_q.filter(
             (PurchaseOrderLine.order_qty_box > 0) | (PurchaseOrderLine.supplier_qty_box > 0)
         )
     all_lines = lines_q.all()
 
-    # Bulk load products
-    product_ids = [l.product_id for l in all_lines]
-    products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
+    # Bulk load products.
+    # IN (...) биш JOIN ашиглана: 22,283 мөртэй захиалганд IN нь 22,283 bind
+    # параметр үүсгэдэг байсан — SQLite-ийн 32,766 хязгаарын 2/3. ~33 мянган
+    # мөртэй захиалга дээр хүсэлт бүтэлгүйтэх байв. JOIN нь хязгааргүй бөгөөд
+    # хурдан ч.
+    prod_q = (
+        db.query(Product)
+        .join(PurchaseOrderLine, PurchaseOrderLine.product_id == Product.id)
+        .filter(PurchaseOrderLine.purchase_order_id == o.id)
+    )
+    # all_lines-тэй ЯГ ижил шүүлт — эс тэгвээс бусад статуст хэрэггүй бараа татна.
+    if o.status not in ("preparing",):
+        prod_q = prod_q.filter(
+            (PurchaseOrderLine.order_qty_box > 0) | (PurchaseOrderLine.supplier_qty_box > 0)
+        )
+    products = prod_q.distinct().all() if all_lines else []
     product_map = {p.id: p for p in products}
 
     # Min-stock rules (нэг удаа ачаалаад бараа бүрт match хийнэ)
     from app.models.min_stock_rule import MinStockRule
-    from app.services.min_stock_check import find_rule_for_product, compute_needs_reorder, stock_breakdown
+    from app.services.min_stock_check import build_rule_matcher, compute_needs_reorder, stock_breakdown
     _ms_rules = db.query(MinStockRule).filter(MinStockRule.is_active == True).all()
+    # Мөр бүрт бүх дүрмийг гүйхийн оронд кэштэй тааруулагч (22k мөрд ~0.5 сек хэмнэнэ)
+    _match_rule = build_rule_matcher(_ms_rules)
 
     # Bulk load shipment line totals: po_line_id → total loaded (sum across shipments)
     line_ids = [l.id for l in all_lines]
@@ -146,13 +181,15 @@ def _serialize_order_detail(
     shipped_received: dict[int, float] = {}
     if line_ids:
         from sqlalchemy import func as _func
+        # Мөн адил: IN (22k id) биш JOIN — параметрийн хязгаарт хүрэхгүй.
         rows = (
             db.query(
                 POShipmentLine.po_line_id,
                 _func.sum(POShipmentLine.loaded_qty_box),
                 _func.sum(POShipmentLine.received_qty_box),
             )
-            .filter(POShipmentLine.po_line_id.in_(line_ids))
+            .join(PurchaseOrderLine, PurchaseOrderLine.id == POShipmentLine.po_line_id)
+            .filter(PurchaseOrderLine.purchase_order_id == o.id)
             .group_by(POShipmentLine.po_line_id)
             .all()
         )
@@ -160,13 +197,15 @@ def _serialize_order_detail(
             shipped_loaded[row[0]] = float(row[1] or 0)
             shipped_received[row[0]] = float(row[2] or 0)
 
-    # ── Нөөц багана (зөвхөн preparing/reviewing) — захиалгын байршлаас хамаарч
-    #    үлдэгдлийн файлаас тооцно: warehouse → Бүх агуулах; showroom → Үндсэн
-    #    заал + Архины заал. Бусад статуст файл уншихгүй (багана харагдахгүй). ──
-    balance_map = None
-    if o.status in ("preparing", "reviewing"):
-        from app.services.balance_stock import get_location_stock_map
-        balance_map = get_location_stock_map(db, o.location or "warehouse")
+    # ── Нөөц багана — захиалгын байршлаас хамаарч үлдэгдлийн файлаас тооцно:
+    #    warehouse → Бүх агуулах; showroom → Үндсэн заал + Архины заал.
+    #    Өмнө нь зөвхөн preparing/reviewing статуст ачаалдаг байсан (тэр үед л
+    #    багана харагддаг байсан учир). Одоо багана бүх статуст харагдана тул
+    #    ҮРГЭЛЖ ачаална — эс тэгвээс нэг багана дунд замдаа Product.stock_qty
+    #    руу чимээгүй сольж, утга нь өөрчлөгдөнө. get_location_stock_map нь
+    #    кэштэй бөгөөд урьдчилан дулаацуулсан тул нэмэлт зардал бага. ──
+    from app.services.balance_stock import get_location_stock_map
+    balance_map = get_location_stock_map(db, o.location or "warehouse")
 
     lines_out = []
     for l in all_lines:
@@ -204,7 +243,7 @@ def _serialize_order_detail(
             s_box = _bd["stock_box"]
             s_extra = _bd["stock_extra_pcs"]
         # Дахин захиалах шалгалт — харагдаж буй нөөцтэй ижил эх сурвалжаар (хайрцгаар)
-        matched_rule = find_rule_for_product(p, _ms_rules)
+        matched_rule = _match_rule(p)
         if matched_rule:
             min_stock_box = float(matched_rule.min_qty_box or 0)
             needs_reorder = s_box < min_stock_box
@@ -309,7 +348,9 @@ class POCreateIn(BaseModel):
 
 class POLineIn(BaseModel):
     product_id: int
-    order_qty_box: float
+    # None = "энэ талбарыг бүү хөнд". Өмнө нь заавал байх шаардлагатай байсан тул
+    # зөвхөн үнэ засаж байсан ч захиалгын тоо дагаж бичигдэж байв.
+    order_qty_box: Optional[float] = None
     supplier_qty_box: Optional[float] = None
     loaded_qty_box: Optional[float] = None
     received_qty_box: Optional[float] = None
@@ -655,17 +696,34 @@ def advance_brand_status(
         PurchaseOrderBrandStatus.brand == brand,
     ).first()
     if not bs:
-        raise HTTPException(404, f"'{brand}' брендийн статус олдсонгүй")
+        # Мөр байхгүй бол ҮҮСГЭНЭ (өмнө нь 404 өгдөг байсан). Статусын мөр нь
+        # зөвхөн захиалга өгсөн брендэд үүсдэг тул шинээр бараа нэмсэн бренд
+        # мөргүй үлдэж, хэзээ ч шилжиж чадахгүй гацдаг байв.
+        bs = PurchaseOrderBrandStatus(
+            purchase_order_id=order_id, brand=brand, status=po.status)
+        db.add(bs)
+        db.flush()
 
     next_st = _next_status(bs.status)
     if not next_st:
         raise HTTPException(400, "Эцсийн статуст хүрсэн")
 
-    # Role check (same logic as advance_status)
-    if u.role == "warehouse_clerk":
-        raise HTTPException(403, "Статус шилжүүлэх эрхгүй")
-    if u.role == "accountant" and bs.status not in ("accounting", "confirmed"):
-        raise HTTPException(403, "Нягтлан зөвхөн accounting/confirmed статусыг шилжүүлнэ")
+    # Эрхийн шалгалт — advance_status-тай ЯГ ижил ЗӨВШӨӨРӨХ жагсаалт.
+    #
+    # Өмнө нь энэ функц ХОРИГЛОХ жагсаалт ашигладаг байсан: зөвхөн
+    # `u.role == "warehouse_clerk"`-ийг хориглоод бусдыг бүгдийг нь
+    # зөвшөөрдөг байв. Энэ нь хоёр нүхтэй:
+    #   1. Захиалгат role-ууд (driver, aguulah_tuslah — хоёулаа
+    #      base_role=warehouse_clerk) шалгалтыг ДАВЖ гардаг байсан, учир нь
+    #      тэдний `role` тэмдэгт мөр нь "warehouse_clerk" биш.
+    #   2. Огт мэдэгдээгүй role бүр зөвшөөрөгддөг байв.
+    # deps.require_role-той адилаар base_role-оор шийднэ.
+    effective = _eff_role(u)
+    allowed_roles = ["manager", "supervisor", "admin"]
+    if bs.status in ("accounting", "confirmed"):
+        allowed_roles.append("accountant")
+    if effective not in allowed_roles:
+        raise HTTPException(403, "Энэ үйлдлийг хийх эрх байхгүй")
 
     # Side effect: arrived → accounting → pre-fill unit_price for this brand's lines
     if bs.status == "arrived" and next_st == "accounting":
@@ -730,7 +788,151 @@ def get_brand_detail(
     detail["brand_next_status"] = _next_status(brand_status)
     detail["brand_next_status_label"] = STATUS_LABEL.get(_next_status(brand_status) or "", "")
 
-    return detail
+    return _detail_response(detail)
+
+
+# Брэндгүй барааг нэгтгэлд эндээр нэрлэнэ (жинхэнэ бренд БИШ).
+NO_BRAND_LABEL = "Брэнд байхгүй"
+
+
+@router.get("/{order_id}/unordered")
+def get_unordered_lines(
+    order_id: int,
+    brand: Optional[str] = Query(None, description="Хоосон бол брендээр НЭГТГЭСЭН тоо; өгвөл тухайн брендийн жагсаалт"),
+    q: Optional[str] = Query(None, description="Код/нэрээр шүүх"),
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0, description="Хуудаслалт. Эрэмбэ давхцалгүй тул алгасалт аюулгүй"),
+    flat: bool = Query(False, description="True бол брендээр шүүхгүй — БҮХ брендээс хавтгай жагсаалт"),
+    db: Session = Depends(get_db),
+    u: User = Depends(get_current_user),
+):
+    """Захиалгад ОРООГҮЙ (тоо = 0) барааг брендээр нэгтгэж/жагсаана.
+
+    Яагаад тусдаа зам вэ:
+      · preparing-ээс бусад бүх статуст `_serialize_order_detail` тоо=0 мөрийг
+        ХАЯДАГ тул үндсэн хариунаас эдгээрийг олж харах боломжгүй;
+      · үндсэн хариунд нэмэх нь болохгүй — frontend-ийн `saveLines` нь
+        `order.lines`-ыг бүхэлд нь буцааж илгээдэг тул хадгалалт бүр мянган
+        тэг мөр бичих болно;
+      · залхуу (lazy) татдаг тул 22 мянган мөртэй захиалгын ачаалалт удаашрахгүй.
+
+    Гурван горим:
+      brand=None, flat=False → {total, brands:[{brand,count}]}   — нэгтгэл
+      brand="X"              → тухайн брендийн жагсаалт
+      flat=True              → БҮХ брендээс хавтгай жагсаалт (мөр бүр brand-тай)
+
+    Хавтгай горим яагаад хэрэгтэй вэ: 471 бренд байхад хэрэглэгчийн бодол
+    "энэ кодыг захиалъя" болохоос "энэ брендийг нээе" биш. `base` нь аль
+    хэдийн брендээс хамааралгүй тул нэмэлт зардал байхгүй — хэмжсэнээр
+    хавтгай хайлт нэг брендийнхтэй ижил (0.077с).
+
+    `total` нь ЗӨВХӨН эхний хуудсанд (offset == 0) бодогдоно — шүүлтгүй
+    COUNT(*) нь 2.8 секунд иддэг тул хуудас тутамд давтах нь хэрэггүй.
+    offset > 0 үед total = -1 ирнэ; клиент өмнөх утгаа хадгална.
+    """
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+    if po.is_archived and _eff_role(u) not in ("admin", "manager", "supervisor"):
+        raise HTTPException(403, "Архивлагдсан захиалгыг харах эрхгүй")
+
+    # Захиалгад ороогүй = тоо ч, нийлүүлэгчийн тоо ч 0 (detail-ийн шүүлттэй ижил)
+    base = (
+        db.query(PurchaseOrderLine, Product)
+        .join(Product, Product.id == PurchaseOrderLine.product_id)
+        .filter(
+            PurchaseOrderLine.purchase_order_id == order_id,
+            func.coalesce(PurchaseOrderLine.order_qty_box, 0) <= 0,
+            func.coalesce(PurchaseOrderLine.supplier_qty_box, 0) <= 0,
+        )
+    )
+    # warehouse_clerk зөвхөн өөрийн агуулахын бараа
+    clerk_tags = parse_tag_ids(u.tag_ids) if _eff_role(u) == "warehouse_clerk" else None
+    # `is not None` — `if clerk_tags:` байсан үед агуулах ОЛГООГҮЙ clerk нь
+    # шүүлтгүй үлдэж БҮХ агуулахын барааг хардаг байв. Хоосон жагсаалт нь
+    # "бүгд" биш "юу ч биш" гэсэн утгатай.
+    if clerk_tags is not None:
+        base = base.filter(
+            (Product.warehouse_tag_id == 0) | (Product.warehouse_tag_id.in_(clerk_tags))
+        )
+
+    # override_brand-ыг харгалзсан ҮР ДҮНГИЙН бренд (SQL дотор — Python давталтгүй).
+    # Нэгтгэл ба жагсаалт ХОЁУЛАА үүнийг хэрэглэнэ.
+    eff = func.coalesce(
+        func.nullif(func.trim(PurchaseOrderLine.override_brand), ""), Product.brand
+    )
+
+    if brand is None and not flat:
+        # Нэгтгэл: бренд бүрийн ороогүй барааны тоо.
+        # trim-ийг SQL талд хийнэ. Өмнө нь `group_by(eff)` + Python `.strip()`
+        # байсан тул "A" ба "A " хоёр тусдаа бүлэг болоод клиент дээр нэг
+        # түлхүүр рүү дарагдаж, нэгтгэлийн тоо жагсаалтынхтай зөрдөг байв.
+        gb = func.trim(eff)
+        rows = (
+            base.with_entities(gb.label("brand"), func.count(PurchaseOrderLine.id))
+            .group_by(gb).all()
+        )
+        out = [{"brand": (r[0] or "").strip() or NO_BRAND_LABEL, "count": int(r[1] or 0)} for r in rows]
+        out.sort(key=lambda x: -x["count"])
+        return JSONResponse(content={"total": sum(x["count"] for x in out), "brands": out})
+
+    # ── Жагсаалт ──
+    if flat:
+        if brand is not None:
+            raise HTTPException(400, "flat ба brand-ыг зэрэг өгөх боломжгүй")
+        # Брендээр шүүхгүй. `base` нь аль хэдийн брендээс хамааралгүй.
+        qry = base
+    elif brand == NO_BRAND_LABEL:
+        # Брэндгүй бараанд нэгтгэл нь "Брэнд байхгүй" гэсэн ЖИНХЭНЭ БУС нэр
+        # өгдөг тул түүгээр шүүвэл юу ч олдохгүй — NULL/хоосон гэж тусад нь.
+        qry = base.filter((eff.is_(None)) | (func.trim(eff) == ""))
+    else:
+        # trim: нэгтгэл нь SQL талд trim хийдэг тул жагсаалт нь ч ижил байх ёстой.
+        qry = base.filter(func.trim(eff) == brand.strip())
+
+    if q:
+        like = f"%{q.strip()}%"
+        qry = qry.filter((Product.item_code.ilike(like)) | (Product.name.ilike(like)))
+
+    total = qry.count() if offset == 0 else -1
+
+    # Хавтгай горимд эхлээд брендээр эрэмбэлнэ — эс тэгвээс 200 мөрөнд 150
+    # бренд тарж, жагсаалт уншигдахгүй болно. (eff, item_code) нь давхцалгүй.
+    order_cols = (func.trim(eff), Product.item_code) if flat else (Product.item_code,)
+    rows = qry.order_by(*order_cols).offset(offset).limit(limit).all()
+
+    from app.services.balance_stock import get_location_stock_map
+    balance_map = get_location_stock_map(db, po.location or "warehouse")
+
+    items = []
+    for l, p in rows:
+        pack = float(p.pack_ratio or 1) or 1.0
+        s_qty = float(balance_map.get(p.item_code, 0.0))
+        # brand     = override_brand-ыг харгалзсан ҮР ДҮНГИЙН бренд (UI бүлэглэлт)
+        # raw_brand = Product.brand — `set_lines`-ийн статусын маск ҮҮГЭЭР
+        #             сонгогддог (мөр ~1511). Зөвхөн нэгийг нь шалгавал
+        #             override_brand-тай мөрд UI зөвшөөрч, backend чимээгүй
+        #             хаяад {"ok": true} буцаана.
+        _ov = (l.override_brand or "").strip()
+        items.append({
+            "product_id": p.id,
+            "line_id": l.id,
+            "item_code": p.item_code,
+            "name": p.name,
+            "brand": (_ov or (p.brand or "").strip()) or NO_BRAND_LABEL,
+            "raw_brand": (p.brand or "").strip() or NO_BRAND_LABEL,
+            "warehouse_name": p.warehouse_name or "",
+            "price_tag": p.price_tag or "",
+            "pack_ratio": pack,
+            "unit_weight": float(p.unit_weight or 0),
+            "stock_qty": s_qty,
+            "stock_box": int(s_qty // pack) if pack > 0 else 0,
+            "last_purchase_price": float(p.last_purchase_price or 0),
+        })
+    return JSONResponse(content={
+        "brand": brand, "flat": flat, "total": total,
+        "offset": offset, "shown": len(items), "items": items,
+    })
 
 
 @router.patch("/{order_id}/vehicle")
@@ -767,10 +969,22 @@ def _compute_po_dashboard_stats(db: Session) -> dict:
     transit_boxes = 0.0
     latest_active: Optional[dict] = None
 
+    # Захиалга бүрийн жин/хайрцгийг НЭГ SQL нэгтгэлээр урьдчилан бодно.
+    # Өмнө нь давталт дотор `o.lines` lazy-load хийж 1,374,185 мөрийг ORM
+    # объект болгодог байсан — хэмжихэд 45.98 СЕКУНД. Энэ функц 90 секунд
+    # тутам ард ажилладаг тул бүх хүсэлтийн CPU-г идэж байв.
+    _agg = {
+        row[0]: (float(row[1] or 0), float(row[2] or 0))
+        for row in db.query(
+            PurchaseOrderLine.purchase_order_id,
+            func.sum(PurchaseOrderLine.computed_weight),
+            func.sum(PurchaseOrderLine.order_qty_box),
+        ).group_by(PurchaseOrderLine.purchase_order_id).all()
+    }
+
     for o in orders:
         by_status[o.status] = by_status.get(o.status, 0) + 1
-        order_weight = sum(l.computed_weight for l in o.lines)
-        order_boxes  = sum(l.order_qty_box for l in o.lines)
+        order_weight, order_boxes = _agg.get(o.id, (0.0, 0.0))
         if o.status != "arrived":
             active_weight += order_weight
             active_boxes  += order_boxes
@@ -839,7 +1053,7 @@ def list_purchase_orders(
     q = db.query(PurchaseOrder)
 
     # warehouse_clerk sees preparing and arrived orders
-    if u.role == "warehouse_clerk":
+    if _eff_role(u) == "warehouse_clerk":
         q = q.filter(PurchaseOrder.status.in_(["preparing", "arrived"]))
     # manager/supervisor/admin see all
 
@@ -849,11 +1063,11 @@ def list_purchase_orders(
     # - "only": зөвхөн архивлагдсан (admin/manager л хандана)
     arch = (archived or "false").lower()
     if arch == "only":
-        if u.role not in ("admin", "manager", "supervisor"):
+        if _eff_role(u) not in ("admin", "manager", "supervisor"):
             raise HTTPException(403, "Архив харах эрхгүй")
         q = q.filter(PurchaseOrder.is_archived == True)
     elif arch == "true":
-        if u.role not in ("admin", "manager", "supervisor"):
+        if _eff_role(u) not in ("admin", "manager", "supervisor"):
             # Admin/manager биш бол архивгүй л буцаана
             q = q.filter(PurchaseOrder.is_archived == False)
     else:
@@ -983,7 +1197,7 @@ def list_shipments_by_status(
     Ижил machine дээр олон захиалгын shipment байвал нэг vehicle group дотор нэгтгэнэ.
     """
     # warehouse_clerk зөвхөн "arrived" харна
-    if u.role == "warehouse_clerk" and status != "arrived":
+    if _eff_role(u) == "warehouse_clerk" and status != "arrived":
         return []
 
     shipments = (
@@ -1062,16 +1276,20 @@ def get_purchase_order(
         raise HTTPException(404, "Захиалга олдсонгүй")
 
     # Архивлагдсан захиалгыг зөвхөн admin/manager/supervisor л харна
-    if po.is_archived and u.role not in ("admin", "manager", "supervisor"):
+    if po.is_archived and _eff_role(u) not in ("admin", "manager", "supervisor"):
         raise HTTPException(403, "Архивлагдсан захиалгыг харах эрхгүй")
 
     # warehouse_clerk can only see preparing and arrived orders
-    if u.role == "warehouse_clerk" and po.status not in ("preparing", "arrived"):
+    if _eff_role(u) == "warehouse_clerk" and po.status not in ("preparing", "arrived"):
         raise HTTPException(403, "Энэ захиалгыг харах эрх байхгүй")
 
     # warehouse_clerk sees only products from their assigned warehouses
-    filter_tag_ids = parse_tag_ids(u.tag_ids) if u.role == "warehouse_clerk" else None
-    return _serialize_order_detail(po, db, filter_tag_ids=filter_tag_ids)
+    _eff = _eff_role(u)
+    filter_tag_ids = parse_tag_ids(u.tag_ids) if _eff == "warehouse_clerk" else None
+    # Тоо оруулах горим (нярав + preparing) дээр л бүх мөрийг илгээнэ.
+    need_all = (_eff == "warehouse_clerk" and po.status == "preparing")
+    return _detail_response(_serialize_order_detail(
+        po, db, filter_tag_ids=filter_tag_ids, all_lines_at_preparing=need_all))
 
 
 @router.patch("/{order_id}/status")
@@ -1092,7 +1310,7 @@ def advance_status(
     allowed_roles = ["manager", "supervisor", "admin"]
     if po.status in ("accounting", "confirmed"):
         allowed_roles.append("accountant")
-    if u.role not in allowed_roles:
+    if _eff_role(u) not in allowed_roles:
         raise HTTPException(403, "Энэ үйлдлийг хийх эрх байхгүй")
 
     # When advancing arrived → accounting, pre-fill unit_price from last_purchase_price
@@ -1185,7 +1403,11 @@ def force_status(
             PurchaseOrderBrandStatus.brand == brand,
         ).first()
         if not bs:
-            raise HTTPException(404, f"'{brand}' брендийн статус олдсонгүй")
+            # Мөн адил: байхгүй бол үүсгэнэ, 404 өгөхгүй.
+            bs = PurchaseOrderBrandStatus(
+                purchase_order_id=order_id, brand=brand, status=po.status)
+            db.add(bs)
+            db.flush()
         old_status = bs.status
         bs.status = body.status
         audit(db, request, u,
@@ -1241,11 +1463,12 @@ def set_lines(
         raise HTTPException(404, "Захиалга олдсонгүй")
     # warehouse_clerk — preparing + arrived; accountant — accounting; admin — all editable;
     # manager/supervisor — preparing, reviewing, loading + accounting (for unit_price editing)
-    if u.role == "warehouse_clerk":
+    _eff = _eff_role(u)
+    if _eff == "warehouse_clerk":
         allowed_statuses = ["preparing", "arrived"]
-    elif u.role == "accountant":
+    elif _eff == "accountant":
         allowed_statuses = ["accounting"]
-    elif u.role == "admin":
+    elif _eff == "admin":
         allowed_statuses = ["preparing", "reviewing", "loading", "arrived", "accounting"]
     else:
         allowed_statuses = ["preparing", "reviewing", "loading", "accounting"]
@@ -1256,19 +1479,24 @@ def set_lines(
     ).all():
         brand_status_map[bs.brand] = bs.status
 
+    # Админ бүх статуст засварлана — статус солигдоход ажил гацахгүй байх
+    # шаардлага (хэрэглэгчийн хүсэлт). base_role-ыг ч шалгана: захиалгат
+    # нэртэй role (жишээ "Ерөнхий админ") admin суурьтай байж болно.
+    is_admin = _eff_role(u) == "admin"
+
     # PO-level check (fallback for backward compat)
-    if po.status not in allowed_statuses:
+    if not is_admin and po.status not in allowed_statuses:
         # Per-brand: any brand in an allowed status?
         has_allowed_brand = any(s in allowed_statuses for s in brand_status_map.values())
         if not has_allowed_brand:
             raise HTTPException(400, "Энэ статуст тоо өөрчлөх боломжгүй")
 
     # Permission check
-    if u.role not in ("manager", "warehouse_clerk", "admin", "supervisor", "accountant"):
+    if _eff_role(u) not in ("manager", "warehouse_clerk", "admin", "supervisor", "accountant"):
         raise HTTPException(403, "Энэ үйлдлийг хийх эрх байхгүй")
 
     # warehouse_clerk restricted to their assigned warehouses
-    clerk_tag_ids = parse_tag_ids(u.tag_ids) if u.role == "warehouse_clerk" else None
+    clerk_tag_ids = parse_tag_ids(u.tag_ids) if _eff_role(u) == "warehouse_clerk" else None
 
     # Build lookup map for existing lines
     line_map = {l.product_id: l for l in po.lines}
@@ -1326,7 +1554,35 @@ def set_lines(
 
         before_snap = _snapshot(line)
 
-        if effective_st == "arrived":
+        if is_admin:
+            # Админ: статусаас үл хамааран ИЛГЭЭСЭН талбарыг бүгдийг бичнэ.
+            # Илгээгээгүй (None) талбарыг хөндөхгүй — доорх статусын маск шиг
+            # чимээгүй хаяхгүй. Ингэснээр захиалга ямар ч үе шатанд байхад
+            # админ засвар хийж чадна.
+            if li.order_qty_box is not None:
+                qty_box = float(li.order_qty_box)
+                line.order_qty_box = qty_box
+                line.order_qty_pcs = qty_box * float(p.pack_ratio or 1)
+                line.computed_weight = line.order_qty_pcs * float(p.unit_weight or 0)
+            if li.supplier_qty_box is not None:
+                line.supplier_qty_box = float(li.supplier_qty_box)
+            if li.loaded_qty_box is not None:
+                new_loaded = float(li.loaded_qty_box)
+                line.loaded_qty_box = new_loaded
+                sh_lines = db.query(POShipmentLine).filter(
+                    POShipmentLine.po_line_id == line.id
+                ).all()
+                if len(sh_lines) == 1:
+                    sh_lines[0].loaded_qty_box = new_loaded
+            if li.received_qty_box is not None:
+                line.received_qty_box = float(li.received_qty_box)
+            if li.received_qty_extra_pcs is not None:
+                line.received_qty_extra_pcs = float(li.received_qty_extra_pcs)
+            if li.unit_price is not None:
+                line.unit_price = float(li.unit_price)
+            if li.remark is not None:
+                line.line_remark = li.remark
+        elif effective_st == "arrived":
             if li.received_qty_box is not None:
                 line.received_qty_box = float(li.received_qty_box)
             if li.received_qty_extra_pcs is not None:
@@ -1344,12 +1600,13 @@ def set_lines(
                 line.line_remark = li.remark
         else:
             # preparing / reviewing / loading — update order qty + derived fields
-            qty_box = float(li.order_qty_box or 0)
-            qty_pcs = qty_box * float(p.pack_ratio or 1)
-            weight = qty_pcs * float(p.unit_weight or 0)
-            line.order_qty_box = qty_box
-            line.order_qty_pcs = qty_pcs
-            line.computed_weight = weight
+            # order_qty_box одоо сонголттой: илгээгээгүй бол хуучин утга хэвээр.
+            if li.order_qty_box is not None:
+                qty_box = float(li.order_qty_box)
+                qty_pcs = qty_box * float(p.pack_ratio or 1)
+                line.order_qty_box = qty_box
+                line.order_qty_pcs = qty_pcs
+                line.computed_weight = qty_pcs * float(p.unit_weight or 0)
             if effective_st == "loading":
                 if li.supplier_qty_box is not None:
                     line.supplier_qty_box = float(li.supplier_qty_box)
@@ -1485,7 +1742,10 @@ def delete_line(
 
     # warehouse_clerk-д зөвхөн arrived (Ачаа ирсэн) status-д устгах эрх
     # бусад role-д зөвхөн loading status-д устгах эрх
-    if u.role == "warehouse_clerk":
+    _is_admin = _eff_role(u) == "admin"
+    if _is_admin:
+        pass                      # админ бүх статуст устгана
+    elif _eff_role(u) == "warehouse_clerk":
         if effective_st != "arrived":
             raise HTTPException(400, "Нярав зөвхөн 'Ачаа ирсэн' статуст мөр устгана")
     else:
@@ -1530,7 +1790,9 @@ def add_line(
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
-    if po.status not in ("preparing", "loading"):
+    # Админ бүх статуст бараа нэмнэ (статусаар гацахгүй байх шаардлага).
+    _is_admin = _eff_role(u) == "admin"
+    if not _is_admin and po.status not in ("preparing", "loading"):
         raise HTTPException(400, "Энэ статуст бараа нэмэх боломжгүй")
     p = db.query(Product).filter(Product.id == body.product_id).first()
     if not p:
@@ -1538,7 +1800,7 @@ def add_line(
     existing = next((l for l in po.lines if l.product_id == body.product_id), None)
     # override_brand шалгалт: зөвхөн admin
     override_brand = (body.override_brand or "").strip()
-    if override_brand and u.role != "admin":
+    if override_brand and _eff_role(u) != "admin":
         raise HTTPException(403, "Бусад брендийн бараа нэмэх эрх зөвхөн админ эрхтэй")
     # override тохиолдолд барааны оригинал бренд override_brand-тэй адил байвал утгагүй
     if override_brand and (p.brand or "") == override_brand:
@@ -2192,9 +2454,10 @@ def _extra_line_access(order_id: int, db: Session, u: User) -> PurchaseOrder:
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
-    if po.status != "loading":
+    _is_admin = _eff_role(u) == "admin"
+    if not _is_admin and po.status != "loading":
         raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' статуст нэмэлт мөр засах боломжтой")
-    if u.role not in ("manager", "admin", "supervisor"):
+    if _eff_role(u) not in ("manager", "admin", "supervisor"):
         raise HTTPException(403, "Эрх хүрэлцэхгүй")
     return po
 
@@ -2813,6 +3076,19 @@ def move_shipment_line(
     db.delete(sl)
     db.commit()
     return {"ok": True, "action": "moved", "target_shipment_id": body.target_shipment_id}
+
+
+def _eff_role(u) -> str:
+    """Хэрэглэгчийн ҮР НӨЛӨӨТЭЙ эрхийн түвшин.
+
+    Хэрэглэгч бүр `role` (захиалгат нэр, ж: "driver") ба `base_role`
+    (системийн түвшин, ж: "warehouse_clerk") хоёртой. `deps.require_role` нь
+    base_role-оор шийддэг атлаа функц доторх шалгалтууд түүхий `u.role`-ийг
+    харьцуулдаг байсан — тиймээс driver/aguulah_tuslah (хоёулаа
+    base_role=warehouse_clerk) няравын хязгаарлалтыг ТОЙРЧ гардаг байв.
+    Бүх эрхийн шалгалт үүгээр дамжина.
+    """
+    return (getattr(u, "base_role", None) or getattr(u, "role", "") or "")
 
 
 # ── Brand status helpers ──────────────────────────────────────────────────────

@@ -130,7 +130,8 @@ function ErpLogoBadge(props: { logo: ImportCard["logo"] }) {
 }
 
 export default function Imports() {
-  const isAdmin = localStorage.getItem("role") === "admin";
+  // base_role-оор: захиалгат нэртэй админ ("Ерөнхий админ" гэх мэт) ч багтана.
+  const isAdmin = (localStorage.getItem("baseRole") || localStorage.getItem("role")) === "admin";
 
   const [modal, setModal] = useState<ModalState>({
     open: false,

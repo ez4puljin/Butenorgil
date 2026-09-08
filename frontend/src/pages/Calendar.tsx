@@ -145,6 +145,10 @@ export default function CalendarPage() {
   const notesRef = useRef<HTMLTextAreaElement>(null);
   const userId = useAuthStore(s => s.userId);
   const role   = useAuthStore(s => s.role);
+  const baseRole = useAuthStore(s => s.baseRole);
+  // Эрхийн шалгалт ҮР НӨЛӨӨТЭЙ түвшнээр — backend-ийн require_role нь
+  // base_role-оор шийддэг. Түүхий `role` нь захиалгат нэр байж болно.
+  const eff = baseRole || role || "";
 
   // ── Load ────────────────────────────────────────────────────────────────────
 
@@ -322,7 +326,7 @@ export default function CalendarPage() {
               Цэвэрлэх
             </button>
           )}
-          {role === "admin" && (
+          {eff === "admin" && (
             <button
               onClick={() => setShowLabelManager(true)}
               className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50"
@@ -432,7 +436,7 @@ export default function CalendarPage() {
                           const s = taskStyle(t?.color ?? "gray");
                           const Icon = taskIcon(t?.icon ?? "MoreHorizontal");
                           const shortName = t?.short || t?.label || ev.task_type;
-                          const canMove = ev.created_by_user_id === userId || role === "admin" || role === "supervisor";
+                          const canMove = ev.created_by_user_id === userId || eff === "admin" || eff === "supervisor";
                           const isDragging = draggingId === ev.id;
                           return (
                             <span key={ev.id}
@@ -611,7 +615,7 @@ export default function CalendarPage() {
                   const t = TASK_MAP[ev.task_type];
                   const s = taskStyle(t?.color ?? "gray");
                   const Icon = taskIcon(t?.icon ?? "MoreHorizontal");
-                  const canEdit = ev.created_by_user_id === userId || role==="admin" || role==="supervisor";
+                  const canEdit = ev.created_by_user_id === userId || eff==="admin" || eff==="supervisor";
                   return (
                     <div key={ev.id}
                       className={`flex items-start gap-3 px-4 py-3 transition-opacity ${ev.is_done?"opacity-40":""}`}>
@@ -748,7 +752,7 @@ export default function CalendarPage() {
       </AnimatePresence>
 
       {/* ════════════════ Label Manager (admin) ════════════════ */}
-      {showLabelManager && role === "admin" && (
+      {showLabelManager && eff === "admin" && (
         <LabelManager
           labels={labels}
           onClose={() => setShowLabelManager(false)}

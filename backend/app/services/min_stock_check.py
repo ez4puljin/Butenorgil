@@ -76,3 +76,61 @@ def compute_needs_reorder(product: Product, rule: MinStockRule | None) -> tuple[
 def build_rule_index(rules: list[MinStockRule]) -> list[MinStockRule]:
     """Serialize дараалалд rule-ыг бэлдэнэ (active-ийг фильтрлэсэн)."""
     return [r for r in rules if r.is_active]
+
+
+def build_rule_matcher(rules: Iterable[MinStockRule]):
+    """Олон бараанд дүрэм тааруулах хурдан хувилбар.
+
+    Яагаад: `find_rule_for_product` дуудлага бүрт бүх дүрмийг гүйж, бараа
+    бүрийн CSV tag-аас set үүсгэдэг. 22,283 мөртэй захиалганд энэ нь 44,566
+    удаагийн string задлалт болж ~0.5 сек иддэг (хэмжсэн).
+
+    Энэ хувилбар:
+      · барааны тусгай дүрмийг product_id-гаар шууд хайдаг dict болгоно;
+      · ЕРӨНХИЙ дүрэм огт байхгүй бол tag-ийн set огт үүсгэхгүй (одоогийн
+        байдлаар идэвхтэй 3 дүрэм бүгд барааны тусгай — өөрөөр хэлбэл 22,280
+        мөрд ажил огт хийхгүй);
+      · ерөнхий дүрмийн үр дүнг (warehouse_name, price_tag) хослолоор кэшилнэ
+        (479 ялгаатай хослол vs 22,283 мөр).
+
+    Буцаах: matcher(product) -> MinStockRule | None — `find_rule_for_product`-тэй
+    ЯГ ижил үр дүн өгнө.
+    """
+    active = [r for r in rules if r.is_active]
+    specific: dict[int, MinStockRule] = {}
+    for r in active:
+        if r.product_id is None:
+            continue
+        cur = specific.get(r.product_id)
+        if cur is None or int(r.priority or 0) > int(cur.priority or 0):
+            specific[r.product_id] = r
+    generic = [r for r in active if r.product_id is None]
+    # Хоосон дүрэм (ямар ч tag заагаагүй) match хийхгүй — эх функцтэй ижил.
+    generic = [r for r in generic if _tags_set(r.location_tags) or _tags_set(r.price_tags)]
+    prepared = [(r, _tags_set(r.location_tags), _tags_set(r.price_tags)) for r in generic]
+    cache: dict[tuple, MinStockRule | None] = {}
+
+    def match(product: Product) -> MinStockRule | None:
+        r = specific.get(product.id)
+        if r is not None:
+            return r
+        if not prepared:
+            return None          # ерөнхий дүрэм алга — tag задлах шаардлагагүй
+        key = (product.warehouse_name, product.price_tag)
+        if key in cache:
+            return cache[key]
+        p_loc = _tags_set(product.warehouse_name)
+        p_pri = _tags_set(product.price_tag)
+        best, best_score = None, None
+        for rule, r_loc, r_pri in prepared:
+            if r_loc and not r_loc.issubset(p_loc):
+                continue
+            if r_pri and not r_pri.issubset(p_pri):
+                continue
+            score = (len(r_loc) + len(r_pri)) * 1000 + int(rule.priority or 0)
+            if best_score is None or score > best_score:
+                best, best_score = rule, score
+        cache[key] = best
+        return best
+
+    return match

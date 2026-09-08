@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import text
 from pathlib import Path
@@ -31,6 +32,15 @@ from app.models.pos_recon import PosReconDay  # noqa: F401 – registers table
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
 app = FastAPI(title=settings.app_name)
+
+# ── Хариултын шахалт ────────────────────────────────────────────────────────
+# Захиалгын дэлгэрэнгүй 22,000 мөртэй үед JSON нь 22.3 MB болдог байсныг
+# хэмжсэн — WiFi-аар утсанд ирэхэд хэдэн секунд алддаг. gzip хийхэд 0.83 MB
+# (27 дахин бага). Бүх endpoint-д хамаарна.
+# minimum_size: жижиг хариултыг шахах нь ашиггүй (CPU дэмий зарцуулна).
+# compresslevel: default 9 нь 22 MB биед 0.29 сек CPU иддэг бөгөөд event
+# loop-ыг блоклоно. 6 нь 0.18 сек, ердөө 60 KB илүү — LAN дээр зөв тэнцвэр.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 
 app.add_middleware(
     CORSMiddleware,
@@ -244,7 +254,15 @@ def ensure_products_schema():
             conn.execute(text("ALTER TABLE products ADD COLUMN price_tag VARCHAR(200) DEFAULT ''"))
         if cols and "barcode" not in cols:
             conn.execute(text("ALTER TABLE products ADD COLUMN barcode VARCHAR(64) DEFAULT ''"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_barcode ON products(barcode)"))
+        # ⚠ Индексүүдийг `barcode` нэмэх салаанаас ГАДНА үүсгэнэ.
+        # Өмнө нь дотор нь байсан тул barcode аль хэдийн байгаа суурьт
+        # ХЭЗЭЭ Ч ажиллахгүй байв — production дээр 1.37 сая мөртэй
+        # purchase_order_lines хүснэгт индексгүй үлдэж, purchase_order_id-гаар
+        # шүүх бүрд (43 газар) бүтэн скан хийж байлаа.
+        # CREATE INDEX IF NOT EXISTS нь идемпотент тул давтан ажиллахад аюулгүй.
+        # Хэмжсэн: нэгтгэл 0.138с -> 0.005с, join 0.249с -> 0.121с.
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_barcode ON products(barcode)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_po_lines_order_id ON purchase_order_lines(purchase_order_id)"))
 
 
 def ensure_min_stock_rules_schema():

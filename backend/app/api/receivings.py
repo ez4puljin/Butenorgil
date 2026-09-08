@@ -37,6 +37,17 @@ def _notify(session_id: int, action: str = "update") -> None:
 
 router = APIRouter(prefix="/receivings", tags=["receivings"])
 
+
+def _eff_role(u) -> str:
+    """Хэрэглэгчийн ҮР НӨЛӨӨТЭЙ эрхийн түвшин (base_role > role).
+
+    deps.require_role нь base_role-оор шийддэг тул функц доторх шалгалт ч
+    мөн адил байх ёстой — эс тэгвээс захиалгат нэртэй role (driver,
+    aguulah_tuslah, cashier, hudaldagch...) буруу салаа руу орно.
+    """
+    return (getattr(u, "base_role", None) or getattr(u, "role", "") or "")
+
+
 UPLOAD_DIR = Path("app/data/uploads/receiving_receipts")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -288,7 +299,7 @@ def list_sessions(
     q = db.query(ReceivingSession)
     arch = (archived or "false").lower()
     if arch == "only":
-        if u.role not in ("admin", "manager", "supervisor"):
+        if _eff_role(u) not in ("admin", "manager", "supervisor"):
             raise HTTPException(403, "Архив харах эрхгүй")
         q = q.filter(ReceivingSession.is_archived == True)
     elif arch != "true":
@@ -364,7 +375,7 @@ def get_session(
     s = db.query(ReceivingSession).filter(ReceivingSession.id == session_id).first()
     if not s:
         raise HTTPException(404, "Receiving session олдсонгүй")
-    if s.is_archived and u.role not in ("admin", "manager", "supervisor"):
+    if s.is_archived and _eff_role(u) not in ("admin", "manager", "supervisor"):
         raise HTTPException(403, "Архивлагдсан тулгалтыг харах эрхгүй")
     return _serialize_session(s, db, include_lines=True)
 

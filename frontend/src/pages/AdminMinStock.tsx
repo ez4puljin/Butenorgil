@@ -62,8 +62,12 @@ const EMPTY_FORM = {
 };
 
 export default function AdminMinStock() {
-  const { role } = useAuthStore();
-  const canEdit = role === "admin";
+  const { role, baseRole} = useAuthStore();
+  // Эрхийн шалгалт бүр ҮР НӨЛӨӨТЭЙ түвшнээр — backend-ийн
+  // require_role нь base_role-оор шийддэг. Түүхий `role` нь
+  // захиалгат нэр (driver, cashier, hudaldagch...).
+  const eff = baseRole || role || "";
+  const canEdit = eff === "admin";
 
   const [rules, setRules] = useState<MinStockRule[]>([]);
   const [tagList, setTagList] = useState<TagList>({ location_tags: [], price_tags: [] });

@@ -231,7 +231,11 @@ function getBrandOptions(line: Line, sessionBrands: { brand: string }[], allBran
 
 export default function ReceivingDetail() {
   const { id } = useParams<{ id: string }>();
-  const { role } = useAuthStore();
+  const { role, baseRole} = useAuthStore();
+  // Эрхийн шалгалт бүр ҮР НӨЛӨӨТЭЙ түвшнээр — backend-ийн
+  // require_role нь base_role-оор шийддэг. Түүхий `role` нь
+  // захиалгат нэр (driver, cashier, hudaldagch...).
+  const eff = baseRole || role || "";
   const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(false);
@@ -552,7 +556,7 @@ export default function ReceivingDetail() {
 
   // Admin/manager/supervisor зөвхөн өмнөх төлөв рүү (price_review→matching эсвэл
   // received→price_review) гар аргаар буцаах боломжтой. Confirm modal-аар хамгаалсан.
-  const canRevertStatus = role === "admin" || role === "manager" || role === "supervisor";
+  const canRevertStatus = eff === "admin" || eff === "manager" || eff === "supervisor";
   const revertToPrev = async () => {
     if (!session) return;
     const cur = session.status;
@@ -1247,7 +1251,7 @@ export default function ReceivingDetail() {
                   )}
 
                   {/* Desktop: брендийг өөр тулгалт руу шилжүүлэх */}
-                  {(role === "admin" || role === "manager" || role === "supervisor") && (
+                  {(eff === "admin" || eff === "manager" || eff === "supervisor") && (
                     <button
                       onClick={(e) => { e.stopPropagation(); openMove(b); }}
                       className="hidden lg:inline-flex mt-1.5 w-full items-center justify-center gap-1 rounded border border-dashed border-violet-400 bg-transparent px-2 py-1 text-[10.5px] font-semibold text-violet-600 hover:bg-violet-50"
@@ -1288,7 +1292,7 @@ export default function ReceivingDetail() {
                         <ImageIcon size={11}/> Баримт
                       </button>
                     )}
-                    {b.is_matched && canEdit && (role === "admin" || role === "manager" || role === "supervisor") && (
+                    {b.is_matched && canEdit && (eff === "admin" || eff === "manager" || eff === "supervisor") && (
                       <button
                         onClick={(e) => { e.stopPropagation(); unmatch(b.brand); }}
                         className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1.5 text-[11px] font-medium text-red-500 ring-1 ring-inset ring-red-200/50 hover:bg-red-50"
@@ -1297,7 +1301,7 @@ export default function ReceivingDetail() {
                         <Undo2 size={11}/>
                       </button>
                     )}
-                    {(role === "admin" || role === "manager" || role === "supervisor") && (
+                    {(eff === "admin" || eff === "manager" || eff === "supervisor") && (
                       <button
                         onClick={(e) => { e.stopPropagation(); openMove(b); }}
                         className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1.5 text-[11px] font-medium text-violet-600 ring-1 ring-inset ring-violet-200/60 hover:bg-violet-50"

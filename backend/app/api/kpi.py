@@ -17,6 +17,17 @@ from app.models.user import User
 router = APIRouter(prefix="/kpi", tags=["kpi"])
 
 
+
+def _eff_role(u) -> str:
+    """Хэрэглэгчийн ҮР НӨЛӨӨТЭЙ эрхийн түвшин (base_role > role).
+
+    deps.require_role нь base_role-оор шийддэг тул функц доторх шалгалт ч
+    мөн адил байх ёстой — эс тэгвээс захиалгат нэртэй role (driver,
+    aguulah_tuslah, cashier, hudaldagch...) буруу салаа руу орно.
+    """
+    return (getattr(u, "base_role", None) or getattr(u, "role", "") or "")
+
+
 def _get_or_create_kpi_settings(db: Session) -> KpiSettings:
     """KpiSettings singleton row (id=1)-ыг буцаана. Байхгүй бол default-ээр үүсгэнэ."""
     s = db.query(KpiSettings).filter(KpiSettings.id == 1).first()
@@ -783,7 +794,7 @@ def approve_entry(
         raise HTTPException(404, "Entry олдсонгүй")
 
     # Only designated approver or admin can approve
-    if entry.approver_id != u.id and u.role != "admin":
+    if entry.approver_id != u.id and _eff_role(u) != "admin":
         raise HTTPException(403, "Та энэ ажлыг баталгаажуулах эрхгүй")
 
     checklist = db.query(KpiDailyChecklist).filter(KpiDailyChecklist.id == entry.checklist_id).first()
@@ -1443,7 +1454,7 @@ def list_pending_attendance(
         KpiDailyChecklist.attendance_status == "pending",
     )
     # Non-admin users see only their assigned employees' checklists
-    if u.role != "admin":
+    if _eff_role(u) != "admin":
         # Find employee IDs where this user is approver
         config_employee_ids = [
             c.employee_id for c in
@@ -1475,7 +1486,7 @@ def approve_attendance(
         raise HTTPException(400, "Илгээгдээгүй checklist-ийн ирцийг батлах боломжгүй")
 
     # Permission: admin or designated approver for that employee
-    if u.role != "admin":
+    if _eff_role(u) != "admin":
         has_config = db.query(KpiEmployeeTaskConfig).filter(
             KpiEmployeeTaskConfig.employee_id == cl.employee_id,
             KpiEmployeeTaskConfig.approver_id == u.id,
@@ -1596,7 +1607,7 @@ def list_shift_transfers(
 ):
     """Өөртэй холбоотой бүх ээлж шилжүүлэх хүсэлтүүд."""
     q = db.query(KpiShiftTransfer)
-    if u.role != "admin":
+    if _eff_role(u) != "admin":
         q = q.filter(
             (KpiShiftTransfer.original_employee_id == u.id) |
             (KpiShiftTransfer.replacement_employee_id == u.id) |
@@ -1670,7 +1681,7 @@ def respond_shift_transfer(
     if t.status != "pending":
         raise HTTPException(400, "Хүсэлт аль хэдийн шийдэгдсэн байна")
 
-    if t.approver_id != u.id and u.role != "admin":
+    if t.approver_id != u.id and _eff_role(u) != "admin":
         raise HTTPException(403, "Та энэ хүсэлтийг батлах эрхгүй")
 
     t.status = body.status

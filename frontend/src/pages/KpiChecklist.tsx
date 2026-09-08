@@ -164,7 +164,11 @@ function Toast({ toast }: { toast: { msg: string; ok: boolean } | null }) {
 const inp = "w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-800 outline-none transition focus:border-[#0071E3] focus:bg-white focus:shadow-[0_0_0_3px_rgba(0,113,227,0.12)] placeholder:text-gray-400";
 
 export default function KpiChecklist() {
-  const { role } = useAuthStore();
+  const { role, baseRole} = useAuthStore();
+  // Эрхийн шалгалт бүр ҮР НӨЛӨӨТЭЙ түвшнээр — backend-ийн
+  // require_role нь base_role-оор шийддэг. Түүхий `role` нь
+  // захиалгат нэр (driver, cashier, hudaldagch...).
+  const eff = baseRole || role || "";
 
   // Calendar navigation
   const todayStr = localToday();
@@ -641,7 +645,7 @@ export default function KpiChecklist() {
                   {submitting ? "Илгээж байна..." : "Илгээх"}
                 </button>
               )}
-              {!isSubmitted && (role === "admin" || role === "supervisor") && (
+              {!isSubmitted && (eff === "admin" || eff === "supervisor") && (
                 <button
                   onClick={() => setShowAdhoc(true)}
                   className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-700 shadow-sm hover:bg-gray-50 transition-colors"

@@ -90,6 +90,10 @@ type ShipmentLineDetail = {
 
 export default function PurchaseOrderList() {
   const { role, baseRole } = useAuthStore();
+  // Эрхийн шалгалт бүр ҮР НӨЛӨӨТЭЙ түвшнээр — backend-ийн
+  // require_role нь base_role-оор шийддэг. Түүхий `role` нь
+  // захиалгат нэр (driver, cashier, hudaldagch...).
+  const eff = baseRole || role || "";
   const isAdmin = (baseRole ?? role) === "admin";
   const canAdvanceTransit = ["admin", "supervisor", "manager"].includes(baseRole ?? role ?? "");
 
@@ -370,7 +374,7 @@ export default function PurchaseOrderList() {
 
   const filtered: POSummary[] = store.orders;
 
-  const canCreate = role === "manager" || role === "admin" || role === "supervisor";
+  const canCreate = eff === "manager" || eff === "admin" || eff === "supervisor";
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="overflow-x-hidden">
@@ -610,7 +614,7 @@ export default function PurchaseOrderList() {
             )}
           </div>
           <div className="flex items-center gap-1.5">
-            {(role === "admin" || role === "manager" || role === "supervisor") && (
+            {(eff === "admin" || eff === "manager" || eff === "supervisor") && (
               <button
                 onClick={() => setArchiveMode(m => m === "only" ? "false" : "only")}
                 className={`inline-flex h-9 items-center gap-1.5 rounded-apple border px-2.5 text-[11px] font-medium sm:text-xs ${
@@ -746,7 +750,7 @@ export default function PurchaseOrderList() {
                         <td className="px-5 py-3.5 text-gray-500">{o.created_by_username}</td>
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-1">
-                            {(role === "admin" || role === "manager" || role === "supervisor") && (
+                            {(eff === "admin" || eff === "manager" || eff === "supervisor") && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); archiveOrder(o.id, !(o as any).is_archived); }}
                                 title={(o as any).is_archived ? "Архиваас буцаах" : "Архивлах"}

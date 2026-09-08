@@ -12,6 +12,17 @@ from app.models.user import User
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
 
+
+def _eff_role(u) -> str:
+    """Хэрэглэгчийн ҮР НӨЛӨӨТЭЙ эрхийн түвшин (base_role > role).
+
+    deps.require_role нь base_role-оор шийддэг тул функц доторх шалгалт ч
+    мөн адил байх ёстой — эс тэгвээс захиалгат нэртэй role (driver,
+    aguulah_tuslah, cashier, hudaldagch...) буруу салаа руу орно.
+    """
+    return (getattr(u, "base_role", None) or getattr(u, "role", "") or "")
+
+
 def _valid_task_types(db: Session) -> set[str]:
     """Идэвхтэй label-ийн key-ийн set."""
     return {r.key for r in db.query(CalendarLabel).filter(CalendarLabel.is_active == True).all()}
@@ -124,7 +135,7 @@ def update_event(
         ev.is_done = body.is_done
 
     if body.task_type is not None or body.notes is not None or body.date is not None:
-        if u.id != ev.created_by_user_id and u.role not in ("admin", "supervisor"):
+        if u.id != ev.created_by_user_id and _eff_role(u) not in ("admin", "supervisor"):
             raise HTTPException(403, "Зөвхөн үүсгэсэн хүн засах боломжтой")
         if body.task_type is not None:
             if body.task_type not in _valid_task_types(db):
@@ -149,7 +160,7 @@ def delete_event(
     ev = db.query(CalendarEvent).filter(CalendarEvent.id == event_id).first()
     if not ev:
         raise HTTPException(404, "Ажил олдсонгүй")
-    if u.id != ev.created_by_user_id and u.role not in ("admin", "supervisor"):
+    if u.id != ev.created_by_user_id and _eff_role(u) not in ("admin", "supervisor"):
         raise HTTPException(403, "Зөвхөн үүсгэсэн хүн устгах боломжтой")
     db.delete(ev)
     db.commit()
