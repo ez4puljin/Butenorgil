@@ -677,6 +677,79 @@ def get_order_dashboard(
 
 # ── Per-brand status endpoints ────────────────────────────────────────────────
 
+# ── Статусын ХУРДАН ЗАМ ───────────────────────────────────────────────────────
+#
+# Статус нь ЗӨВХӨН мэдээллийн шинжтэй. Түүнийг солиход клиент 133 KB-ийн бүтэн
+# захиалгыг (хэмжсэнээр 779 мс, брендийн горимд 1,771 мс) дахин татах ёсгүй.
+# Гэхдээ клиент таамаглах ч ёсгүй — сервер өөрөө УI-г засах бүрэн мэдээллийг
+# буцаана. Дельта биш БҮТЭН зураглал буцаадаг тул хэдэн ч удаа дараалан
+# дарсан клиентийн төлөв хазайх боломжгүй.
+
+
+def _brand_status_map(order_id: int, db: Session) -> dict:
+    """Захиалгын БҮХ брендийн статусын зураглал (~25 мөр, хэмжсэнээр 0.6 мс)."""
+    rows = db.query(
+        PurchaseOrderBrandStatus.brand, PurchaseOrderBrandStatus.status
+    ).filter(PurchaseOrderBrandStatus.purchase_order_id == order_id).all()
+    return {r[0]: r[1] for r in rows}
+
+
+def _prefill_unit_prices(db: Session, order_id: int,
+                         brand: Optional[str] = None, collect: bool = True) -> list:
+    """arrived → accounting шилжилтэд ХООСОН нэгж үнийг сүүлийн авалтын үнээр дүүргэнэ.
+
+    brand=None бол захиалгын БҮХ мөр (захиалгын түвшний advance_status).
+
+    Өмнө нь энэ логик хоёр газар давхардаж, хоёулаа `po.lines`-ыг бүхэлд нь
+    залхуугаар татаад (захиалга #106 дээр 22,283 мөр = хэмжсэнээр 421 мс) Python
+    дотор шүүдэг байв. Дээрээс нь `Product.id.in_(22,283)` нь SQLite-ийн 32,766
+    bind-параметрийн хязгаарын 68% — барааны тоо ~47% өсөхөд хүсэлт УДААШРАХ
+    биш, БҮТЭЛГҮЙТЭХ байсан. Одоо шүүлт бүхэлдээ SQL талд.
+
+    Логик нь хуучинтай ЯГ ИЖИЛ:
+      · үр дүнгийн бренд = override_brand (зай хассан) байвал тэр, үгүй бол Product.brand
+      · барааны бүртгэл олдоогүй мөрийг алгасана       -> INNER JOIN өөрөө хаснa
+      · зөвхөн unit_price = 0 ба last_purchase_price > 0 мөрийг хөнднө
+    40 захиалгын 800 (захиалга x бренд) хосыг хуучин кодтой тулгаж, зөрүүгүйг баталсан.
+
+    Product.brand-ыг trim ХИЙХГҮЙ: `_ensure_brand_statuses` ба serializer хоёул
+    түүхий Product.brand-аар түлхүүрлэдэг тул "ACME" ба "ACME " нь хууль ёсны
+    хоёр өөр бренд байж болно. trim нэмбэл нэг брендийг дэвшүүлэхэд НӨГӨӨГИЙН
+    мөрөнд үнэ бичих болно.
+
+    Буцаах: [{line_id, product_id, unit_price}] — клиент захиалгыг дахин
+    ТАТАХГҮЙГЭЭР өөрийн `order.lines`-ынхаа үнийг тулгах жагсаалт. Зөвхөн
+    клиентэд ХАРАГДДАГ мөрийг (тоо > 0) буцаана: бичилт нь бүх мөрд хийгдэнэ
+    (зан төлөв хэвээр), харин хариунд 890 мөр явуулж "890 мөрийн үнэ бөглөгдлөө"
+    гэж хэлбэл хэрэглэгч 8 мөр өөрчлөгдөхийг хараад төөрөлдөнө.
+    """
+    eff_brand = func.coalesce(
+        func.nullif(func.trim(PurchaseOrderLine.override_brand), ""), Product.brand
+    )
+    q = (
+        db.query(PurchaseOrderLine, Product.last_purchase_price)
+        .join(Product, Product.id == PurchaseOrderLine.product_id)
+        .filter(
+            PurchaseOrderLine.purchase_order_id == order_id,
+            func.coalesce(PurchaseOrderLine.unit_price, 0) == 0,
+            func.coalesce(Product.last_purchase_price, 0) > 0,
+        )
+    )
+    if brand is not None:
+        q = q.filter(eff_brand == brand)
+
+    updates = []
+    for line, last_price in q.all():
+        line.unit_price = float(last_price)
+        if collect and ((line.order_qty_box or 0) > 0 or (line.supplier_qty_box or 0) > 0):
+            updates.append({
+                "line_id": int(line.id),
+                "product_id": int(line.product_id),
+                "unit_price": float(last_price),
+            })
+    return updates
+
+
 @router.patch("/{order_id}/brand-advance")
 def advance_brand_status(
     order_id: int,
@@ -725,18 +798,10 @@ def advance_brand_status(
     if effective not in allowed_roles:
         raise HTTPException(403, "Энэ үйлдлийг хийх эрх байхгүй")
 
-    # Side effect: arrived → accounting → pre-fill unit_price for this brand's lines
+    # Side effect: arrived → accounting → энэ брендийн хоосон үнийг дүүргэнэ.
+    price_updates: list = []
     if bs.status == "arrived" and next_st == "accounting":
-        product_ids = [l.product_id for l in po.lines]
-        products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()}
-        for line in po.lines:
-            p = products.get(line.product_id)
-            if not p:
-                continue
-            eff_brand = (line.override_brand or "").strip() or p.brand
-            if eff_brand == brand:
-                if (line.unit_price or 0) == 0 and (p.last_purchase_price or 0) > 0:
-                    line.unit_price = p.last_purchase_price
+        price_updates = _prefill_unit_prices(db, order_id, brand=brand)
 
     old_status = bs.status
     bs.status = next_st
@@ -752,11 +817,17 @@ def advance_brand_status(
 
     _sync_po_status_from_brands(order_id, db)
 
+    # Клиент захиалгыг ДАХИН УНШИХГҮЙГЭЭР store-оо засах бүрэн мэдээлэл.
+    # brand_statuses нь дельта биш БҮТЭН зураглал — олон дарахад хазайхгүй.
     return {
         "brand": brand,
         "new_status": next_st,
         "new_status_label": STATUS_LABEL.get(next_st, next_st),
         "po_status": po.status,
+        "po_status_label": STATUS_LABEL.get(po.status, po.status),
+        "brand_statuses": _brand_status_map(order_id, db),
+        "price_updates": price_updates,
+        "price_updated_count": len(price_updates),
     }
 
 
@@ -1313,15 +1384,14 @@ def advance_status(
     if _eff_role(u) not in allowed_roles:
         raise HTTPException(403, "Энэ үйлдлийг хийх эрх байхгүй")
 
-    # When advancing arrived → accounting, pre-fill unit_price from last_purchase_price
+    # arrived → accounting: хоосон нэгж үнийг сүүлийн авалтын үнээр дүүргэнэ.
+    # Өмнө нь энд бас `Product.id.in_(бүх мөрийн id)` байсан — SQLite-ийн 32,766
+    # bind-параметрийн хязгаарт ойрхон (одоо 22,283 = 68%). collect=False —
+    # захиалгын түвшний зам буцаах жагсаалтыг ашигладаггүй тул мянга мянган
+    # dict үүсгэх шаардлагагүй.
+    po_price_updates: list = []
     if po.status == "arrived" and next_st == "accounting":
-        product_ids = [l.product_id for l in po.lines]
-        products = db.query(Product).filter(Product.id.in_(product_ids)).all()
-        pmap = {p.id: p for p in products}
-        for line in po.lines:
-            p = pmap.get(line.product_id)
-            if p and (line.unit_price or 0) == 0.0 and (p.last_purchase_price or 0) > 0:
-                line.unit_price = float(p.last_purchase_price)
+        po_price_updates = _prefill_unit_prices(db, order_id, brand=None)
 
     po.status = next_st
 
@@ -1335,10 +1405,16 @@ def advance_status(
         bs.status = next_st
 
     db.commit()
+    # Клиент захиалгыг дахин уншихгүйгээр store-оо засах бүрэн мэдээлэл
     return {
         "ok": True,
         "new_status": next_st,
         "new_status_label": STATUS_LABEL.get(next_st, next_st),
+        "po_status": po.status,
+        "po_status_label": STATUS_LABEL.get(po.status, po.status),
+        "brand_statuses": _brand_status_map(order_id, db),
+        "price_updates": po_price_updates,
+        "price_updated_count": len(po_price_updates),
     }
 
 
@@ -1426,6 +1502,11 @@ def force_status(
             "new_status": body.status,
             "new_status_label": STATUS_LABEL.get(body.status, body.status),
             "po_status": po.status,
+            "po_status_label": STATUS_LABEL.get(po.status, po.status),
+            # Бүтэн зураглал — клиент захиалгыг дахин уншихгүйгээр store-оо засна
+            "brand_statuses": _brand_status_map(order_id, db),
+            "price_updates": [],
+            "price_updated_count": 0,
         }
 
     # Бүх бренд + PO status нэг утгад шилжүүлэх
@@ -1447,7 +1528,16 @@ def force_status(
           after={"status": body.status},
           extra={"brand_changes": brand_changes})
     db.commit()
-    return {"ok": True, "new_status": po.status, "new_status_label": STATUS_LABEL.get(po.status, po.status)}
+    return {
+        "ok": True,
+        "new_status": po.status,
+        "new_status_label": STATUS_LABEL.get(po.status, po.status),
+        "po_status": po.status,
+        "po_status_label": STATUS_LABEL.get(po.status, po.status),
+        "brand_statuses": _brand_status_map(order_id, db),
+        "price_updates": [],
+        "price_updated_count": 0,
+    }
 
 
 @router.post("/{order_id}/set-lines")
@@ -1881,7 +1971,17 @@ def revert_to_arrived(
         raise HTTPException(400, "Зөвхөн 'Нягтлан шалгаж байна' статусаас буцаах боломжтой")
     po.status = "arrived"
     db.commit()
-    return {"ok": True, "new_status": "arrived", "new_status_label": STATUS_LABEL["arrived"]}
+    # Клиент захиалгыг дахин уншихгүйгээр store-оо засах бүрэн мэдээлэл
+    return {
+        "ok": True,
+        "new_status": "arrived",
+        "new_status_label": STATUS_LABEL["arrived"],
+        "po_status": po.status,
+        "po_status_label": STATUS_LABEL.get(po.status, po.status),
+        "brand_statuses": _brand_status_map(order_id, db),
+        "price_updates": [],
+        "price_updated_count": 0,
+    }
 
 
 @router.get("/{order_id}/export-excel")
@@ -1958,6 +2058,148 @@ def export_excel(
 
 
 # ── ERP Import Excel Export ────────────────────────────────────────────────────
+#
+# ТООНЫ ЭХ СУРВАЛЖ. Өмнө нь энэ экспорт зөвхөн `ачигдсан > 0` эсвэл `ирсэн > 0`
+# мөрийг авдаг байсан. Ачаа хараахан ирээгүй үе шатанд тэдгээр нь бүгд тэг тул
+# ЗӨВХӨН ТОЛГОЙ мөртэй хоосон файл татагдаж, хэрэглэгчид ямар ч шалтгаан
+# хэлдэггүй байв (хэмжсэн: сүүлийн 12 захиалгын 8 нь ийм байдалтай).
+#
+# Одоо хэрэглэгч тооны эх сурвалжаа СОНГОНО. Гурван түвшин нь ХООРОНДОО
+# ОГТЛОЛЦОХГҮЙ: мөр бүр ганцхан түвшинд харьяалагдана —
+#   received — ирсэн тоо бүртгэгдсэн мөр
+#   loaded   — ирээгүй ч ачигдсан тоо бүртгэгдсэн мөр
+#   ordered  — аль нь ч бүртгэгдээгүй, зөвхөн захиалсан тоотой мөр
+# Ингэснээр «ordered» гэж татсан файл дараа нь «received» гэж татсан файлтай
+# ДАВХАРДАХГҮЙ. (Шаталсан/floor хувилбар нь ordered ⊃ loaded ⊃ received болж,
+# нэг мөрийг Эрхэт рүү хоёр удаа бичих эрсдэлтэй байсан.)
+
+ERP_QTY_SOURCES = ("received", "loaded", "ordered")
+ERP_QTY_SOURCE_LABEL = {
+    "received": "Ирсэн тоо",
+    "loaded": "Ачигдсан тоо",
+    "ordered": "Захиалсан тоо",
+}
+ERP_QTY_SOURCE_SLUG = {"received": "irsen", "loaded": "achigdsan", "ordered": "zahialsan"}
+
+
+def _erp_line_level(line, agg: dict) -> str:
+    """Мөр аль түвшинд харьяалагдахыг тодорхойлно (огтлолцохгүй).
+
+    Дэлгэц дээрх `_serialize_order_detail`-тай ижил дараалал: shipment-ийн
+    нийлбэрийг түрүүнд, дараа нь PO мөрийн утгыг харна.
+    """
+    if (float(agg.get("received", 0)) > 0
+            or float(line.received_qty_box or 0) > 0
+            or float(line.received_qty_extra_pcs or 0) > 0):
+        return "received"
+    if float(agg.get("loaded", 0)) > 0 or float(line.loaded_qty_box or 0) > 0:
+        return "loaded"
+    return "ordered"
+
+
+def _erp_line_boxes(line, agg: dict, level: str) -> tuple:
+    """(хайрцаг, задгай ширхэг) — тухайн түвшний тоо."""
+    if level == "received":
+        box = float(agg.get("received", 0)) or float(line.received_qty_box or 0)
+        return box, float(line.received_qty_extra_pcs or 0)
+    if level == "loaded":
+        return (float(agg.get("loaded", 0)) or float(line.loaded_qty_box or 0)), 0.0
+    # ordered — нийлүүлэгчийн бэлдсэн тоо байвал түүнийг, эс бол захиалсан тоо.
+    # ЗӨВХӨН order_qty_box > 0 мөрийг авна: order=0 & supplier>0 нь энэ апп дээр
+    # ЦУЦЛАГДСАН мөрийн тэмдэг (get_order_dashboard), түүнийг бичих ёсгүй.
+    return float(line.order_qty_box or 0), 0.0
+
+
+def _erp_price(line, product) -> tuple:
+    """(ширхэгийн үнэ, эх сурвалж). unit_price → last_purchase_price → 0."""
+    up = float(line.unit_price or 0)
+    if up > 0:
+        return up, "line"
+    lpp = float(getattr(product, "last_purchase_price", 0) or 0)
+    if lpp > 0:
+        return lpp, "last"
+    return 0.0, "zero"
+
+
+def _erp_collect(po, db: Session, brand_filter: str = "") -> list:
+    """Захиалгын мөрүүдийг ERP-д бэлдэж, түвшин/тоо/үнийг тооцоолно.
+
+    Excel экспорт БА урьдчилан харах хоёул ЯГ энэ функцийг дуудна — өмнө нь
+    backend ба ERPExcelModal.tsx хоёр өөр өөр шүүлт бичсэнээс болж «цонх хоосон,
+    файл мөртэй» төрлийн зөрүү гардаг байв.
+    """
+    from sqlalchemy import func as _func
+
+    sh_agg = dict(
+        (row[0], {"loaded": float(row[1] or 0), "received": float(row[2] or 0)})
+        for row in db.query(
+            POShipmentLine.po_line_id,
+            _func.sum(POShipmentLine.loaded_qty_box),
+            _func.sum(POShipmentLine.received_qty_box),
+        )
+        .join(PurchaseOrderLine, PurchaseOrderLine.id == POShipmentLine.po_line_id)
+        .filter(PurchaseOrderLine.purchase_order_id == po.id)
+        .group_by(POShipmentLine.po_line_id)
+        .all()
+    )
+
+    bf = (brand_filter or "").strip()
+    rows = (
+        db.query(PurchaseOrderLine, Product)
+        .join(Product, Product.id == PurchaseOrderLine.product_id)
+        .filter(PurchaseOrderLine.purchase_order_id == po.id,
+                PurchaseOrderLine.order_qty_box > 0)
+        .all()
+    )
+
+    out = []
+    for line, p in rows:
+        eff_brand = (line.override_brand or "").strip() or (p.brand or "")
+        if bf and eff_brand != bf:
+            continue
+        agg = sh_agg.get(line.id, {})
+        level = _erp_line_level(line, agg)
+        box, extra = _erp_line_boxes(line, agg, level)
+        pack = float(p.pack_ratio or 0)
+        qty = box * (pack if pack > 0 else 1.0) + extra
+        if qty <= 0:
+            continue
+        price, price_src = _erp_price(line, p)
+        # Override брендтэй бол тухайн брендийн brand_code-ыг ашиглана
+        if (line.override_brand or "").strip():
+            ref = db.query(Product).filter(
+                Product.brand == eff_brand, Product.brand_code != None).first()
+            brand_code = (ref.brand_code if ref else (p.brand_code or "")) or ""
+        else:
+            brand_code = p.brand_code or ""
+        out.append({
+            "line": line, "product": p, "brand": eff_brand, "brand_code": brand_code,
+            "level": level, "qty": qty, "price": price, "price_src": price_src,
+            "bad_pack": pack <= 0,
+        })
+    return out
+
+
+def _erp_summary(cands: list) -> dict:
+    """Эх сурвалж тус бүрийн мөр/ширхэг/дүн + хасагдах мөрийн тоо."""
+    src = {}
+    for s in ERP_QTY_SOURCES:
+        sel = [c for c in cands if c["level"] == s]
+        ok = [c for c in sel if c["price"] > 0]
+        src[s] = {
+            "label": ERP_QTY_SOURCE_LABEL[s],
+            "rows": len(ok),
+            "pieces": round(sum(c["qty"] for c in ok), 3),
+            "amount": round(sum(round(c["qty"] * c["price"], 2) for c in ok), 2),
+            # Үнэгүй мөрийг файлд ОРУУЛАХГҮЙ: Эрхэт дээр 0 өртгөөр орлого авбал
+            # тухайн барааны жигнэсэн дундаж өртөг бүрмөсөн эвдэрч, дараагийн
+            # борлуулалт бүрийн ӨӨрТӨГ буруу болно.
+            "skipped_no_price": len(sel) - len(ok),
+            "estimated_price_rows": len([c for c in ok if c["price_src"] == "last"]),
+            "bad_pack_rows": len([c for c in ok if c["bad_pack"]]),
+        }
+    return src
+
 
 class ERPExcelConfigIn(BaseModel):
     company: str                     # "buten_orgil" | "orgil_khorum"
@@ -1968,6 +2210,43 @@ class ERPExcelConfigIn(BaseModel):
     warehouse_map: dict = {}         # buten_orgil: {warehouse_name: erp_location_code}
     single_location: str = ""        # orgil_khorum: single location code
     brand_filter: str = ""           # Тодорхой бренд шүүх (хоосон = бүгд)
+    qty_source: str = "received"     # "received" | "loaded" | "ordered"
+    confirm_estimate: bool = False   # ирээгүй тоогоор гаргахыг баталсан эсэх
+
+
+@router.get("/{order_id}/erp-preview")
+def erp_preview(
+    order_id: int,
+    brand: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "manager", "accountant", "supervisor")),
+):
+    """Татахын ӨМНӨ эх сурвалж тус бүрд хэдэн мөр гарахыг харуулна.
+
+    Хоосон файл чимээгүй татагдахаас сэргийлэх гол хэрэгсэл: хэрэглэгч
+    «Ирсэн 0 · Ачигдсан 0 · Захиалсан 191» гэдгийг ТАТАХААС ӨМНӨ хардаг.
+    """
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+    cands = _erp_collect(po, db, brand or "")
+    summary = _erp_summary(cands)
+    # Анхдагч: бодит хэмжилттэй хамгийн дэвшилтэт түвшин
+    default_src = "ordered"
+    for s in ("received", "loaded"):
+        if summary[s]["rows"] > 0:
+            default_src = s
+            break
+    warehouses = sorted({(c["product"].warehouse_name or "") for c in cands if c["price"] > 0} - {""})
+    return JSONResponse(content={
+        "order_id": order_id,
+        "po_status": po.status,
+        "brand_filter": brand or "",
+        "active_lines": len(cands),
+        "sources": summary,
+        "default_source": default_src,
+        "warehouses": warehouses,
+    })
 
 
 @router.post("/{order_id}/export-erp-excel")
@@ -1999,42 +2278,39 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
     if not po:
         raise HTTPException(404, "Захиалга олдсонгүй")
 
-    # Shipment-аас aggregated loaded/received тоог бэлдэнэ (зарим PO дээр values нь зөвхөн
-    # POShipmentLine дээр байдаг, PurchaseOrderLine-д 0 байдаг).
-    from sqlalchemy import func as _func
-    from sqlalchemy import or_ as _or_q
-    sh_agg = dict(
-        (row[0], {"loaded": float(row[1] or 0), "received": float(row[2] or 0)})
-        for row in db.query(
-            POShipmentLine.po_line_id,
-            _func.sum(POShipmentLine.loaded_qty_box),
-            _func.sum(POShipmentLine.received_qty_box),
-        )
-        .join(PurchaseOrderLine, PurchaseOrderLine.id == POShipmentLine.po_line_id)
-        .filter(PurchaseOrderLine.purchase_order_id == po.id)
-        .group_by(POShipmentLine.po_line_id)
-        .all()
-    )
+    brand_filter = (body.brand_filter or "").strip()
+    src = (body.qty_source or "received").strip()
+    if src not in ERP_QTY_SOURCES:
+        raise HTTPException(400, f"Тооны эх сурвалж буруу: {src}")
 
-    # Идэвхтэй line-ууд (order>0 эсвэл supplier>0). Received/loaded-оор дараа шүүнэ.
-    recv_lines = db.query(PurchaseOrderLine).filter(
-        PurchaseOrderLine.purchase_order_id == po.id,
-        _or_q(PurchaseOrderLine.order_qty_box > 0, PurchaseOrderLine.supplier_qty_box > 0),
-    ).all()
-    # Filter: дор хаяж нэг хэмжээ (received эсвэл loaded) > 0 байх
-    def _line_has_qty(l):
-        agg = sh_agg.get(l.id, {})
-        return (
-            (l.received_qty_box or 0) > 0
-            or (l.received_qty_extra_pcs or 0) > 0
-            or (l.loaded_qty_box or 0) > 0
-            or agg.get("received", 0) > 0
-            or agg.get("loaded", 0) > 0
+    # Урьдчилан харах цонхтой ЯГ ижил тооцоолол (ганц эх сурвалж).
+    cands = _erp_collect(po, db, brand_filter)
+    summary = _erp_summary(cands)
+    picked = [c for c in cands if c["level"] == src and c["price"] > 0]
+
+    # Хоосон файл ЧИМЭЭГҮЙ татагдахаас сэргийлнэ — шалтгааныг нь хэлнэ.
+    if not picked:
+        avail = ", ".join(
+            f"{summary[s]['label']} {summary[s]['rows']}"
+            for s in ERP_QTY_SOURCES if summary[s]["rows"] > 0
         )
-    recv_lines = [l for l in recv_lines if _line_has_qty(l)]
-    product_ids = [l.product_id for l in recv_lines]
-    products = db.query(Product).filter(Product.id.in_(product_ids)).all() if product_ids else []
-    product_map = {p.id: p for p in products}
+        no_price = summary[src]["skipped_no_price"]
+        why = f"«{ERP_QTY_SOURCE_LABEL[src]}»-оор гаргах мөр алга."
+        if no_price:
+            why += (f" {no_price} мөр үнэгүй тул хасагдав "
+                    f"(нэгж үнэ ч, сүүлийн авсан үнэ ч бүртгэгдээгүй).")
+        if avail:
+            why += f" Боломжтой: {avail}."
+        elif not cands:
+            why += " Энэ захиалгад захиалсан тоо бүхий мөр байхгүй байна."
+        raise HTTPException(400, why)
+
+    # Ирээгүй тоогоор гаргах нь Эрхэт дээр БОДИТ орлого болж бүртгэгдэнэ —
+    # хэрэглэгч заавал баталгаажуулна.
+    if src != "received" and not body.confirm_estimate:
+        raise HTTPException(400,
+            f"«{ERP_QTY_SOURCE_LABEL[src]}» нь ирсэн тоо БИШ. "
+            "Эрхэт рүү орлогоор бүртгэгдэхийг баталгаажуулна уу.")
 
     # Parse date
     try:
@@ -2065,54 +2341,17 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
         c.alignment = Alignment(horizontal="center")
 
     # ── Build data rows ──
-    # Дээр recv_lines-ыг аль хэдийн filter хийсэн. Mөн бренд шүүлтүүр хэрэглэнэ.
-    brand_filter = (body.brand_filter or "").strip()
-    erp_lines = recv_lines
+    # Мөрүүд аль хэдийн `_erp_collect` дээр шүүгдсэн (түвшин, тоо, үнэ, бренд).
     valid = []
-    for line in erp_lines:
-        agg = sh_agg.get(line.id, {})
-        extra_pcs = float(line.received_qty_extra_pcs or 0)
-        # Effective received: PO line-ийн received > 0 бол түүнийг, эс бол shipment aggregated received.
-        # Хэрэглэгч "0 хайрцаг + N ширхэг" гэж санаатайгаар оруулсан бол (extra_pcs > 0 бол)
-        # loaded-оор fallback ХИЙХГҮЙ — хэрэглэгчийн оруулсан тоог нэн тэргүүнд тоолно.
-        eff_received_box = float(line.received_qty_box or 0)
-        if eff_received_box == 0:
-            eff_received_box = float(agg.get("received", 0))
-        if eff_received_box == 0 and extra_pcs == 0:
-            # received + extra хоёр хоосон үед л loaded-аас fallback авна (автомат pre-fill)
-            eff_received_box = float(line.loaded_qty_box or 0)
-            if eff_received_box == 0:
-                eff_received_box = float(agg.get("loaded", 0))
-        if eff_received_box <= 0 and extra_pcs <= 0:
-            continue
-        if not ((line.order_qty_box or 0) > 0 or (line.supplier_qty_box or 0) > 0):
-            continue
-        p = product_map.get(line.product_id)
-        if not p:
-            continue
-        # Brand filter — effective brand (override_brand-ийг түрүүнд)
-        eff_brand = (line.override_brand or "").strip() or (p.brand or "")
-        if brand_filter and eff_brand != brand_filter:
-            continue
+    for c in picked:
+        p = c["product"]
         if body.company == "orgil_khorum":
             location = body.single_location
         else:
             location = body.warehouse_map.get(p.warehouse_name, "")
-        # ERP импортод тоо хэмжээ нь ширхгээр орох ёстой (бид хайрцгаар явдаг)
-        # Ачаа ирсэн үед задгай ширхэг нэмж болно (жишээ: 4 хайрцаг + 2 ширхэг)
-        # unit_price нь Орлого тайлангаас авсан ширхэгийн үнэ
-        # Хэрэв received_qty_box=0 бол loaded_qty_box-г ашиглана (fallback).
-        pack_ratio = float(p.pack_ratio or 1) or 1.0
-        qty = eff_received_box * pack_ratio + extra_pcs  # нийт ширхэг
-        price = float(line.unit_price or 0)              # нэгж үнэ/ширхэг
-        total = round(qty * price, 2)                     # нийт дүн
-        # Override брендтэй бол тухайн брендийн brand_code-ыг ашиглана (supplier солигдсон)
-        if (line.override_brand or "").strip():
-            ref = db.query(Product).filter(Product.brand == eff_brand, Product.brand_code != None).first()
-            eff_brand_code = ref.brand_code if ref else (p.brand_code or "")
-        else:
-            eff_brand_code = p.brand_code or ""
-        valid.append((eff_brand, p.item_code, p, line, location, qty, price, total, eff_brand_code))
+        total = round(c["qty"] * c["price"], 2)
+        valid.append((c["brand"], p.item_code, p, c["line"], location,
+                      c["qty"], c["price"], total, c["brand_code"]))
 
     # Sort by brand_code then item_code so same-supplier items are grouped
     valid.sort(key=lambda x: (x[8] or "", x[0], x[1]))
@@ -2160,6 +2399,45 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
     for ci, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
+    # ── "Тайлбар" хуудас ──
+    # Эрхэтийн импортлогч зөвхөн "Import" хуудсыг уншдаг тул энэ хуудас
+    # импортод нөлөөлөхгүй. Гэхдээ нягтлан файлыг нээхэд ЯМАР ТООГООР
+    # гаргасныг шууд харна — ирээгүй тоогоор гаргасан файлыг ирсэн тоотой
+    # андуурч бүртгэх эрсдэлийг бууруулна.
+    ws2 = wb.create_sheet("Тайлбар")
+    ws2.column_dimensions["A"].width = 34
+    ws2.column_dimensions["B"].width = 26
+    ws2.column_dimensions["C"].width = 62
+    _info = [
+        ("Захиалга", "#%d · %s" % (po.id, po.order_date), ""),
+        ("Захиалгын статус", STATUS_LABEL.get(po.status, po.status), ""),
+        ("Бренд шүүлт", brand_filter or "(бүгд)", ""),
+        ("ТООНЫ ЭХ СУРВАЛЖ", ERP_QTY_SOURCE_LABEL[src],
+         "Ирсэн тоо — агуулахад бүртгэгдсэн бодит тоо. "
+         "Ачигдсан/Захиалсан — бараа хараахан ирээгүй, ТООЦООЛСОН тоо."),
+        ("Мөрийн тоо", len(picked), ""),
+        ("Нийт ширхэг", round(sum(c["qty"] for c in picked), 3), ""),
+        ("Нийт дүн", round(sum(round(c["qty"] * c["price"], 2) for c in picked), 2), ""),
+        ("Сүүлийн авсан үнээр бодсон мөр", summary[src]["estimated_price_rows"],
+         "Нэгж үнэ бүртгэгдээгүй тул барааны сүүлийн авсан үнийг ашигласан."),
+        ("Үнэгүй тул ХАСАГДСАН мөр", summary[src]["skipped_no_price"],
+         "Нэгж үнэ ч, сүүлийн авсан үнэ ч байхгүй. 0 өртгөөр орлого авбал барааны "
+         "жигнэсэн дундаж өртөг эвдэрч, дараагийн борлуулалтын өртөг буруу болно."),
+        ("Хайрцаг/ширхэг харьцаа буруу мөр", summary[src]["bad_pack_rows"],
+         "pack_ratio = 0 тул 1 гэж тооцов — барааны картыг шалгана уу."),
+    ]
+    if src != "received":
+        _info.append(("⚠ АНХААРУУЛГА", "Давхар бүртгэлээс сэргийлнэ үү",
+                      "Энэ файл ирээгүй тоогоор үүссэн. Бараа ирсний дараа «Ирсэн тоо»-гоор "
+                      "дахин экспортлож импортловол ижил бараа Эрхэт дээр ХОЁР УДАА орлогод орно."))
+    for _ri, (_k, _v, _note) in enumerate(_info, 1):
+        ws2.cell(_ri, 1, _k).font = Font(bold=True)
+        ws2.cell(_ri, 2, _v)
+        ws2.cell(_ri, 3, _note).font = Font(size=9, color="7F8C8D")
+    if src != "received":
+        for _c in (1, 2, 3):
+            ws2.cell(len(_info), _c).fill = PatternFill("solid", fgColor="FDEBD0")
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -2167,7 +2445,8 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
     from urllib.parse import quote
     date_str = po.order_date.strftime("%Y%m%d")
     brand_part = re.sub(r'[\\/:*?"<>|]', '_', brand_filter) if brand_filter else "all"
-    filename = f"{date_str}_PO{po.id}_{brand_part}.xlsx"
+    # Файлын нэрэнд эх сурвалжийг ОРУУЛНА — нягтлан татсан файлуудаа андуурахгүй
+    filename = f"{date_str}_PO{po.id}_{brand_part}_{ERP_QTY_SOURCE_SLUG[src]}.xlsx"
     # RFC 5987: ASCII fallback + UTF-8 encoded filename* (Cyrillic-д зориулж)
     # ASCII fallback нь зай/тусгай тэмдэггүй учир хашилт хэрэггүй
     ascii_fallback = re.sub(r"[^\w\-.]", "_", filename.encode("ascii", "ignore").decode("ascii")) or f"PO{po.id}.xlsx"
@@ -3099,20 +3378,27 @@ def _ensure_brand_statuses(order_id: int, db: Session):
     if not po:
         return
 
-    lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == order_id).all()
-    prod_ids = [l.product_id for l in lines]
-    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(prod_ids)).all()}
+    # JOIN — өмнө нь бүх мөрийг татаад `Product.id.in_(бүх id)` явуулдаг байсан.
+    # Энэ функцийг `set_lines` бүр дуудаг тул хадгалалт бүрд 22 мянган
+    # bind-параметртэй хүсэлт үүсдэг байв (SQLite-ийн хязгаар 32,766).
+    # Мөн ЗӨВХӨН тоо > 0 мөр хэрэгтэй тул шүүлтийг ч SQL талд хийнэ.
+    rows = (
+        db.query(PurchaseOrderLine.override_brand, Product.brand)
+        .join(Product, Product.id == PurchaseOrderLine.product_id)
+        .filter(
+            PurchaseOrderLine.purchase_order_id == order_id,
+            PurchaseOrderLine.order_qty_box > 0,
+        ).all()
+    )
 
     # Brands with order_qty > 0 (override_brand-ийг түрүүнд харгалзана)
     active_brands: set[str] = set()
-    for l in lines:
-        if l.order_qty_box > 0:
-            p = products.get(l.product_id)
-            eff_brand = (l.override_brand or "").strip()
-            if not eff_brand and p and p.brand and p.brand.lower() != "nan":
-                eff_brand = p.brand
-            if eff_brand and eff_brand.lower() != "nan":
-                active_brands.add(eff_brand)
+    for ov, pbrand in rows:
+        eff_brand = (ov or "").strip()
+        if not eff_brand and pbrand and pbrand.lower() != "nan":
+            eff_brand = pbrand
+        if eff_brand and eff_brand.lower() != "nan":
+            active_brands.add(eff_brand)
 
     existing = {
         bs.brand

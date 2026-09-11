@@ -80,6 +80,9 @@ type State = {
 
   setOrders: (orders: POSummary[]) => void;
   setCurrentOrder: (order: PODetail | null) => void;
+  /** Захиалгын ЗАРИМ талбарыг л засна (бүхэлд нь солихгүй).
+   *  Статус солиход 133 KB-ийн захиалгыг дахин татахгүй байхад хэрэгтэй. */
+  patchCurrentOrder: (patch: Partial<PODetail>) => void;
   setQuantity: (productId: number, qty: number) => void;
   initQuantities: (lines: POLine[]) => void;
   setMasterStatus: (exists: boolean, updatedAt: string | null) => void;
@@ -94,6 +97,8 @@ export const usePurchaseOrderStore = create<State>((set) => ({
 
   setOrders: (orders) => set({ orders }),
   setCurrentOrder: (order) => set({ currentOrder: order }),
+  patchCurrentOrder: (patch) =>
+    set((s) => (s.currentOrder ? { currentOrder: { ...s.currentOrder, ...patch } } : {})),
   setQuantity: (productId, qty) =>
     set((s) => ({ quantities: { ...s.quantities, [productId]: qty } })),
   initQuantities: (lines) => {

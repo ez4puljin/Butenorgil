@@ -57,23 +57,6 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
   // Unique warehouse names from order lines (only ACTIVE lines that actually ship to ERP)
   // Backend ERP export filter: received>0 AND (order>0 OR supplier>0)
   // Brand filter нөхцөл байвал мөн тухайн брендийн бараанд хязгаарлана
-  const warehouses = [
-    ...new Set(
-      order.lines
-        .filter((l) => {
-          // Backend-тэй адил: received > 0 эсвэл loaded > 0 (fallback) + идэвхтэй + бренд тохирох
-          const received = (l.received_qty_box ?? 0) > 0
-            || ((l as any).received_qty_extra_pcs ?? 0) > 0
-            || (l.loaded_qty_box ?? 0) > 0;
-          const active = (l.order_qty_box ?? 0) > 0 || (l.supplier_qty_box ?? 0) > 0;
-          if (!received || !active) return false;
-          if (brandFilter && l.brand !== brandFilter) return false;
-          return true;
-        })
-        .map((l) => l.warehouse_name)
-        .filter(Boolean)
-    ),
-  ].sort();
 
   const [cfg, setCfg] = useState<ERPConfig>(() => {
     try {
@@ -101,6 +84,52 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /* ── Тооны эх сурвалж ────────────────────────────────────────────────
+     Өмнө нь экспорт зөвхөн «ачигдсан/ирсэн > 0» мөрийг авдаг байсан тул
+     бараа ирээгүй үе шатанд ЗӨВХӨН ТОЛГОЙ мөртэй хоосон файл ямар ч
+     тайлбаргүй татагддаг байв. Одоо сервер эх сурвалж тус бүрд хэдэн мөр
+     гарахыг ТАТАХААС ӨМНӨ хэлж өгнө. */
+  type SrcInfo = {
+    label: string; rows: number; pieces: number; amount: number;
+    skipped_no_price: number; estimated_price_rows: number; bad_pack_rows: number;
+  };
+  type Preview = {
+    active_lines: number;
+    sources: Record<string, SrcInfo>;
+    default_source: string;
+    warehouses: string[];
+  };
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [qtySource, setQtySource] = useState<string>("received");
+  const [confirmEstimate, setConfirmEstimate] = useState(false);
+  const SRC_ORDER = ["received", "loaded", "ordered"];
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const r = await api.get(`/purchase-orders/${order.id}/erp-preview`, {
+          params: brandFilter ? { brand: brandFilter } : undefined,
+        });
+        if (dead) return;
+        setPreview(r.data);
+        setQtySource(r.data?.default_source ?? "received");
+      } catch (e: any) {
+        if (!dead) setPreviewErr(e?.response?.data?.detail ?? "Урьдчилсан тоог татаж чадсангүй");
+      }
+    })();
+    return () => { dead = true; };
+  }, [order.id, brandFilter]);
+
+  const srcInfo = preview?.sources?.[qtySource];
+  const needsConfirm = qtySource !== "received";
+
+  // Агуулахын жагсаалтыг СЕРВЕРЭЭС авна. Өмнө нь модал өөрөө order.lines дээр
+  // backend-ийн шүүлтийг дуурайдаг байсан тул хоёр тал зөрөх боломжтой байв
+  // (цонх хоосон харагдаад файл мөртэй гарах гэх мэт).
+  const warehouses = preview?.warehouses ?? [];
+
   // Persist to localStorage whenever config changes
   useEffect(() => {
     localStorage.setItem(LS_KEY, JSON.stringify(cfg));
@@ -121,7 +150,8 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
     try {
       const res = await api.post(
         `/purchase-orders/${order.id}/export-erp-excel`,
-        { ...cfg, brand_filter: brandFilter ?? "" },
+        { ...cfg, brand_filter: brandFilter ?? "",
+          qty_source: qtySource, confirm_estimate: confirmEstimate },
         { responseType: "blob" }
       );
       // Filename from Content-Disposition header or fallback
@@ -166,6 +196,8 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
   };
 
   const canExport =
+    (srcInfo?.rows ?? 0) > 0 &&
+    (!needsConfirm || confirmEstimate) &&
     cfg.document_note.trim() !== "" &&
     cfg.account.trim() !== "" &&
     (cfg.company === "orgil_khorum"
@@ -188,6 +220,84 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
 
         {/* Body — scrollable */}
         <div className="overflow-y-auto flex-1 px-6 py-4 space-y-5">
+          {/* ── Тооны эх сурвалж — ХАМГИЙН ЭХЭНД ──────────────────────
+              Хэрэглэгч ямар тоогоор гарахыг, хэдэн мөр гарахыг ТАТАХААС
+              ӨМНӨ харна. Ингэснээр хоосон файл чимээгүй татагдахгүй. */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500">
+              Ямар тоогоор гаргах вэ?
+            </label>
+            {previewErr ? (
+              <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{previewErr}</div>
+            ) : !preview ? (
+              <div className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2.5 text-xs text-gray-500">
+                <RefreshCw size={12} className="animate-spin" /> Тоог тооцоолж байна…
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {SRC_ORDER.map((s) => {
+                  const info = preview.sources[s];
+                  const disabled = !info || info.rows === 0;
+                  const on = qtySource === s;
+                  return (
+                    <button
+                      key={s}
+                      onClick={() => { if (!disabled) { setQtySource(s); setConfirmEstimate(false); } }}
+                      disabled={disabled}
+                      className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${
+                        on ? "border-emerald-400 bg-emerald-50"
+                           : disabled ? "border-gray-100 bg-gray-50 opacity-50"
+                           : "border-gray-200 bg-white hover:bg-gray-50"}`}
+                    >
+                      <span className={`h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
+                        on ? "border-emerald-600 bg-emerald-600" : "border-gray-300"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-gray-900">
+                          {info?.label ?? s}
+                          {s !== "received" && (
+                            <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                              бараа ирээгүй
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-[11px] text-gray-500 tabular-nums">
+                          {info ? `${info.rows.toLocaleString("mn-MN")} мөр · ${Math.round(info.pieces).toLocaleString("mn-MN")} ширхэг · ₮${Math.round(info.amount).toLocaleString("mn-MN")}` : "—"}
+                          {info && info.skipped_no_price > 0 &&
+                            ` · ${info.skipped_no_price} мөр үнэгүй тул хасагдана`}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+                {preview.active_lines === 0 && (
+                  <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Энэ захиалгад захиалсан тоо бүхий мөр байхгүй байна.
+                    Дэлгэц дээр тоо харагдаж байвал эхлээд <b>Хадгалах</b> дарна уу —
+                    хадгалаагүй тоо экспортод ороогүй.
+                  </div>
+                )}
+                {srcInfo && srcInfo.estimated_price_rows > 0 && (
+                  <div className="rounded-lg bg-blue-50 px-3 py-2 text-[11px] text-blue-800">
+                    {srcInfo.estimated_price_rows} мөрийн нэгж үнэ бүртгэгдээгүй тул
+                    барааны <b>сүүлийн авсан үнийг</b> ашиглана.
+                  </div>
+                )}
+                {needsConfirm && (srcInfo?.rows ?? 0) > 0 && (
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-[11px] text-amber-900">
+                    <input type="checkbox" checked={confirmEstimate}
+                      onChange={(e) => setConfirmEstimate(e.target.checked)}
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-amber-600" />
+                    <span>
+                      Энэ нь <b>ирсэн тоо биш</b>. Эрхэт рүү импортловол бодит орлого болж
+                      бүртгэгдэнэ. Бараа ирсний дараа «Ирсэн тоо»-гоор дахин экспортловол
+                      ижил бараа <b>хоёр удаа</b> орлогод орохыг ойлгож байна.
+                    </span>
+                  </label>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Company selector */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-gray-500">Компани</label>

@@ -886,6 +886,145 @@ export default function PurchaseOrderDetail() {
   };
   const [brandBusy, setBrandBusy] = useState<string | null>(null);
   const [brandMenu, setBrandMenu] = useState<string | null>(null);
+  /** Дамжиж буй статусын хүсэлтүүд. state биш ref — нэг render дотор хоёр
+   *  дарахад хоёулаа хуучин утга уншиж давхар хүсэлт явуулахаас сэргийлнэ. */
+  const statusInFlight = useRef<Set<string>>(new Set());
+  const brandMenuRef = useRef<HTMLSpanElement | null>(null);
+
+  /* ═══ Статусын ХУРДАН ЗАМ ════════════════════════════════════════════
+     Статус нь ЗӨВХӨН мэдээллийн шинжтэй тул түүнийг солиход бүтэн захиалгыг
+     дахин татах шаардлагагүй. Хэмжсэн: PATCH нь 14-19 мс, гэтэл араас нь
+     явдаг `loadOrder()` нь 779 мс (брендийн горимд 1,771 мс) иддэг байв.
+
+     Дахин таталтыг хассан нь ХУРДНААС гадна нэг АЛДАА ч засна: `loadOrder`
+     нь `store.initQuantities` болон зургаан буферыг дахин суулгадаг тул
+     статус дарах бүрд хэрэглэгчийн хадгалаагүй тоо/үнэ/тайлбар ЧИМЭЭГҮЙ
+     устдаг байсан.
+
+     Сервер дельта биш БҮТЭН зураглал буцаадаг тул хэдэн ч удаа дараалан
+     дарсан клиентийн төлөв хазайхгүй. */
+
+  const LOADING_STAGES = ["loading", "transit", "arrived", "accounting", "confirmed", "received"];
+
+  /** Тухайн захиалгын объектоос ҮР ДҮНГИЙН статусыг гаргана (brandMode-ыг харгалзана). */
+  const effStatusOf = (o: any): string =>
+    (brandMode && o)
+      ? (o.brand_status ?? o.brand_statuses?.[brandFilter!] ?? o.status)
+      : (o?.status ?? "preparing");
+
+  /* Статус "ачилтын үе шат" руу ОРОХОД `loadOrder` нь Ачигдсан/Ирсэн нүдийг
+     захиалсан тоогоор урьдчилан бөглөдөг (мөр ~535-549). Дахин таталтыг
+     хассан тул тэр бөглөлтийг ЭНД давтана — эс тэгвэл ачилтын үе шатанд
+     171 нүд хоосон гарч, өгөгдөл оруулах боломж алдагдана.
+     ЗӨВХӨН одоо 0 байгаа нүдийг хөндөнө — хэрэглэгчийн бичсэн утга хэвээр. */
+  const seedLoadingBuffers = (lines: any[]) => {
+    /** Нэг мөрийн "Ачигдсан"-ы урьдчилсан утга — loadOrder-ийн дүрэмтэй ЯГ ижил. */
+    const loadedSeed = (l: any): number => {
+      const saved = l.loaded_qty_box ?? 0;
+      if (saved !== 0) return saved;
+      return (l.order_qty_box ?? 0) > 0 ? l.order_qty_box : 0;
+    };
+    // Хоёр updater ТУСДАА. setState-ийг өөр setState-ийн updater дотроос
+    // дуудаж болохгүй — updater нь цэвэр функц байх ёстой.
+    setLoadedQtys((prev) => {
+      const next = { ...prev };
+      for (const l of lines) {
+        const pid = l.product_id;
+        if ((next[pid] ?? 0) !== 0) continue;      // хэрэглэгчийн бичсэнийг хөндөхгүй
+        if ((l.loaded_qty_box ?? 0) !== 0) continue;
+        const v = loadedSeed(l);
+        if (v > 0) next[pid] = v;
+      }
+      return next;
+    });
+    setReceivedQtys((prev) => {
+      const next = { ...prev };
+      for (const l of lines) {
+        const pid = l.product_id;
+        if ((next[pid] ?? 0) !== 0) continue;
+        if ((l.received_qty_box ?? 0) > 0) continue;
+        if (((l as any).received_qty_extra_pcs ?? 0) > 0) continue;  // санаатай 0
+        const v = loadedSeed(l);
+        if (v > 0) next[pid] = v;
+      }
+      return next;
+    });
+  };
+
+  /* Брендийн статусын цэсийг ГАДУУР товшиход хаана.
+     Өмнө нь бүтэн дэлгэцийн `fixed inset-0` давхарга ашигладаг байсан — тэр нь
+     бусад БҮХ товчны эхний товшилтыг залгидаг. Цэс одоо байнга нээлттэй үлддэг
+     болсон тул тэр нь ердийн байдал болж, олон брендийг дараалан солих
+     ажиллагааг эвдэх байлаа. */
+  useEffect(() => {
+    if (!brandMenu) return;
+    const onDown = (e: MouseEvent) => {
+      const el = brandMenuRef.current;
+      if (el && !el.contains(e.target as Node)) setBrandMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [brandMenu]);
+
+  /** PATCH-ийн хариугаар store-оо ЦЭГЛЭН засна. Сүлжээний нэмэлт хүсэлт БАЙХГҮЙ. */
+  const applyStatusPatch = (d: any) => {
+    const cur: any = store.currentOrder;
+    if (!cur || !d) return;
+    const prevEff = effStatusOf(cur);
+
+    const patch: any = {};
+    if (d.brand_statuses) patch.brand_statuses = d.brand_statuses;
+    if (d.po_status) patch.status = d.po_status;
+
+    // brandMode-д `effectiveStatus` нь эхлээд `brand_status`-ыг уншдаг тул
+    // түүнийг ч заавал шинэчилнэ, эс тэгвэл дэлгэц дээрх тэмдэг хуучирна.
+    if (brandMode && brandFilter) {
+      const bst = (d.brand_statuses && d.brand_statuses[brandFilter])
+        ?? (d.brand === brandFilter ? d.new_status : undefined);
+      if (bst) {
+        patch.brand_status = bst;
+        const i = STATUS_SEQUENCE.indexOf(bst as any);
+        const nxt = i >= 0 && i < STATUS_SEQUENCE.length - 1 ? STATUS_SEQUENCE[i + 1] : null;
+        patch.brand_next_status = nxt;
+        patch.brand_next_status_label = nxt ? (STATUS_LABEL[nxt] ?? nxt) : "";
+      }
+    }
+
+    // Захиалгын түвшний дараагийн алхам (footer-ийн товч үүнийг уншина)
+    if (d.po_status) {
+      const i = STATUS_SEQUENCE.indexOf(d.po_status as any);
+      const nxt = i >= 0 && i < STATUS_SEQUENCE.length - 1 ? STATUS_SEQUENCE[i + 1] : null;
+      patch.next_status = nxt;
+      patch.next_status_label = nxt ? (STATUS_LABEL[nxt] ?? nxt) : "";
+    }
+
+    // arrived → accounting үед сервер бөглөсөн үнийг мөрүүдэд тусгана.
+    // Хэрэглэгчийн гараар бичсэн үнийг ХӨНДӨХГҮЙ.
+    const ups: any[] = d.price_updates ?? [];
+    if (ups.length && Array.isArray(cur.lines)) {
+      const byId = new Map(ups.map((x: any) => [x.line_id, x.unit_price]));
+      patch.lines = cur.lines.map((l: any) =>
+        byId.has(l.id) ? { ...l, unit_price: byId.get(l.id) } : l);
+      setPriceInputs((prev) => {
+        const next = { ...prev };
+        for (const x of ups) {
+          const before = next[x.product_id];
+          // Буфер хоосон эсвэл хуучин last_purchase_price-тай тэнцүү бол л дарна
+          if (before == null || before === 0) next[x.product_id] = x.unit_price;
+        }
+        return next;
+      });
+    }
+
+    store.patchCurrentOrder(patch);
+
+    // Ачилтын үе шат руу ОРСОН эсэх — орсон бол урьдчилсан бөглөлтийг давтана
+    const after = { ...cur, ...patch };
+    const nextEff = effStatusOf(after);
+    if (!LOADING_STAGES.includes(prevEff) && LOADING_STAGES.includes(nextEff)) {
+      seedLoadingBuffers(after.lines ?? cur.lines ?? []);
+    }
+  };
 
   /* === Ороогүй бараа захиалах консол ==================================
      Яагаад модал вэ: 471 бренд байхад брендээр орох гарц нь буруу нэгж.
@@ -1320,27 +1459,41 @@ export default function PurchaseOrderDetail() {
 
 
   const advanceBrand = async (brand: string) => {
-    if (!order) return;
+    if (!order || statusInFlight.current.has(brand)) return;
+    statusInFlight.current.add(brand);
     setBrandBusy(brand);
     try {
+      localActionAt.current = Date.now();   // өөрийн өөрчлөлт — echo event-ийг үл тоомсорлоно
       const r = await api.patch(`/purchase-orders/${order.id}/brand-advance`, null, { params: { brand } });
-      flash(`${brand} → ${r.data?.new_status_label ?? "шинэчлэгдлээ"}`);
-      await loadOrder();
+      applyStatusPatch(r.data);             // дахин ТАТАХГҮЙ — store-оо цэглэн засна
+      const n = r.data?.price_updated_count ?? 0;
+      flash(`${brand} → ${r.data?.new_status_label ?? "шинэчлэгдлээ"}`
+        + (n ? ` · ${n} мөрийн үнэ бөглөгдлөө` : ""));
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
-    } finally { setBrandBusy(null); }
+    } finally {
+      statusInFlight.current.delete(brand);
+      setBrandBusy((b) => (b === brand ? null : b));
+    }
   };
 
+  /* Цэсийг ХААХГҮЙ — хэрэглэгч дараалан хэд хэдэн статус сонгож болно
+     (хүсэлт: "Status холбоотой нэмэлт цонх зэрэг нь бүгд нээлттэй байхаар"). */
   const forceBrandStatus = async (brand: string, status: string) => {
-    if (!order) return;
-    setBrandMenu(null); setBrandBusy(brand);
+    if (!order || statusInFlight.current.has(brand)) return;
+    statusInFlight.current.add(brand);
+    setBrandBusy(brand);
     try {
-      await api.patch(`/purchase-orders/${order.id}/force-status`, { status }, { params: { brand } });
+      localActionAt.current = Date.now();
+      const r = await api.patch(`/purchase-orders/${order.id}/force-status`, { status }, { params: { brand } });
+      applyStatusPatch(r.data);             // дахин ТАТАХГҮЙ
       flash(`${brand} → ${STATUS_LABEL[status] ?? status}`);
-      await loadOrder();
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
-    } finally { setBrandBusy(null); }
+    } finally {
+      statusInFlight.current.delete(brand);
+      setBrandBusy((b) => (b === brand ? null : b));
+    }
   };
 
   // Тухайн брендийг дэвшүүлэх эрхтэй эсэх (backend-ийн advance_brand_status-тай ижил)
@@ -1368,31 +1521,39 @@ export default function PurchaseOrderDetail() {
 
 Бренд бүр өөрийн статусаасаа нэг алхам урагшилна.`)) return;
     setAdvancing(true);
-    let ok = 0, fail = 0;
+    let ok = 0;
+    const errs: string[] = [];
     for (const b of targets) {
       try {
-        await api.patch(`/purchase-orders/${order.id}/brand-advance`, null, { params: { brand: b } });
+        localActionAt.current = Date.now();
+        const r = await api.patch(`/purchase-orders/${order.id}/brand-advance`, null, { params: { brand: b } });
+        // Хариу бүр БҮТЭН зураглал агуулдаг тул давталтын төгсгөлд ч, дундуур ч
+        // хэрэглэхэд адилхан зөв — дахин татах шаардлагагүй.
+        applyStatusPatch(r.data);
         ok++;
-      } catch { fail++; }
+      } catch (e: any) {
+        errs.push(`${b}: ${e?.response?.data?.detail ?? "алдаа"}`);
+      }
     }
-    await loadOrder();
     setAdvancing(false);
-    flash(fail ? `${ok} бренд шилжлээ, ${fail} алдаатай` : `${ok} бренд шилжлээ`, !fail);
+    flash(errs.length
+      ? `${ok} бренд шилжлээ, ${errs.length} алдаатай — ${errs.slice(0, 2).join("; ")}`
+      : `${ok} бренд шилжлээ`, !errs.length);
   };
 
 
   const advanceStatus = async () => {
-    if (!order) return;
+    if (!order || advancing) return;
     setAdvancing(true);
     try {
-      if (brandMode && brandFilter) {
-        await api.patch(`/purchase-orders/${order.id}/brand-advance`, null, { params: { brand: brandFilter } });
-        flash(`${brandFilter} — Статус шинэчлэгдлээ`);
-      } else {
-        await api.patch(`/purchase-orders/${order.id}/status`);
-        flash("Статус шинэчлэгдлээ");
-      }
-      await loadOrder();
+      localActionAt.current = Date.now();
+      const r = brandMode && brandFilter
+        ? await api.patch(`/purchase-orders/${order.id}/brand-advance`, null, { params: { brand: brandFilter } })
+        : await api.patch(`/purchase-orders/${order.id}/status`);
+      applyStatusPatch(r.data);        // дахин ТАТАХГҮЙ (779 мс -> 0)
+      const n = r.data?.price_updated_count ?? 0;
+      flash((brandMode && brandFilter ? `${brandFilter} — Статус шинэчлэгдлээ` : "Статус шинэчлэгдлээ")
+        + (n ? ` · ${n} мөрийн үнэ бөглөгдлөө` : ""));
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
     } finally {
@@ -1400,16 +1561,22 @@ export default function PurchaseOrderDetail() {
     }
   };
 
+  /* Цэс НЭЭЛТТЭЙ үлдэнэ — хэрэглэгч дараалан хэд хэдэн статус сонгож болно. */
   const forceStatus = async (newStatus: string) => {
     if (!order) return;
-    setShowStatusDropdown(false);
+    const key = brandMode && brandFilter ? brandFilter : "__po__";
+    if (statusInFlight.current.has(key)) return;
+    statusInFlight.current.add(key);
     try {
+      localActionAt.current = Date.now();
       const params = brandMode && brandFilter ? { brand: brandFilter } : undefined;
-      await api.patch(`/purchase-orders/${order.id}/force-status`, { status: newStatus }, { params });
+      const r = await api.patch(`/purchase-orders/${order.id}/force-status`, { status: newStatus }, { params });
+      applyStatusPatch(r.data);        // дахин ТАТАХГҮЙ
       flash(brandMode && brandFilter ? `${brandFilter} — Статус шинэчлэгдлээ` : "Статус шинэчлэгдлээ");
-      await loadOrder();
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
+    } finally {
+      statusInFlight.current.delete(key);
     }
   };
 
@@ -1428,9 +1595,9 @@ export default function PurchaseOrderDetail() {
   const revertStatus = async () => {
     if (!order) return;
     try {
-      await api.post(`/purchase-orders/${order.id}/revert`);
+      const r = await api.post(`/purchase-orders/${order.id}/revert`);
+      applyStatusPatch(r.data);        // дахин ТАТАХГҮЙ
       flash("Статус буцлаа");
-      await loadOrder();
     } catch (e: any) {
       flash(e?.response?.data?.detail ?? "Алдаа гарлаа", false);
     }
@@ -1928,7 +2095,7 @@ export default function PurchaseOrderDetail() {
                       <button
                         key={st}
                         onClick={() => forceStatus(st)}
-                        className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-50 transition-colors ${order.status === st ? "font-semibold text-[#0071E3] bg-blue-50" : "text-gray-700"}`}
+                        className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-50 transition-colors ${effectiveStatus === st ? "font-semibold text-[#0071E3] bg-blue-50" : "text-gray-700"}`}
                       >
                         {STATUS_LABEL[st as keyof typeof STATUS_LABEL]}
                       </button>
@@ -2653,7 +2820,7 @@ export default function PurchaseOrderDetail() {
                                 </button>
                               )}
                               {eff === "admin" && (
-                                <span className="relative">
+                                <span className="relative" ref={brandMenu === brand ? brandMenuRef : null}>
                                   <button
                                     onClick={() => setBrandMenu(brandMenu === brand ? null : brand)}
                                     title={`${brand} — статус албадан өөрчлөх`}
@@ -2662,22 +2829,20 @@ export default function PurchaseOrderDetail() {
                                     <ChevronDown size={10} />
                                   </button>
                                   {brandMenu === brand && (
-                                    <>
-                                      <span className="fixed inset-0 z-10" onClick={() => setBrandMenu(null)} />
-                                      <span className="absolute left-0 z-20 mt-1 block w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg">
-                                        {STATUS_SEQUENCE.map((s) => (
-                                          <button
-                                            key={s}
-                                            onClick={() => forceBrandStatus(brand, s)}
-                                            className={`block w-full px-3 py-1.5 text-left text-[11px] hover:bg-gray-50 ${
-                                              bst === s ? "bg-blue-50 font-semibold text-[#0071E3]" : "text-gray-700"
-                                            }`}
-                                          >
-                                            {STATUS_LABEL[s]}
-                                          </button>
-                                        ))}
-                                      </span>
-                                    </>
+                                    <span className="absolute left-0 z-20 mt-1 block w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg">
+                                      {STATUS_SEQUENCE.map((s) => (
+                                        <button
+                                          key={s}
+                                          onClick={() => forceBrandStatus(brand, s)}
+                                          disabled={brandBusy === brand}
+                                          className={`block w-full px-3 py-1.5 text-left text-[11px] hover:bg-gray-50 disabled:opacity-50 ${
+                                            bst === s ? "bg-blue-50 font-semibold text-[#0071E3]" : "text-gray-700"
+                                          }`}
+                                        >
+                                          {STATUS_LABEL[s]}
+                                        </button>
+                                      ))}
+                                    </span>
                                   )}
                                 </span>
                               )}
