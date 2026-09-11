@@ -4,6 +4,8 @@
   - Бүх агуулахын үлдэгдэл (warehouse)
   - Үндсэн заалны үлдэгдэл (main)
   - Архины заалны үлдэгдэл (liquor)
+4 дэх төрөл — Заалны тоолох барааны үлдэгдэл (hall_count) — тооллого хийх бүрд
+оруулна; энэ нь нээлттэй заалны тооллогын суурь үлдэгдэл болно (app/services/hall_count.py).
 
 ⚠️ ЯМАР Ч ШАЛГУУРГҮЙ: оруулсан файлыг боловсруулахгүй, шүүхгүй, хэвээр нь
 хадгална. Файлыг хэрхэн ашиглах (үлдэгдэл/stock задлах г.м)-ийг хожим
@@ -24,7 +26,10 @@ from app.core.db import Base
 BAL_KIND_WAREHOUSE = "warehouse"   # Бүх агуулахын үлдэгдэл
 BAL_KIND_MAIN      = "main"        # Үндсэн заалны үлдэгдэл
 BAL_KIND_LIQUOR    = "liquor"      # Архины заалны үлдэгдэл
-BAL_KINDS = {BAL_KIND_WAREHOUSE, BAL_KIND_MAIN, BAL_KIND_LIQUOR}
+# Заалны тоолох барааны үлдэгдэл — гар утасны тооллогын (hall_count) суурь.
+# Бусад 3-аас ялгаатай нь: оруулмагц мөр бүрийг задалж нээлттэй тооллогод ачаална.
+BAL_KIND_HALL_COUNT = "hall_count"
+BAL_KINDS = {BAL_KIND_WAREHOUSE, BAL_KIND_MAIN, BAL_KIND_LIQUOR, BAL_KIND_HALL_COUNT}
 
 
 class BalanceFile(Base):

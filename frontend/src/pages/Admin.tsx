@@ -78,6 +78,8 @@ const FALLBACK_PAGE_KEYS = [
   { key: "ebarimt",             label: "Ebarimt" },
   { key: "ai_chat",             label: "AI туслах" },
   { key: "pos_sync",            label: "POS татах" },
+  { key: "price_check",         label: "Үнэ харах" },
+  { key: "hall_count",          label: "Заалны тооллого" },
   { key: "expiration_tracking", label: "Хугацааны хяналт" },
   { key: "attendance",          label: "Цаг бүртгэл" },
   { key: "attendance_admin",    label: "Цаг бүртгэл (Админ)" },

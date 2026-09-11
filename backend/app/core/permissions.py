@@ -30,6 +30,7 @@ PERMISSION_MANIFEST = [
     {"key": "pos_sync",            "label": "POS татах"},
     {"key": "pos_recon",           "label": "POS тулгалт"},
     {"key": "price_check",         "label": "Үнэ харах",       "universal": True},
+    {"key": "hall_count",          "label": "Заалны тооллого", "universal": True},
     {"key": "expiration_tracking", "label": "Хугацааны хяналт", "universal": True},
     {"key": "attendance",          "label": "Цаг бүртгэл",      "universal": True},
     {"key": "attendance_admin",    "label": "Цаг бүртгэл (Админ)"},

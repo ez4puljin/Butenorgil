@@ -5,6 +5,8 @@
 шинэчилж оруулна). Файлыг хэрхэн ашиглахыг хожим тусдаа зааврын дагуу нэмнэ.
 
 3 төрөл: warehouse (Бүх агуулах), main (Үндсэн заал), liquor (Архины заал).
+4 дэх: hall_count (Заалны тоолох барааны үлдэгдэл) — оруулмагц мөрүүдийг задалж
+нээлттэй заалны тооллогод (app/services/hall_count.py) суурь болгон ачаална.
 
 Endpoint-ууд:
   POST   /balance-files/import          — multipart upload (kind, file)
@@ -26,11 +28,13 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
+from app.models.hall_count import HallCountScan
 from app.models.balance_file import (
     BalanceFile,
     BAL_KIND_WAREHOUSE,
     BAL_KIND_MAIN,
     BAL_KIND_LIQUOR,
+    BAL_KIND_HALL_COUNT,
     BAL_KINDS,
 )
 
@@ -70,7 +74,7 @@ def import_file(
     """Файлыг ямар ч шалгуургүйгээр хэвээр нь хадгална. Тухайн төрөлд өмнө нь
     файл байсан бол солино (өдөр бүр шинэчилж оруулна)."""
     if kind not in BAL_KINDS:
-        raise HTTPException(400, f"kind нь '{BAL_KIND_WAREHOUSE}', '{BAL_KIND_MAIN}' эсвэл '{BAL_KIND_LIQUOR}' байх ёстой.")
+        raise HTTPException(400, f"kind нь '{BAL_KIND_WAREHOUSE}', '{BAL_KIND_MAIN}', '{BAL_KIND_LIQUOR}' эсвэл '{BAL_KIND_HALL_COUNT}' байх ёстой.")
 
     orig_name = (file.filename or "upload").replace("\\", "_").replace("/", "_")
     ext = os.path.splitext(orig_name)[1] or ".xlsx"
@@ -116,17 +120,35 @@ def import_file(
         ))
     db.commit()
 
+    # Заалны тооллогын үлдэгдэл — мөрүүдийг задалж нээлттэй тооллогод ачаална
+    # (нээлттэй байхгүй бол шинээр эхлүүлнэ; байвал үлдэгдлийг шинэчилж скáныг хадгална).
+    hall = None
+    if kind == BAL_KIND_HALL_COUNT:
+        from app.services import hall_count as hc_svc
+        rows = hc_svc.parse_hall_balance_file(saved_path)
+        if not rows:
+            raise HTTPException(400, "Файлаас нэг ч барааны мөр танигдсангүй. A=Код, B=Нэр, I=Эцсийн үлдэгдэл, K=Нэгж өртөг бүтэцтэй «Үлдэгдлийн тайлан» оруулна уу.")
+        sess = hc_svc.sync_session_from_rows(
+            db, rows, filename=orig_name,
+            user_id=int(getattr(u, "id", 0) or 0),
+            user_name=str(getattr(u, "nickname", "") or getattr(u, "username", "") or ""),
+        )
+        db.commit()
+        hall = {"session_id": sess.id, "items": len(rows),
+                "scans_kept": int(db.query(HallCountScan.id).filter(HallCountScan.session_id == sess.id).count())}
+
     audit(
         db, request, u,
         action="balance_file_import",
         entity_type="balance_file",
         extra={"kind": kind, "filename": orig_name,
-               "size_bytes": size_bytes, "row_count": row_count},
+               "size_bytes": size_bytes, "row_count": row_count, "hall": hall},
         autocommit=True,
     )
 
     return {"ok": True, "kind": kind,
-            "filename": orig_name, "size_bytes": size_bytes, "row_count": row_count}
+            "filename": orig_name, "size_bytes": size_bytes, "row_count": row_count,
+            "hall": hall}
 
 
 def _file_info(r: BalanceFile) -> dict:
@@ -144,9 +166,10 @@ def list_slots(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """3 төрлийн төлөв — UI-д хэрэглэнэ. {warehouse, main, liquor}: FileInfo|null."""
+    """4 төрлийн төлөв — UI-д хэрэглэнэ. {warehouse, main, liquor, hall_count}: FileInfo|null."""
     rows = db.query(BalanceFile).all()
-    out: dict[str, dict | None] = {BAL_KIND_WAREHOUSE: None, BAL_KIND_MAIN: None, BAL_KIND_LIQUOR: None}
+    out: dict[str, dict | None] = {BAL_KIND_WAREHOUSE: None, BAL_KIND_MAIN: None, BAL_KIND_LIQUOR: None,
+                                   BAL_KIND_HALL_COUNT: None}
     for r in rows:
         if r.kind in out:
             out[r.kind] = _file_info(r)

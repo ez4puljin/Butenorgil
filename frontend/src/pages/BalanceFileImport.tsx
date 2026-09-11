@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft, UploadCloud, RefreshCw, Check, AlertCircle, Warehouse, Store, Wine, Trash2,
-  Download, X, FileSpreadsheet, CalendarClock,
+  Download, X, FileSpreadsheet, CalendarClock, ScanBarcode, ArrowRight,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -14,19 +14,23 @@ type FileInfo = {
   uploaded_at: string | null;
   uploaded_by: string;
 };
-type Kind = "warehouse" | "main" | "liquor";
+type Kind = "warehouse" | "main" | "liquor" | "hall_count";
 type Slots = Record<Kind, FileInfo | null>;
 
-const KINDS: { kind: Kind; label: string; icon: React.ReactNode; color: "blue" | "violet" | "amber" }[] = [
-  { kind: "warehouse", label: "Бүх агуулахын үлдэгдэл", icon: <Warehouse size={18} />, color: "blue" },
-  { kind: "main",      label: "Үндсэн заалны үлдэгдэл", icon: <Store size={18} />,     color: "violet" },
-  { kind: "liquor",    label: "Архины заалны үлдэгдэл", icon: <Wine size={18} />,      color: "amber" },
+const KINDS: { kind: Kind; label: string; hint?: string; icon: React.ReactNode; color: "blue" | "violet" | "amber" | "emerald" }[] = [
+  { kind: "warehouse",  label: "Бүх агуулахын үлдэгдэл", icon: <Warehouse size={18} />,   color: "blue" },
+  { kind: "main",       label: "Үндсэн заалны үлдэгдэл", icon: <Store size={18} />,       color: "violet" },
+  { kind: "liquor",     label: "Архины заалны үлдэгдэл", icon: <Wine size={18} />,        color: "amber" },
+  // Гар утасны тооллогын суурь — оруулмагц мөр бүр нээлттэй тооллогод ачаалагдана
+  { kind: "hall_count", label: "Заалны тоолох барааны үлдэгдэл", icon: <ScanBarcode size={18} />, color: "emerald",
+    hint: "Оруулмагц «Заалны тооллого» эхэлнэ — утсаар уншуулж тоолно. Тооллогын дундуур дахин оруулбал үлдэгдэл шинэчлэгдэж, уншуулсан тоо хадгалагдана." },
 ];
 
 const PALETTE = {
-  blue:   { tx: "text-blue-700",   bg: "bg-blue-50",   ring: "ring-blue-200",   grad: "from-blue-500 to-blue-600",   soft: "bg-blue-50/50" },
-  violet: { tx: "text-violet-700", bg: "bg-violet-50", ring: "ring-violet-200", grad: "from-violet-500 to-violet-600", soft: "bg-violet-50/50" },
-  amber:  { tx: "text-amber-700",  bg: "bg-amber-50",  ring: "ring-amber-200",  grad: "from-amber-500 to-amber-600",  soft: "bg-amber-50/50" },
+  blue:    { tx: "text-blue-700",    bg: "bg-blue-50",    ring: "ring-blue-200",    grad: "from-blue-500 to-blue-600",       soft: "bg-blue-50/50" },
+  violet:  { tx: "text-violet-700",  bg: "bg-violet-50",  ring: "ring-violet-200",  grad: "from-violet-500 to-violet-600",   soft: "bg-violet-50/50" },
+  amber:   { tx: "text-amber-700",   bg: "bg-amber-50",   ring: "ring-amber-200",   grad: "from-amber-500 to-amber-600",     soft: "bg-amber-50/50" },
+  emerald: { tx: "text-emerald-700", bg: "bg-emerald-50", ring: "ring-emerald-200", grad: "from-emerald-500 to-emerald-600", soft: "bg-emerald-50/50" },
 };
 
 function fmtSize(b: number): string {
@@ -46,7 +50,8 @@ function fmtDateTime(iso: string | null): string {
 }
 
 export default function BalanceFileImport() {
-  const [slots, setSlots] = useState<Slots>({ warehouse: null, main: null, liquor: null });
+  const [slots, setSlots] = useState<Slots>({ warehouse: null, main: null, liquor: null, hall_count: null });
+  const [hallInfo, setHallInfo] = useState<{ session_id: number; items: number; scans_kept: number } | null>(null);
   const [busy, setBusy] = useState<Kind | "">("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -61,6 +66,7 @@ export default function BalanceFileImport() {
         warehouse: r.data?.warehouse ?? null,
         main: r.data?.main ?? null,
         liquor: r.data?.liquor ?? null,
+        hall_count: r.data?.hall_count ?? null,
       });
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Жагсаалт татаж чадсангүй.");
@@ -87,7 +93,12 @@ export default function BalanceFileImport() {
       const r = await api.post("/balance-files/import", fd);
       const d = r.data ?? {};
       const label = KINDS.find((k) => k.kind === kind)?.label ?? kind;
-      flash(`${label}: ${d.filename ?? "файл"} шинэчлэгдлээ` + (d.row_count ? ` (~${d.row_count} мөр)` : ""));
+      if (kind === "hall_count" && d.hall) {
+        setHallInfo(d.hall);
+        flash(`${label}: ${d.hall.items} бараа тооллогод ачаалагдлаа` + (d.hall.scans_kept ? ` (${d.hall.scans_kept} уншилт хадгалагдсан)` : ""));
+      } else {
+        flash(`${label}: ${d.filename ?? "файл"} шинэчлэгдлээ` + (d.row_count ? ` (~${d.row_count} мөр)` : ""));
+      }
       await loadSlots();
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Файл оруулахад алдаа гарлаа.");
@@ -150,16 +161,16 @@ export default function BalanceFileImport() {
         </Link>
         <div className="min-w-0 flex-1">
           <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Үлдэгдлийн файл оруулалт</h1>
-          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">3 төрлийн үлдэгдлийг <b>өдөр бүр шинэчлэн</b> оруулна. Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална.</p>
+          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">3 төрлийн үлдэгдлийг <b>өдөр бүр шинэчлэн</b> оруулна (файлыг <b>шалгуургүйгээр</b> хэвээр нь хадгална). 4 дэх «Заалны тоолох барааны үлдэгдэл» нь утасны тооллогын суурь болно.</p>
         </div>
         <button onClick={loadSlots} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[12px] text-gray-600 hover:bg-gray-50">
           <RefreshCw size={13} /> Сэргээх
         </button>
       </div>
 
-      {/* ── 3 төрлийн карт ── */}
-      <div className="mt-4 grid grid-cols-1 gap-4 sm:mt-6 md:grid-cols-3">
-        {KINDS.map(({ kind, label, icon, color }) => {
+      {/* ── 4 төрлийн карт ── */}
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:mt-6 md:grid-cols-2 xl:grid-cols-4">
+        {KINDS.map(({ kind, label, hint, icon, color }) => {
           const info = slots[kind];
           const c = PALETTE[color];
           return (
@@ -172,6 +183,14 @@ export default function BalanceFileImport() {
 
               {/* Биет */}
               <div className="p-4">
+                {hint && <p className="mb-3 text-[11px] leading-relaxed text-gray-500">{hint}</p>}
+                {kind === "hall_count" && (info || hallInfo) && (
+                  <Link to="/hall-count"
+                    className="mb-3 flex items-center justify-between gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-[12px] font-semibold text-white hover:bg-emerald-700">
+                    <span className="flex items-center gap-1.5"><ScanBarcode size={14} /> Заалны тооллого руу очих</span>
+                    <ArrowRight size={14} />
+                  </Link>
+                )}
                 {info ? (
                   <>
                     <div className={`flex items-center gap-2 rounded-xl ${c.soft} px-3 py-2`}>

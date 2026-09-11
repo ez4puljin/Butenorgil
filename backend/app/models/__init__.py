@@ -14,4 +14,5 @@ from app.models.product_monthly_sales import ProductMonthlySales
 from app.models.movement_file import MovementFile
 from app.models.income_file import IncomeFile
 from app.models.balance_file import BalanceFile
+from app.models.hall_count import HallCountSession, HallCountItem, HallCountScan
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule
