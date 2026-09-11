@@ -883,9 +883,23 @@ export default function InventoryCount() {
               <ClipboardCheck size={18} className="text-gray-700" />
               <h2 className="text-lg font-semibold text-gray-900">Өмнөх тооллогоны тохируулга шалгах</h2>
             </div>
-            <p className="mb-5 text-sm text-gray-500">
-              Тооллогоны дараах үлдэгдэл болон Тооллогоны тайланг эксэл файлаар оруул. Системээс зөрүүтэй мөрүүдийг гаргаж өгнө.
+            <p className="mb-3 text-sm text-gray-500">
+              Тохируулгын дараах үлдэгдлийн тайлан болон Тооллогын хуудсыг эксэл файлаар оруулна.
+              Систем хоёуланг тулгаж, дүгнэлт бүхий эксэл гаргана.
             </p>
+            {/* Гаралтын бүтцийг ЭНД тайлбарлана — өмнө нь "зөрүүтэй мөрүүдийг
+                гаргаж өгнө" гэсэн нь хэрэглэгчийг төөрөгдүүлж, бүх асуудлыг
+                нэг "зөрүү" жагсаалтаас хайхад хүргэдэг байв. */}
+            <div className="mb-5 rounded-apple bg-gray-50 p-3 text-[12px] leading-relaxed text-gray-600">
+              <div className="mb-1 font-semibold text-gray-700">Гарах эксэлийн хуудсууд</div>
+              <div><span className="font-medium">Дүгнэлт</span> — нэг харцаар: хэдэн бараа асуудалтай, юу хийх вэ</div>
+              <div><span className="font-medium text-red-600">1. Анхаарах</span> — үлдэгдэлтэй мөртлөө тооллогод ороогүй бараа (гол асуудал)</div>
+              <div><span className="font-medium">2. Тоо зөрүүтэй</span> — тоологдсон ч тохируулгын дараа тоо таараагүй</div>
+              <div><span className="font-medium">3. Тайланд ороогүй</span> — тоологдсон ч үлдэгдлийн тайланд алга</div>
+              <div><span className="font-medium">4. Ороогүй (үлдэгдэл 0)</span> — хор хөнөөлгүй, зөвхөн бүртгэлийн бүрэн байдалд</div>
+              <div><span className="font-medium">5. Бүлгийн нийлбэр</span> — тайлангийн нийлбэр мөр (бараа биш тул хассан)</div>
+              <div className="mt-1.5 text-gray-400">Хуудас хоосон бол «зөрүү олдсонгүй» гэж тодорхой бичигдэнэ.</div>
+            </div>
 
             <div className="space-y-3">
               {/* After-adjustment файл */}
