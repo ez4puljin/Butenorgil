@@ -1,3 +1,14 @@
+import sys as _sys
+
+# Кирилл `print()` нь cp1252 консол дээр UnicodeEncodeError шиддэг. Дэвсгэр
+# давталтуудын except салаа ч кирилл хэвлэдэг тул алдаа баригдахгүй гарч,
+# тэдгээр даалгавар чимээгүй үхдэг байсан. Бүх гаралтыг UTF-8 болгоно.
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -813,11 +824,21 @@ def _prune_backups() -> None:
         files.sort(key=lambda x: x[0], reverse=True)
 
         keep = set()
-        # Hourly: сүүлийн 24 цаг (now - 24h хүртэл)
+        # Hourly: сүүлийн 24 цаг — ЦАГ БҮРЭЭС НЭГ файл (хамгийн сүүлийнх).
+        #
+        # Өмнө нь энд `keep.add(p)` байсан — өөрөөр хэлбэл сүүлийн 24 цагт
+        # үүссэн БҮХ файлыг үлдээдэг байв. Цаг тутам backup хийж байвал 24
+        # файл болох тул зөв мэт харагддаг. Гэтэл сервер минут тутам дахин
+        # эхлэхэд минут тутам backup үүсч, 1,440 файл x ~290MB = өдөрт ~360GB
+        # хуримтлагдаж, 2026-09-10-нд дискийг бүрэн дүүргэж систем унтарсан.
         cutoff_hourly = now.replace(microsecond=0) - timedelta(hours=24)
-        for t, p in files:
+        by_hour: dict = {}
+        for t, p in files:            # files нь буурахаар эрэмбэлэгдсэн
             if t >= cutoff_hourly:
-                keep.add(p)
+                hk = (t.year, t.month, t.day, t.hour)
+                if hk not in by_hour:
+                    by_hour[hk] = p   # тухайн цагийн ХАМГИЙН СҮҮЛИЙНХ
+        keep.update(by_hour.values())
         # Daily: сүүлийн 14 хоног — өдөр бүрийн хамгийн эртний (эсвэл хамгийн сүүлийн) backup-г үлдээнэ
         by_day: dict[str, Path] = {}
         cutoff_daily = (now - timedelta(days=14)).date()
@@ -847,14 +868,62 @@ def _prune_backups() -> None:
     except Exception as e:
         print(f"[backup] prune error: {e}")
 
+def _minutes_since_last_backup() -> float:
+    """Сүүлийн backup-аас хойш хэдэн минут өнгөрснийг буцаана (байхгүй бол маш их)."""
+    try:
+        newest = 0.0
+        for f in _BACKUP_DIR.glob("backup_*.db"):
+            if f.stat().st_size > 1024 * 1024:      # тасалдсан/хоосон файлыг тооцохгүй
+                newest = max(newest, f.stat().st_mtime)
+        if newest == 0.0:
+            return 1e9
+        return (datetime.now().timestamp() - newest) / 60.0
+    except Exception:
+        return 1e9
+
+
+def _free_disk_gb() -> float:
+    """Backup хавтас байрлах дискний чөлөөт зай (GB)."""
+    try:
+        import shutil
+        return shutil.disk_usage(str(_BACKUP_DIR)).free / (1024 ** 3)
+    except Exception:
+        return 999.0
+
+
+# Backup-д шаардах хамгийн бага чөлөөт зай. Өгөгдлийн сан ~300MB тул
+# 5GB нь хэд хэдэн backup + системд хангалттай нөөц.
+_MIN_FREE_GB = 5.0
+
+
 async def _hourly_backup_loop():
-    """Цаг тутам DB backup хийнэ."""
+    """Цаг тутам DB backup хийнэ.
+
+    Хоёр хамгаалалттай:
+      · Сервер дахин эхлэх бүрд backup хийхгүй — сүүлийн backup 50 минутаас
+        бага бол алгасна. (Өмнө нь эхлэлт бүрд шууд хийдэг байсан тул сервер
+        гацаж дахин эхлэх үед минут тутам ~290MB бичигдэж, диск дүүрдэг байв.)
+      · Чөлөөт зай багассан үед backup хийхгүй — диск дүүргэхээс сэргийлнэ.
+    """
     while True:
         try:
-            t = perform_db_backup()
-            print(f"[backup] {t.name} амжилттай хадгалагдлаа")
+            mins = _minutes_since_last_backup()
+            free = _free_disk_gb()
+            if mins < 50:
+                print(f"[backup] алгаслаа — сүүлийн backup {mins:.0f} минутын өмнө")
+            elif free < _MIN_FREE_GB:
+                print(f"[backup] АЛГАСЛАА — дискний чөлөөт зай {free:.1f}GB "
+                      f"({_MIN_FREE_GB}GB-аас бага). Хуучин backup-уудыг цэвэрлэнэ үү.")
+                _prune_backups()
+            else:
+                t = perform_db_backup()
+                print(f"[backup] {t.name} амжилттай хадгалагдлаа")
         except Exception as e:
-            print(f"[backup] Алдаа: {e}")
+            # Тайлбарыг ascii-гаар хэвлэнэ — энэ мөр өөрөө унах ёсгүй
+            try:
+                print(f"[backup] error: {e!r}")
+            except Exception:
+                pass
         await asyncio.sleep(3600)
 
 
