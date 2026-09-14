@@ -124,7 +124,7 @@ _ALL_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
 def _print_setup(ws, landscape=False, footer_center=""):
     """Хэвлэх тохиргоо: бүх баганыг нэг хуудсанд багтаана, толгойн мөр хуудас
-    бүрд давтагдана, footer: зүүн — огноо, гол — нэр, баруун — «хуудас / нийт»."""
+    бүрд давтагдана, header зүүн — огноо/цаг; footer: гол — нэр, баруун — «хуудас / нийт»."""
     ws.page_setup.orientation = "landscape" if landscape else "portrait"
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = 1
@@ -133,9 +133,11 @@ def _print_setup(ws, landscape=False, footer_center=""):
     ws.print_title_rows = "1:1"
     ws.print_options.horizontalCentered = True
     ws.page_margins.left = ws.page_margins.right = 0.4
-    ws.page_margins.top = 0.6
+    ws.page_margins.top = 0.9
+    ws.page_margins.header = 0.3
     ws.page_margins.bottom = 0.7
-    ws.oddFooter.left.text = "&D &T"
+    ws.page_margins.footer = 0.3
+    ws.oddHeader.left.text = "&D &T"          # огноо/цаг — толгойд
     ws.oddFooter.center.text = footer_center
     ws.oddFooter.right.text = "Хуудас &P / &N"
 
@@ -390,6 +392,9 @@ Sub PrintRedItemsByWarehouse()
 
     Application.ScreenUpdating = False
     On Error GoTo Done
+    ' Manual page breaks (one per warehouse) would add blank pages when the
+    ' sheet is filtered to a single warehouse -> remove them while printing.
+    ws.ResetAllPageBreaks
     Dim k As Variant
     For Each k In d.Keys
         ws.AutoFilterMode = False
@@ -400,8 +405,13 @@ Sub PrintRedItemsByWarehouse()
             .FitToPagesWide = 1
             .FitToPagesTall = False
             .PrintTitleRows = "$1:$1"
+            .TopMargin = Application.InchesToPoints(1)
+            .HeaderMargin = Application.InchesToPoints(0.3)
+            .BottomMargin = Application.InchesToPoints(0.7)
+            .FooterMargin = Application.InchesToPoints(0.3)
             .CenterHeader = "&""Arial,Bold""&12" & {S_HDR_RED} & k
-            .LeftFooter = "&D &T"
+            .LeftHeader = "&D &T"
+            .LeftFooter = ""
             .CenterFooter = k
             .RightFooter = {S_PAGE} & "&P / &N"
         End With
@@ -412,7 +422,20 @@ Done:
     ws.AutoFilterMode = False
     ws.PageSetup.CenterHeader = ""
     ws.PageSetup.CenterFooter = {S_FOOT_RED}
+    RestoreWarehouseBreaks ws, lastRow
     Application.ScreenUpdating = True
+End Sub
+
+' Re-insert one page break per warehouse (for manual Ctrl+P printing).
+Private Sub RestoreWarehouseBreaks(ws As Worksheet, lastRow As Long)
+    On Error Resume Next
+    ws.ResetAllPageBreaks
+    Dim r As Long
+    For r = 3 To lastRow
+        If CStr(ws.Cells(r, 1).Value) <> CStr(ws.Cells(r - 1, 1).Value) Then
+            ws.HPageBreaks.Add Before:=ws.Rows(r)
+        End If
+    Next r
 End Sub
 
 ' Print MultiLocation: landscape, all columns on one page.
@@ -425,8 +448,11 @@ Sub PrintMultiLocation()
         .FitToPagesWide = 1
         .FitToPagesTall = False
         .PrintTitleRows = "$1:$1"
+        .TopMargin = Application.InchesToPoints(1)
+        .HeaderMargin = Application.InchesToPoints(0.3)
         .CenterHeader = "&""Arial,Bold""&12" & {S_HDR_ML}
-        .LeftFooter = "&D &T"
+        .LeftHeader = "&D &T"
+        .LeftFooter = ""
         .CenterFooter = "MultiLocation"
         .RightFooter = {S_PAGE} & "&P / &N"
     End With
@@ -435,17 +461,19 @@ End Sub
 """
 
 _VBA_STRINGS = {
-    "S_NO_RED":      "Улайсан (үлдэгдэл < 0) бараа алга.",
-    "S_CONFIRM_RED": " агуулахын улайлтыг тус тусад нь хэвлэх үү?",
-    "S_PRINTER":     "(Хэвлэгч: ",
-    "S_TITLE_RED":   "Улайлт хэвлэх",
+    # MsgBox нь ANSI тул кирилл '???' болно → асуумжийн текст ЛАТИНААР.
+    # Header/footer (хэвлэгдэх) нь Unicode тул кириллээр (ChrW) хэвээр.
+    "S_NO_RED":      "Ulaisan (uldegdel < 0) baraa alga.",
+    "S_CONFIRM_RED": " aguulakhyn ulailtyg tus tusad n' khevlekh uu? (aguulakh bur = 1 khuudas)",
+    "S_PRINTER":     "(Khevlegch: ",
+    "S_TITLE_RED":   "Ulailt khevlekh",
     "S_HDR_RED":     "Улайлтын тайлан — ",
     "S_PAGE":        "Хуудас ",
-    "S_ERR":         "Хэвлэхэд алдаа: ",
+    "S_ERR":         "Khevlekhed aldaa: ",
     "S_FOOT_RED":    "Улайлт (үлдэгдэл < 0)",
     "S_HDR_ML":      "Давхар байршилтай бараа",
-    "S_CONFIRM_ML":  "MultiLocation хуудсыг хэвлэх үү?",
-    "S_TITLE_ML":    "Хэвлэх",
+    "S_CONFIRM_ML":  "MultiLocation khuudsyg khevlekh uu?",
+    "S_TITLE_ML":    "Khevlekh",
 }
 
 
