@@ -10,7 +10,8 @@ from datetime import datetime
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Font, Alignment, Border, Side
+from openpyxl.worksheet.pagebreak import Break
 
 try:
     import tkinter as tk
@@ -117,8 +118,35 @@ def read_excel_any(path):
     return pd.read_excel(path, header=None)
 
 
-def add_sheet(out_wb, name, df):
+_THIN = Side(style="thin", color="000000")
+_ALL_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+
+
+def _print_setup(ws, landscape=False, footer_center=""):
+    """Хэвлэх тохиргоо: бүх баганыг нэг хуудсанд багтаана, толгойн мөр хуудас
+    бүрд давтагдана, footer: зүүн — огноо, гол — нэр, баруун — «хуудас / нийт»."""
+    ws.page_setup.orientation = "landscape" if landscape else "portrait"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0          # өндрөөр хязгаарлахгүй — олон хуудас болно
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = "1:1"
+    ws.print_options.horizontalCentered = True
+    ws.page_margins.left = ws.page_margins.right = 0.4
+    ws.page_margins.top = 0.6
+    ws.page_margins.bottom = 0.7
+    ws.oddFooter.left.text = "&D &T"
+    ws.oddFooter.center.text = footer_center
+    ws.oddFooter.right.text = "Хуудас &P / &N"
+
+
+def add_sheet(out_wb, name, df, borders=False, landscape=False, footer_center="",
+              page_break_col=None, min_widths=None):
+    """DataFrame → хуудас. borders=True бол бүх нүд хүрээтэй; page_break_col
+    (баганын нэр) өгвөл тэр баганын утга өөрчлөгдөх бүрд шинэ хуудас (агуулах
+    тус бүр тусдаа хэвлэгдэнэ)."""
     ws = out_wb.create_sheet(title=name[:31])
+    cols = list(df.columns)
     for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=1):
         ws.append(row)
         if r_idx == 1:
@@ -130,6 +158,20 @@ def add_sheet(out_wb, name, df):
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
 
+    if borders and ws.max_row >= 1:
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=len(cols)):
+            for cell in row:
+                cell.border = _ALL_BORDER
+
+    if page_break_col in cols and ws.max_row > 2:
+        ci = cols.index(page_break_col) + 1
+        prev = ws.cell(2, ci).value
+        for r in range(3, ws.max_row + 1):
+            v = ws.cell(r, ci).value
+            if v != prev:
+                ws.row_breaks.append(Break(id=r - 1))   # энэ мөрийн ДАРАА хуудас солино
+                prev = v
+
     for col in ws.columns:
         max_len = 0
         col_letter = col[0].column_letter
@@ -137,7 +179,13 @@ def add_sheet(out_wb, name, df):
             if cell.value is None:
                 continue
             max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 60)
+        w = min(max(10, max_len + 2), 60)
+        if min_widths and col[0].value in min_widths:
+            w = max(w, min_widths[col[0].value])
+        ws.column_dimensions[col_letter].width = w
+
+    _print_setup(ws, landscape=landscape, footer_center=footer_center)
+    return ws
 
 
 def _parse_records(input_path: str) -> "pd.DataFrame":
@@ -230,9 +278,11 @@ def build_report(input_path, output_path):
     ).reset_index().sort_values("Warehouse")
 
     # RedItems: зөвхөн I<0
+    # Хэвлээд гараар бөглөх 2 хоосон багана: Үлдэгдэл (бодит тоолсон), Тайлбар
     red_df = df[df["IsRed"]].copy()
-    red_df["Reason"] = "FinalQty_I<0"
-    red_df = red_df[["Warehouse", "Code", "Name", "FinalQty_I", "Reason", "Row"]].sort_values(["Warehouse", "Code"])
+    red_df["Үлдэгдэл"] = None
+    red_df["Тайлбар"] = None
+    red_df = red_df[["Warehouse", "Code", "Name", "FinalQty_I", "Үлдэгдэл", "Тайлбар"]].sort_values(["Warehouse", "Code"])
 
     # MultiLocation: давхар байршил дээр үлдэгдэлтэй бараа, агуулах бүрийн үлдэгдлийг баганаар
     nonzero_df = df[df["NonZero"]].copy()
@@ -246,7 +296,7 @@ def build_report(input_path, output_path):
         values="FinalQty_I",
         aggfunc="sum",
         fill_value=0
-    ).reset_index()
+    ).reset_index().copy()
 
     counts_map = wh_counts.set_index("Code")["WarehouseCount"].to_dict()
     pivot["WarehouseCount"] = pivot["Code"].map(counts_map).fillna(0).astype(int)
@@ -262,11 +312,213 @@ def build_report(input_path, output_path):
     out_wb = Workbook()
     out_wb.remove(out_wb.active)
 
-    add_sheet(out_wb, "Warehouse_Summary", wh_summary)
-    add_sheet(out_wb, "RedItems", red_df)
-    add_sheet(out_wb, "MultiLocation", multi_report)
+    ws_sum = add_sheet(out_wb, "Warehouse_Summary", wh_summary, borders=True, footer_center="Агуулахын дүн")
+    add_sheet(out_wb, "RedItems", red_df, borders=True, footer_center="Улайлт (үлдэгдэл < 0)",
+              page_break_col="Warehouse", min_widths={"Үлдэгдэл": 14, "Тайлбар": 30})
+    add_sheet(out_wb, "MultiLocation", multi_report, borders=True, landscape=True,
+              footer_center="Давхар байршилтай бараа")
+
+    # Хэвлэх заавар (товч VBA-гүй үед ч ойлгомжтой байг)
+    r0 = ws_sum.max_row + 2
+    ws_sum.cell(r0, 1, "Хэвлэх:").font = Font(bold=True)
+    ws_sum.cell(r0 + 1, 1, "• RedItems хуудас — агуулах бүр тусдаа хуудаснаас эхэлнэ (хуудасны хуваалт тавьсан), бүх багана нэг хуудсанд багтана.")
+    ws_sum.cell(r0 + 2, 1, "• MultiLocation хуудас — хэвтээ, бүх багана нэг хуудсанд. Хуудас бүрийн доод хэсэгт огноо, хуудасны дугаар байна.")
 
     out_wb.save(output_path)
+    return add_print_buttons(output_path)
+
+
+# ── Хэвлэх товч (VBA) ────────────────────────────────────────────────────────
+
+def _vba_str(text: str) -> str:
+    """Монгол/кирилл текстийг VBA-д аюулгүй илэрхийлэл болгоно.
+
+    VBA-ийн код модуль Unicode биш (системийн ANSI кодчилол) тул кирилл
+    үсгийг шууд бичвэл '???' болно. ASCII биш тэмдэгт бүрийг ChrW(код)-оор
+    угсарна: "Хэвлэх" → ChrW(1061) & ChrW(1101) & ..."""
+    parts: list[str] = []
+    buf = ""
+    for ch in text:
+        if 32 <= ord(ch) < 127 and ch != '"':
+            buf += ch
+        else:
+            if buf:
+                parts.append(f'"{buf}"')
+                buf = ""
+            parts.append(f"ChrW({ord(ch)})")
+    if buf:
+        parts.append(f'"{buf}"')
+    return " & ".join(parts) if parts else '""'
+
+
+# VBA код — ЗӨВХӨН ASCII (тайлбар нь ч англиар). Монгол мөрүүд {placeholder}-оор
+# орж, _vba_module()-д ChrW илэрхийлэл болж солигдоно.
+_VBA_TEMPLATE = r"""
+Option Explicit
+
+' Ulailt report print macros (generated by ulailt_report.py).
+' Text is built with ChrW() because VBA modules are not Unicode.
+
+Private Function AskYesNo(msg As String, title As String) As Boolean
+    AskYesNo = (MsgBox(msg, vbYesNo + vbQuestion, title) = vbYes)
+End Function
+
+Private Sub DoPrint(ws As Worksheet, tag As String)
+    ws.PrintOut
+End Sub
+
+' Print RedItems separately for every warehouse: filter by warehouse,
+' warehouse name in header, date + page numbers in footer.
+Sub PrintRedItemsByWarehouse()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets("RedItems")
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox {S_NO_RED}, vbInformation
+        Exit Sub
+    End If
+
+    Dim d As Object
+    Set d = CreateObject("Scripting.Dictionary")
+    Dim r As Long
+    For r = 2 To lastRow
+        If Not d.Exists(CStr(ws.Cells(r, 1).Value)) Then d.Add CStr(ws.Cells(r, 1).Value), 1
+    Next r
+
+    If Not AskYesNo(d.Count & {S_CONFIRM_RED} & vbCrLf & {S_PRINTER} & Application.ActivePrinter & ")", {S_TITLE_RED}) Then Exit Sub
+
+    Application.ScreenUpdating = False
+    On Error GoTo Done
+    Dim k As Variant
+    For Each k In d.Keys
+        ws.AutoFilterMode = False
+        ws.Range("A1").CurrentRegion.AutoFilter Field:=1, Criteria1:=k
+        With ws.PageSetup
+            .Orientation = xlPortrait
+            .Zoom = False
+            .FitToPagesWide = 1
+            .FitToPagesTall = False
+            .PrintTitleRows = "$1:$1"
+            .CenterHeader = "&""Arial,Bold""&12" & {S_HDR_RED} & k
+            .LeftFooter = "&D &T"
+            .CenterFooter = k
+            .RightFooter = {S_PAGE} & "&P / &N"
+        End With
+        DoPrint ws, CStr(k)
+    Next k
+Done:
+    If Err.Number <> 0 Then MsgBox {S_ERR} & Err.Description, vbExclamation
+    ws.AutoFilterMode = False
+    ws.PageSetup.CenterHeader = ""
+    ws.PageSetup.CenterFooter = {S_FOOT_RED}
+    Application.ScreenUpdating = True
+End Sub
+
+' Print MultiLocation: landscape, all columns on one page.
+Sub PrintMultiLocation()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets("MultiLocation")
+    With ws.PageSetup
+        .Orientation = xlLandscape
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = False
+        .PrintTitleRows = "$1:$1"
+        .CenterHeader = "&""Arial,Bold""&12" & {S_HDR_ML}
+        .LeftFooter = "&D &T"
+        .CenterFooter = "MultiLocation"
+        .RightFooter = {S_PAGE} & "&P / &N"
+    End With
+    If AskYesNo({S_CONFIRM_ML} & vbCrLf & {S_PRINTER} & Application.ActivePrinter & ")", {S_TITLE_ML}) Then DoPrint ws, "MultiLocation"
+End Sub
+"""
+
+_VBA_STRINGS = {
+    "S_NO_RED":      "Улайсан (үлдэгдэл < 0) бараа алга.",
+    "S_CONFIRM_RED": " агуулахын улайлтыг тус тусад нь хэвлэх үү?",
+    "S_PRINTER":     "(Хэвлэгч: ",
+    "S_TITLE_RED":   "Улайлт хэвлэх",
+    "S_HDR_RED":     "Улайлтын тайлан — ",
+    "S_PAGE":        "Хуудас ",
+    "S_ERR":         "Хэвлэхэд алдаа: ",
+    "S_FOOT_RED":    "Улайлт (үлдэгдэл < 0)",
+    "S_HDR_ML":      "Давхар байршилтай бараа",
+    "S_CONFIRM_ML":  "MultiLocation хуудсыг хэвлэх үү?",
+    "S_TITLE_ML":    "Хэвлэх",
+}
+
+
+def _vba_module() -> str:
+    code = _VBA_TEMPLATE
+    for k, v in _VBA_STRINGS.items():
+        code = code.replace("{" + k + "}", _vba_str(v))
+    assert code.isascii(), "VBA module must stay ASCII"
+    return code
+
+
+def add_print_buttons(xlsx_path: str) -> str:
+    """openpyxl-ийн үүсгэсэн .xlsx-д Excel COM-оор VBA модуль + Warehouse_Summary
+    дээр 2 хэвлэх товч нэмж .xlsm болгож хадгална. Буцаах: эцсийн файлын зам.
+
+    Excel байхгүй / «Trust access to the VBA project object model» нээгээгүй бол
+    .xlsx хэвээр буцаана (хуудасны хуваалт, хэвлэх тохиргоо нь аль хэдийн байгаа)."""
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        print("[ulailt] pywin32 суугаагүй — хэвлэх товчгүй .xlsx буцаана")
+        return xlsx_path
+
+    from app.services.erkhet_xlsx import _excel_resave_lock
+
+    xlsm_path = os.path.splitext(xlsx_path)[0] + ".xlsm"
+    with _excel_resave_lock:
+        pythoncom.CoInitialize()
+        try:
+            xl = win32com.client.DispatchEx("Excel.Application")
+            try:
+                xl.Visible = False
+                xl.DisplayAlerts = False
+                wb = xl.Workbooks.Open(os.path.abspath(xlsx_path))
+                try:
+                    mod = wb.VBProject.VBComponents.Add(1)      # 1 = vbext_ct_StdModule
+                    mod.Name = "PrintMacros"
+                    mod.CodeModule.AddFromString(_vba_module())
+
+                    ws = wb.Worksheets("Warehouse_Summary")
+                    anchor = ws.Range("F2")
+                    b1 = ws.Buttons().Add(anchor.Left, anchor.Top, 300, 32)
+                    b1.OnAction = "PrintRedItemsByWarehouse"
+                    b1.Caption = "Улайлт хэвлэх — агуулах тус бүрээр"
+                    b1.Font.Bold = True
+                    b2 = ws.Buttons().Add(anchor.Left, anchor.Top + 40, 300, 32)
+                    b2.OnAction = "PrintMultiLocation"
+                    b2.Caption = "Давхар байршил (MultiLocation) хэвлэх"
+                    b2.Font.Bold = True
+                    ws.Columns("F").ColumnWidth = 45
+
+                    wb.SaveAs(os.path.abspath(xlsm_path), FileFormat=52)   # xlOpenXMLWorkbookMacroEnabled
+                finally:
+                    wb.Close(False)
+            finally:
+                xl.Quit()
+        except Exception as e:
+            print(f"[ulailt] хэвлэх товч нэмж чадсангүй — .xlsx буцаана: {e!r}")
+            try:
+                if os.path.exists(xlsm_path):
+                    os.remove(xlsm_path)
+            except OSError:
+                pass
+            return xlsx_path
+        finally:
+            pythoncom.CoUninitialize()
+
+    try:
+        os.remove(xlsx_path)
+    except OSError:
+        pass
+    return xlsm_path
 
 
 def main():
@@ -292,7 +544,7 @@ def main():
     output_path = os.path.join(out_dir, output_name)
 
     try:
-        build_report(input_path, output_path)
+        output_path = build_report(input_path, output_path)
         messagebox.showinfo("Амжилттай", f"Тайлан export хийгдлээ:\n{output_path}")
     except Exception as e:
         messagebox.showerror("Алдаа", str(e))

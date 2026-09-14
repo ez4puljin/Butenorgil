@@ -117,7 +117,8 @@ def export_consolidated(payload: SupervisorOverrideIn, db: Session = Depends(get
 @router.get("/files")
 def list_output_files(_=Depends(require_role("admin","supervisor","manager"))):
     files = []
-    for p in sorted(OUTPUT_DIR.glob("*.xlsx"), key=lambda x: x.stat().st_mtime, reverse=True):
+    paths = list(OUTPUT_DIR.glob("*.xlsx")) + list(OUTPUT_DIR.glob("*.xlsm"))   # .xlsm = хэвлэх товчтой улайлт
+    for p in sorted(paths, key=lambda x: x.stat().st_mtime, reverse=True):
         files.append({"name": p.name, "mtime": int(p.stat().st_mtime), "size": p.stat().st_size})
     return {"files": files}
 
@@ -126,7 +127,9 @@ def download(name: str, _=Depends(require_role("admin","supervisor","manager")))
     p = OUTPUT_DIR / name
     if not p.exists():
         raise HTTPException(404, "Not found")
-    return FileResponse(path=str(p), filename=name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    mt = ("application/vnd.ms-excel.sheet.macroEnabled.12" if p.suffix.lower() == ".xlsm"
+          else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(path=str(p), filename=name, media_type=mt)
 
 
 # ── Тайлан run endpoints ──────────────────────────────────────────────────────
@@ -212,16 +215,19 @@ def run_ulailt(
 
     try:
         from app.scripts.ulailt_report import build_report
-        build_report(str(input_path), str(out_path))
+        # Excel-ийн VBA хандалт нээлттэй бол хэвлэх товчтой .xlsm, үгүй бол .xlsx буцаана
+        final_path = Path(build_report(str(input_path), str(out_path)) or out_path)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, f"Улайлт тайлан гаргахад алдаа гарлаа: {e}")
 
+    is_xlsm = final_path.suffix.lower() == ".xlsm"
     return FileResponse(
-        path=str(out_path),
-        filename=f"ulailt_taillan_{pick}_{ts}.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        path=str(final_path),
+        filename=f"ulailt_taillan_{pick}_{ts}{'.xlsm' if is_xlsm else '.xlsx'}",
+        media_type=("application/vnd.ms-excel.sheet.macroEnabled.12" if is_xlsm
+                    else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
     )
 
 
