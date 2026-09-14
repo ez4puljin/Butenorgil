@@ -37,6 +37,12 @@
     box-shadow:0 0 0 9999px rgba(0,0,0,.45)}
   #camnote{position:absolute;bottom:.5rem;left:0;right:0;text-align:center;
     font-size:.72rem;color:rgba(255,255,255,.65)}
+  #caminfo{position:absolute;top:.4rem;left:.5rem;font-size:.62rem;color:rgba(255,255,255,.45)}
+  #zoom{position:absolute;top:.4rem;right:.5rem;display:flex;align-items:center;gap:.3rem;
+    background:rgba(0,0,0,.45);border-radius:999px;padding:.15rem .3rem}
+  #zoom button{width:1.9rem;height:1.9rem;border-radius:999px;border:0;background:#7c3aed;
+    color:#fff;font-size:1.1rem;line-height:1;cursor:pointer}
+  #zoom span{font-size:.72rem;color:#fff;min-width:2.6rem;text-align:center}
   #camerr{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;
     justify-content:center;gap:.7rem;background:#fff;color:#333;padding:1.2rem;text-align:center}
   #camerr b{font-size:.95rem}#camerr span{font-size:.78rem;color:#666;line-height:1.5}
@@ -116,6 +122,12 @@
     <div id="cam"></div>
     <div id="frame"><div></div></div>
     <div id="camnote">Баркодыг рамкан дотор барина</div>
+    <div id="caminfo"></div>
+    <div id="zoom" style="display:none">
+      <button id="zm" title="Холдуулах">−</button>
+      <span id="zv">1.0×</span>
+      <button id="zp" title="Ойртуулах">+</button>
+    </div>
     <div id="spin"></div>
     <div id="camerr">
       <b>Камер нээгдсэнгүй</b>
@@ -294,6 +306,45 @@
     startCam();
   });
 
+  /* Фокус/нягтрал/зүүм тохируулга. Хатуу фокустой (fixed-focus) урд камерт
+     фокус тохируулж чадахгүй — тэр үед зүүм (дэмжвэл) л тусална: баркодыг
+     рамкан дотор томруулж, шийдэх нягтрал сайжирна. */
+  var ZOOM_KEY = "kiosk_cam_zoom", curTrack = null, zoomCap = null;
+  function tuneTrack(track) {
+    curTrack = track; zoomCap = null;
+    var info = document.getElementById("caminfo"), zbox = document.getElementById("zoom");
+    zbox.style.display = "none";
+    if (!track) { info.textContent = ""; return; }
+    var caps = {};
+    try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
+    var adv = [];
+    if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) adv.push({ focusMode: "continuous" });
+    if (caps.exposureMode && caps.exposureMode.indexOf("continuous") >= 0) adv.push({ exposureMode: "continuous" });
+    if (caps.whiteBalanceMode && caps.whiteBalanceMode.indexOf("continuous") >= 0) adv.push({ whiteBalanceMode: "continuous" });
+    if (adv.length) { try { track.applyConstraints({ advanced: adv }).catch(function () {}); } catch (e) {} }
+    if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+      zoomCap = caps.zoom;
+      var saved = parseFloat((function () { try { return localStorage.getItem(ZOOM_KEY); } catch (e) { return ""; } })() || "");
+      setZoom(isFinite(saved) && saved ? saved : Math.min(zoomCap.max, Math.max(zoomCap.min, 1.5)));
+      zbox.style.display = "flex";
+    }
+    var st = {}; try { st = track.getSettings ? track.getSettings() : {}; } catch (e) {}
+    var fm = st.focusMode || (caps.focusMode ? caps.focusMode.join("/") : "");
+    info.textContent = (st.width && st.height ? st.width + "×" + st.height : "")
+      + (fm ? " · фокус: " + (fm === "continuous" ? "авто" : fm) : " · фокус: тогтмол")
+      + (zoomCap ? " · зүүм" : "");
+  }
+  function setZoom(z) {
+    if (!curTrack || !zoomCap) return;
+    z = Math.round(Math.min(zoomCap.max, Math.max(zoomCap.min, z)) * 10) / 10;
+    try { curTrack.applyConstraints({ advanced: [{ zoom: z }] }).catch(function () {}); } catch (e) {}
+    document.getElementById("zv").textContent = z.toFixed(1) + "×";
+    try { localStorage.setItem(ZOOM_KEY, String(z)); } catch (e) {}
+  }
+  function curZoom() { var t = parseFloat(document.getElementById("zv").textContent); return isFinite(t) ? t : 1; }
+  document.getElementById("zp").addEventListener("click", function () { setZoom(curZoom() + (zoomCap ? Math.max(0.5, (zoomCap.step || 0.5)) : 0.5)); });
+  document.getElementById("zm").addEventListener("click", function () { setZoom(curZoom() - (zoomCap ? Math.max(0.5, (zoomCap.step || 0.5)) : 0.5)); });
+
   function startCam() {
     document.getElementById("camerr").style.display = "none";
     document.getElementById("camnote").style.display = "";
@@ -306,10 +357,16 @@
       return;
     }
     var want = facing();
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: want } }, audio: false })
+    // Аль болох ӨНДӨР нягтрал хүснэ (баркод жижиг тул 640×480 хангалтгүй).
+    // Камер дэмжихгүй бол хөтөч хамгийн ойрыг өгнө; бүр болохгүй бол энгийнээр.
+    var hi = { facingMode: { ideal: want }, width: { ideal: 1920 }, height: { ideal: 1080 },
+               frameRate: { ideal: 30 } };
+    navigator.mediaDevices.getUserMedia({ video: hi, audio: false })
+      .catch(function () { return navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: want } }, audio: false }); })
       .catch(function () { return navigator.mediaDevices.getUserMedia({ video: true, audio: false }); })
       .then(function (s) {
         stream = s;
+        tuneTrack(s.getVideoTracks()[0]);
         if ("BarcodeDetector" in window) {
           return window.BarcodeDetector.getSupportedFormats()
             .catch(function () { return FORMATS; })
@@ -333,8 +390,15 @@
           var pick = devs.filter(function (d) { return re.test(d.label || ""); })[0];
           qr = new window.Html5Qrcode("cam", false);
           return qr.start(pick ? pick.id : { facingMode: want },
-            { fps: 10, qrbox: { width: 300, height: 200 }, aspectRatio: 1.4 },
-            function (t) { lookup(t); }, function () {});
+            { fps: 15, qrbox: { width: 320, height: 200 }, aspectRatio: 1.4,
+              videoConstraints: { facingMode: want, width: { ideal: 1920 }, height: { ideal: 1080 },
+                                  advanced: [{ focusMode: "continuous" }] } },
+            function (t) { lookup(t); }, function () {}).then(function () {
+              try {
+                var vv = document.querySelector("#cam video");
+                if (vv && vv.srcObject) tuneTrack(vv.srcObject.getVideoTracks()[0]);
+              } catch (e) {}
+            });
         });
       })
       .catch(function (e) {
