@@ -207,14 +207,19 @@
   // Бөөний үнэ erxes-ээс ирдэг тул удаан (0.6-1.6 сек). Үндсэн үнийг
   // хүлээлгэхгүйн тулд тусад нь ард нь ачаална. Энэ хооронд өөр бараа
   // уншуулсан бол хариуг нь хаяна.
+  // АНХААР: last.code нь уншуулсан БАРКОД (жишээ 4780021280686), харин энд
+  // барааны КОД (204300) ирдэг. Тэр хоёрыг харьцуулбал бөөний үнэ хэзээ ч
+  // харагдахгүй байсан → одоо сүүлд зурагдсан барааны кодоор шалгана.
+  var shownCode = "";
   function loadBulk(code) {
     var box = panel.querySelector("#pbulk");
     if (!box) return;
+    shownCode = code;
     box.textContent = "…";
     fetch("bulk?q=" + encodeURIComponent(code), { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (b) {
-        if (last.code !== code) return;                 // өөр бараа уншуулсан
+        if (shownCode !== code) return;                 // өөр бараа уншуулсан
         var cur = panel.querySelector("#pbulk");
         if (!cur) return;
         cur.innerHTML = (b && b.ok)

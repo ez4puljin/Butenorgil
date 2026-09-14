@@ -102,4 +102,6 @@ def vendor_js():
 def index():
     if not os.path.exists(_PAGE):
         return PlainTextResponse("kiosk/index.html олдсонгүй", status_code=500)
-    return FileResponse(_PAGE, media_type="text/html")
+    # Таблет хуудсыг кэшлэхгүй — index.html засварласан даруй шинэ хувилбар харагдана
+    return FileResponse(_PAGE, media_type="text/html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
