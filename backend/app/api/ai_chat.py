@@ -326,8 +326,9 @@ def _build_tools(db: Session, calls: list[str]):
             {"kind": names.get(b.kind, b.kind), "filename": b.original_filename, **(age(b.uploaded_at) or {})}
             for b in db.query(BalanceFile).all()
         ]
-        inc = db.query(IncomeFile).order_by(IncomeFile.year.desc()).first()
-        out["income_file"] = ({"year": inc.year, "filename": inc.original_filename,
+        inc = db.query(IncomeFile).order_by(IncomeFile.year.desc(), IncomeFile.month.desc()).first()
+        out["income_file"] = ({"year": inc.year, "month": (inc.month or 0) or None,
+                               "filename": inc.original_filename,
                                **(age(inc.uploaded_at) or {})} if inc else None)
         mv = db.query(MovementFile).order_by(MovementFile.year.desc()).first()
         out["movement_file"] = ({"year": mv.year, **(age(mv.uploaded_at) or {})} if mv else None)

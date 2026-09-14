@@ -382,11 +382,27 @@ def ensure_product_yearly_movement_schema():
 
 def ensure_income_files_schema():
     """Орлогын файл (income_files) — шинэ table бол create_all() үүсгэнэ.
-    Хуучин үед үүссэн хувилбарт price_updated багана дутуу бол ALTER хийнэ."""
+    Хуучин үед үүссэн хувилбарт price_updated багана дутуу бол ALTER хийнэ.
+    month багана байхгүй (зөвхөн оноор) бол хүснэгтийг дахин үүсгэнэ — SQLite
+    UNIQUE(year)-ийг ALTER-ээр солиж чадахгүй тул хуулж шилжүүлнэ (month=0)."""
+    from app.models.income_file import IncomeFile
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(income_files)")).fetchall()]
         if cols and "price_updated" not in cols:
             conn.execute(text("ALTER TABLE income_files ADD COLUMN price_updated INTEGER NOT NULL DEFAULT 0"))
+            cols.append("price_updated")
+        if cols and "month" not in cols:
+            conn.execute(text("DROP INDEX IF EXISTS ix_income_file_year"))
+            conn.execute(text("DROP INDEX IF EXISTS ix_income_files_year"))
+            conn.execute(text("ALTER TABLE income_files RENAME TO income_files_old"))
+            IncomeFile.__table__.create(bind=conn)
+            keep = [c for c in ("id", "year", "original_filename", "stored_filename", "size_bytes",
+                                "row_count", "price_updated", "uploaded_by_id", "uploaded_by_name",
+                                "uploaded_at") if c in cols]
+            cl = ", ".join(keep)
+            conn.execute(text(f"INSERT INTO income_files ({cl}, month) SELECT {cl}, 0 FROM income_files_old"))
+            conn.execute(text("DROP TABLE income_files_old"))
+            print("[income_files] month багана нэмж хүснэгтийг шилжүүлэв (хуучин файлууд month=0)")
     # Хадгалах хавтсыг хангах
     import os
     inc_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "income")

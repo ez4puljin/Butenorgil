@@ -161,12 +161,15 @@ def _get_income_rows() -> list:
     db = SessionLocal()
     try:
         files = db.query(IncomeFile).all()
-        stored = [(f.year, f.stored_filename) for f in files if f.stored_filename]
+        # Сарын файлтай онд бүтэн оны (month=0) файлыг АЛГАСНА — давхардахгүй
+        monthly_years = {f.year for f in files if (f.month or 0) > 0}
+        stored = [(f.year, f.month or 0, f.stored_filename) for f in files
+                  if f.stored_filename and not ((f.month or 0) == 0 and f.year in monthly_years)]
     finally:
         db.close()
 
     all_rows: list = []
-    for _year, fname in sorted(stored):
+    for _year, _month, fname in sorted(stored):
         path = INCOME_DIR / fname
         if not path.exists():
             continue
