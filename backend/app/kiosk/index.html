@@ -19,8 +19,9 @@
     background:linear-gradient(135deg,#8b5cf6,#d946ef);display:grid;place-items:center;font-size:1rem}
   header h1{font-size:1rem;font-weight:800;letter-spacing:-.01em}
   header p{font-size:.72rem;color:#8b8ba7;margin-top:.05rem}
-  #kbd{margin-left:auto;background:#1e1e2e;border:1px solid #33334d;color:#b9b9d0;
+  #kbd,#camsw{background:#1e1e2e;border:1px solid #33334d;color:#b9b9d0;
     border-radius:.6rem;padding:.4rem .7rem;font-size:.75rem;cursor:pointer}
+  #camsw{margin-left:auto}
 
   main{flex:1;display:flex;min-height:0;gap:.6rem;padding:.6rem}
   @media (orientation:portrait){ main{flex-direction:column} }
@@ -100,6 +101,7 @@
     <h1>Үнэ харах</h1>
     <p>Барааны баркодыг камерт уншуулна уу</p>
   </div>
+  <button id="camsw" title="Урд/хойд камер солих">Камер: нүүрний</button>
   <button id="kbd">Гараар</button>
 </header>
 
@@ -276,6 +278,22 @@
       s.src = src; s.onload = ok; s.onerror = no; document.head.appendChild(s);
     });
   }
+  /* Аль камер: "user" = нүүрний (урд), "environment" = хойд. Заалны таблет
+     үйлчлүүлэгч рүү харсан байрладаг тул анхдагч нь НҮҮРНИЙ камер;
+     сонголт localStorage-д хадгалагдаж, дараа нээхэд хэвээр байна. */
+  var FACING_KEY = "kiosk_cam_facing";
+  function facing() {
+    try { return localStorage.getItem(FACING_KEY) || "user"; } catch (e) { return "user"; }
+  }
+  function facingLabel() { return "Камер: " + (facing() === "user" ? "нүүрний" : "хойд"); }
+  document.getElementById("camsw").textContent = facingLabel();
+  document.getElementById("camsw").addEventListener("click", function () {
+    try { localStorage.setItem(FACING_KEY, facing() === "user" ? "environment" : "user"); } catch (e) {}
+    document.getElementById("camsw").textContent = facingLabel();
+    if (qr) { try { qr.stop(); } catch (e) {} try { qr.clear(); } catch (e) {} qr = null; video.style.display = ""; }
+    startCam();
+  });
+
   function startCam() {
     document.getElementById("camerr").style.display = "none";
     document.getElementById("camnote").style.display = "";
@@ -287,7 +305,8 @@
       camFail("Энэ хөтөч дээр камерын API байхгүй. HTTPS хаягаар нэвтэрсэн эсэхээ шалгана уу.");
       return;
     }
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false })
+    var want = facing();
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: want } }, audio: false })
       .catch(function () { return navigator.mediaDevices.getUserMedia({ video: true, audio: false }); })
       .then(function (s) {
         stream = s;
@@ -310,9 +329,10 @@
           return window.Html5Qrcode.getCameras();
         }).then(function (devs) {
           if (!devs || !devs.length) throw new Error("Камер олдсонгүй");
-          var back = devs.filter(function (d) { return /back|rear|environment/i.test(d.label || ""); })[0];
+          var re = want === "user" ? /front|user|face|selfie/i : /back|rear|environment/i;
+          var pick = devs.filter(function (d) { return re.test(d.label || ""); })[0];
           qr = new window.Html5Qrcode("cam", false);
-          return qr.start((back || devs[0]).id,
+          return qr.start(pick ? pick.id : { facingMode: want },
             { fps: 10, qrbox: { width: 300, height: 200 }, aspectRatio: 1.4 },
             function (t) { lookup(t); }, function () {});
         });
