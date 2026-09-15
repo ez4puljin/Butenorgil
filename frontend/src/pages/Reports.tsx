@@ -37,8 +37,8 @@ const REPORT_CARDS: ReportCard[] = [
   {
     key: "no_movement",
     title: "Орлого байсан ч хөдөлгөөнгүй",
-    description: "Орлого (type=3) байгаа мөртлөө хөдөлгөөн (type=4) байхгүй бараануд.",
-    requiredTypes: [1, 2, 3, 4],
+    description: "Сонгосон онд орлого авсан мөртлөө хөдөлгөөн (борлуулалт/шилжүүлэг) огт байхгүй, эсвэл 20%-иас бага хөдөлгөөнтэй бараанууд. Орлогын файл + Хөдөлгөөний файл (Үндсэн заал, Архи заал)-аас уншина.",
+    requiredTypes: [],   // Орлогын файл / Хөдөлгөөний файл оруулалтаас — runtime-д шалгана
   },
   {
     key: "inventory_adj",
@@ -355,6 +355,10 @@ export default function Reports() {
   // Үлдэгдлийн файл оруулалтын төлөв — Улайлт картанд аль файл бэлэн болохыг харуулна
   const [balSlots, setBalSlots] = useState<BalanceSlots>({ warehouse: null, main: null, liquor: null });
   const [ulailtKind, setUlailtKind] = useState<"warehouse" | "main" | "liquor">("warehouse");
+  // Хөдөлгөөнгүй тайлан — он сонголт + оролтын файлын төлөв
+  const [movYear, setMovYear] = useState<number>(new Date().getFullYear());
+  const [incomeYears, setIncomeYears] = useState<Record<number, number>>({});   // year → файлын тоо
+  const [movYears, setMovYears] = useState<Record<number, { main: boolean; liquor: boolean }>>({});
 
   const loadStatus = async () => {
     try {
@@ -381,10 +385,27 @@ export default function Reports() {
     setFiles(res.data.files);
   };
 
+  const loadMovementInputs = async () => {
+    try {
+      const inc = await api.get("/income-files/slots");
+      const slots: any[] = Array.isArray(inc.data) ? inc.data : (inc.data?.slots ?? []);
+      const iy: Record<number, number> = {};
+      slots.forEach((s) => { if (s.file) iy[s.year] = (iy[s.year] ?? 0) + 1; });
+      setIncomeYears(iy);
+    } catch { /* хоосон */ }
+    try {
+      const mv = await api.get("/product-yearly-movement/slots");
+      const my: Record<number, { main: boolean; liquor: boolean }> = {};
+      (mv.data ?? []).forEach((s: any) => { my[s.year] = { main: !!s.has_main, liquor: !!s.has_liquor }; });
+      setMovYears(my);
+    } catch { /* хоосон */ }
+  };
+
   useEffect(() => {
     loadStatus();
     loadFiles();
     loadBalanceSlots();
+    loadMovementInputs();
   }, []);
 
   const download = async (name: string) => {
@@ -403,6 +424,7 @@ export default function Reports() {
       // Улайлт картын хувьд сонгосон үлдэгдлийн файлын kind-ийг дамжуулна
       const params: Record<string, string> = {};
       if (card.key === "ulailt") params.kind = ulailtKind;
+      if (card.key === "no_movement") params.year = String(movYear);
 
       const res = await api.post(`/reports/run/${card.key}`, {}, {
         responseType: "blob",
@@ -437,6 +459,10 @@ export default function Reports() {
     if (card.key === "ulailt") {
       // Улайлт: сонгосон kind-ийн файл оруулагдсан эсэхээр шалгана
       return !!balSlots[ulailtKind];
+    }
+    if (card.key === "no_movement") {
+      const m = movYears[movYear];
+      return !!incomeYears[movYear] && !!m && (m.main || m.liquor);
     }
     if (card.requiredTypes.length === 0) return null; // тусгай төрөл
     return card.requiredTypes.every((t) => availableTypes.includes(t));
@@ -550,6 +576,36 @@ export default function Reports() {
                   )}
                 </div>
               )}
+
+              {/* Хөдөлгөөнгүй картын он сонголт + оролтын файлын төлөв */}
+              {card.key === "no_movement" && (() => {
+                const yrs = Array.from(new Set([new Date().getFullYear(), ...Object.keys(incomeYears).map(Number), ...Object.keys(movYears).map(Number)])).sort((a, b) => b - a);
+                const m = movYears[movYear];
+                const chip = (ok: boolean, label: string) => (
+                  <span className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                    {ok ? <CheckCircle2 size={9} /> : <AlertCircle size={9} />}{label}
+                  </span>
+                );
+                return (
+                  <div className="mt-3">
+                    <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">Он</div>
+                    <select value={movYear} onChange={(e) => setMovYear(Number(e.target.value))}
+                      className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400">
+                      {yrs.map((y) => <option key={y} value={y}>{y} он</option>)}
+                    </select>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {chip(!!incomeYears[movYear], incomeYears[movYear] ? `Орлого ${incomeYears[movYear]} файл` : "Орлогын файл алга")}
+                      {chip(!!m?.main, "Хөдөлгөөн: Үндсэн заал")}
+                      {chip(!!m?.liquor, "Хөдөлгөөн: Архи заал")}
+                    </div>
+                    {!(incomeYears[movYear] && m && (m.main || m.liquor)) && (
+                      <div className="mt-1.5 text-[10px] text-amber-600">
+                        Файл оруулалт → Орлогын файл / Хөдөлгөөний файл хэсгээс {movYear} оны файлуудыг оруулна уу.
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Шаардлагатай файлууд */}
               {card.requiredTypes.length > 0 && (

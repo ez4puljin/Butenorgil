@@ -231,6 +231,32 @@ def run_ulailt(
     )
 
 
+@router.post("/run/no_movement")
+def run_no_movement(
+    year: int | None = None,
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Орлого байсан ч хөдөлгөөнгүй — Орлогын файл (income_files) + Хөдөлгөөний файл
+    (movement_files: Үндсэн заал / Архи заал) -аас, он сонгож гаргана."""
+    import datetime as _dt
+    y = int(year or _dt.date.today().year)
+    ts = int(time.time())
+    out_path = OUTPUT_DIR / f"no_movement_{y}_{ts}.xlsx"
+    try:
+        from app.scripts.no_movement_report import build_no_movement_report, ReportInputError
+        build_no_movement_report(db, y, str(out_path))
+    except ReportInputError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Хөдөлгөөнгүй барааны тайлан гаргахад алдаа гарлаа: {e}")
+    return FileResponse(
+        path=str(out_path),
+        filename=f"no_movement_{y}_{ts}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @router.post("/run/last_purchase_price")
 def run_last_purchase_price(
     _=Depends(require_role("admin", "supervisor", "manager")),
