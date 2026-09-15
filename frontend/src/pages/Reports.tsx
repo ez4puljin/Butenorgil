@@ -37,7 +37,7 @@ const REPORT_CARDS: ReportCard[] = [
   {
     key: "no_movement",
     title: "Орлого байсан ч хөдөлгөөнгүй",
-    description: "Сонгосон онд орлого авсан мөртлөө хөдөлгөөн (борлуулалт/шилжүүлэг) огт байхгүй, эсвэл 20%-иас бага хөдөлгөөнтэй бараанууд. Орлогын файл + Хөдөлгөөний файл (Үндсэн заал, Архи заал)-аас уншина.",
+    description: "Сүүлийн N хоногт агуулахад орлого авсан мөртлөө хөдөлгөөний файлд огт гараагүй бараа. Заалд шууд орсон орлогыг тооцохгүй; зөвхөн мастерын 4 агуулахын тагтай (Бөөний, Архи ус ундаа, Жижиглэн, Гэрээт) бараа.",
     requiredTypes: [],   // Орлогын файл / Хөдөлгөөний файл оруулалтаас — runtime-д шалгана
   },
   {
@@ -356,7 +356,8 @@ export default function Reports() {
   const [balSlots, setBalSlots] = useState<BalanceSlots>({ warehouse: null, main: null, liquor: null });
   const [ulailtKind, setUlailtKind] = useState<"warehouse" | "main" | "liquor">("warehouse");
   // Хөдөлгөөнгүй тайлан — он сонголт + оролтын файлын төлөв
-  const [movYear, setMovYear] = useState<number>(new Date().getFullYear());
+  const [movYear] = useState<number>(new Date().getFullYear());
+  const [movDays, setMovDays] = useState<number>(7);
   const [incomeYears, setIncomeYears] = useState<Record<number, number>>({});   // year → файлын тоо
   const [movYears, setMovYears] = useState<Record<number, { main: boolean; liquor: boolean }>>({});
 
@@ -424,7 +425,7 @@ export default function Reports() {
       // Улайлт картын хувьд сонгосон үлдэгдлийн файлын kind-ийг дамжуулна
       const params: Record<string, string> = {};
       if (card.key === "ulailt") params.kind = ulailtKind;
-      if (card.key === "no_movement") params.year = String(movYear);
+      if (card.key === "no_movement") params.days = String(movDays);
 
       const res = await api.post(`/reports/run/${card.key}`, {}, {
         responseType: "blob",
@@ -579,7 +580,6 @@ export default function Reports() {
 
               {/* Хөдөлгөөнгүй картын он сонголт + оролтын файлын төлөв */}
               {card.key === "no_movement" && (() => {
-                const yrs = Array.from(new Set([new Date().getFullYear(), ...Object.keys(incomeYears).map(Number), ...Object.keys(movYears).map(Number)])).sort((a, b) => b - a);
                 const m = movYears[movYear];
                 const chip = (ok: boolean, label: string) => (
                   <span className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
@@ -588,10 +588,10 @@ export default function Reports() {
                 );
                 return (
                   <div className="mt-3">
-                    <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">Он</div>
-                    <select value={movYear} onChange={(e) => setMovYear(Number(e.target.value))}
+                    <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">Сүүлийн хэд хоногийн орлого</div>
+                    <select value={movDays} onChange={(e) => setMovDays(Number(e.target.value))}
                       className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-gray-400">
-                      {yrs.map((y) => <option key={y} value={y}>{y} он</option>)}
+                      {[3, 7, 14, 30, 60, 90].map((d) => <option key={d} value={d}>Сүүлийн {d} хоног</option>)}
                     </select>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {chip(!!incomeYears[movYear], incomeYears[movYear] ? `Орлого ${incomeYears[movYear]} файл` : "Орлогын файл алга")}
@@ -600,7 +600,7 @@ export default function Reports() {
                     </div>
                     {!(incomeYears[movYear] && m && (m.main || m.liquor)) && (
                       <div className="mt-1.5 text-[10px] text-amber-600">
-                        Файл оруулалт → Орлогын файл / Хөдөлгөөний файл хэсгээс {movYear} оны файлуудыг оруулна уу.
+                        Файл оруулалт → Орлогын файл / Хөдөлгөөний файл хэсгээс {movYear} оны файлуудыг (сүүлийн хоногуудыг хамарсан) оруулна уу.
                       </div>
                     )}
                   </div>
