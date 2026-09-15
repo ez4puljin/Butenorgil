@@ -12,6 +12,10 @@
 бодит датагийн давамгай тархалтаас (78-99%) гаргасан бөгөөд UI-аас засаж
 болно. Бараа нь байршилдаа харгалзах tag-гүй бол ЗӨРҮҮТЭЙ гэж тооцно.
 
+ЗААЛД шууд авсан орлого («Заал», «Заалны архи», «Хархорин заал» г.м) шалгалтад
+ОРОХГҮЙ — заалд орлого авах нь байршлын зөрүү биш (тагаас үл хамааран заал руу
+шууд ирдэг бараа). Тоог нь «Заалд орсон (алгассан)» гэж тусад нь харуулна.
+
 Гүйцэтгэл: орлогын файл (нийт ~100К мөр) болон мастерыг mtime-аар кэшилнэ —
 файл солигдоогүй л бол дахин уншихгүй; startup + 60с warm loop урьдчилан
 ачаална. Шалгалт өөрөө dict lookup тул <1с.
@@ -65,6 +69,12 @@ def _norm(s) -> str:
 def _norm_code(v) -> str:
     s = re.sub(r"\.0$", "", str(v or "").strip())
     return re.sub(r"\s+", "", s)
+
+
+def _is_hall(loc: str) -> bool:
+    """Заалны байршил: «Заал», «Заалны архи», «Хархорин заал» г.м — шалгалтаас алгасна."""
+    l = _norm(loc)
+    return l.startswith("заал") or l.endswith(" заал")
 
 
 # ── Тохиргоо ────────────────────────────────────────────────────────────────
@@ -243,7 +253,7 @@ def _compute(date_from: date_type, date_to: date_type) -> dict:
     master = _get_master_tags()
     rows = _get_income_rows()
 
-    total = ok = mismatch_n = not_found = ignored = 0
+    total = ok = mismatch_n = not_found = ignored = hall_skipped = 0
     unmapped: dict[str, int] = {}
     loc_counts: dict[str, int] = {}
     groups: dict[str, dict] = {}
@@ -255,6 +265,9 @@ def _compute(date_from: date_type, date_to: date_type) -> dict:
         total += 1
         loc_counts[loc] = loc_counts.get(loc, 0) + 1
         nloc = _norm(loc)
+        if _is_hall(loc):
+            hall_skipped += 1          # заалд шууд орсон орлого — зөрүү биш
+            continue
         if nloc in ignore:
             ignored += 1
             continue
@@ -295,7 +308,7 @@ def _compute(date_from: date_type, date_to: date_type) -> dict:
         "summary": {
             "total_rows": total, "ok": ok, "mismatch": mismatch_n,
             "master_not_found": not_found, "ignored": ignored,
-            "truncated": truncated,
+            "hall_skipped": hall_skipped, "truncated": truncated,
         },
         "unmapped_locations": unmapped,
         "groups": group_list,

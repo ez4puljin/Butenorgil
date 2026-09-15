@@ -67,7 +67,7 @@ type TagLocGroup = {
 };
 type TagLocResult = {
   date_from: string; date_to: string;
-  summary: { total_rows: number; ok: number; mismatch: number; master_not_found: number; ignored: number; truncated: number };
+  summary: { total_rows: number; ok: number; mismatch: number; master_not_found: number; ignored: number; hall_skipped?: number; truncated: number };
   unmapped_locations: Record<string, number>;
   groups: TagLocGroup[];
   meta: { locations_in_range: Record<string, number>; all_tags: string[]; config: { map: Record<string, string[]>; ignore_locations: string[] } };
@@ -260,12 +260,13 @@ function TagLocationChecker() {
             </div>
 
             {/* Summary tiles */}
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-5">
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
               {[
                 { label: "Нийт орлогын мөр", v: s.total_rows, cls: "text-gray-800" },
                 { label: "Зөв байршилд", v: s.ok, cls: "text-emerald-600" },
                 { label: "Зөрүүтэй", v: s.mismatch, cls: "text-red-600" },
                 { label: "Мастерт олдоогүй", v: s.master_not_found, cls: "text-amber-600" },
+                { label: "Заалд орсон (тооцохгүй)", v: s.hall_skipped ?? 0, cls: "text-gray-400" },
                 { label: "Алгассан", v: s.ignored, cls: "text-gray-400" },
               ].map((t) => (
                 <div key={t.label} className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm">
