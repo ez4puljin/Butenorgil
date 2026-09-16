@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.worksheet.pagebreak import Break
+from openpyxl.utils import get_column_letter
 
 try:
     import tkinter as tk
@@ -285,6 +286,160 @@ def _tag_bucket(tag_csv: str) -> str:
         if tag.lower() in parts:
             return tag
     return ""
+
+
+# Агуулахын үлдэгдлийн файлын хэсгийн нэр → мастерын «Байршил tag» (нэгтгэсэн тайланд)
+WAREHOUSE_SECTION_TAG = {
+    "бөөний агуулах": "Бөөний агуулах",
+    "ус ундаа архи пиво": "Архи Ус ундаа пиво",
+    "жижиглэн барааны агуулах": "Жижиглэн агуулах",
+    "гэрээт компаний агуулах": "Гэрээт компани",
+}
+COMBINED_OTHER_HALL = "Улайлт-Заал бусад"
+COMBINED_OTHER_WH = "Улайлт-Агуулах бусад"
+
+
+def _write_combined_sheet(out_wb, name, wh_rows, hall_rows, wh_label, hall_label):
+    """Нэг хуудас: АГУУЛАХЫН улайлт (дээр), доор нь ЗААЛНЫ улайлт (тагаар).
+    Бүх нүд хүрээтэй, хэсэг бүр тодруулсан толгойн мөртэй; хэвлэх тохиргоотой."""
+    from openpyxl.styles import PatternFill
+    ws = out_wb.create_sheet(name[:31])
+    cols = ["Хэсэг", "Байршил", "Code", "Name", "FinalQty_I", "Байршил tag", "Үлдэгдэл", "Тайлбар"]
+    widths = [9, 24, 10, 44, 11, 18, 14, 30]
+    for ci, h in enumerate(cols, 1):
+        c = ws.cell(1, ci, h)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = _ALL_BORDER
+    for ci, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    sec_fill = PatternFill("solid", fgColor="D9E1F2")
+    r = 2
+
+    def section(title, rows, kind):
+        nonlocal r
+        c = ws.cell(r, 1, title)
+        c.font = Font(bold=True)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=len(cols))
+        for ci in range(1, len(cols) + 1):
+            ws.cell(r, ci).fill = sec_fill
+            ws.cell(r, ci).border = _ALL_BORDER
+        r += 1
+        if not rows:
+            ws.cell(r, 1, "— улайсан бараа алга —").font = Font(italic=True, color="7F8C8D")
+            for ci in range(1, len(cols) + 1):
+                ws.cell(r, ci).border = _ALL_BORDER
+            r += 1
+            return
+        for row in rows:
+            vals = [kind, row["Warehouse"], row["Code"], row["Name"], row["FinalQty_I"], row.get("tag", ""), None, None]
+            for ci, v in enumerate(vals, 1):
+                ws.cell(r, ci, v).border = _ALL_BORDER
+            r += 1
+
+    if wh_label != "—":
+        section(f"АГУУЛАХ — {wh_label} ({len(wh_rows)} мөр)", wh_rows, "Агуулах")
+    if hall_label != "—":
+        section(f"ЗААЛ — {hall_label} ({len(hall_rows)} мөр)", hall_rows, "Заал")
+    ws.freeze_panes = "A2"
+    _print_setup(ws, landscape=False, footer_center=name.replace("Улайлт-", "Улайлт — "))
+    return ws
+
+
+def build_combined_report(warehouse_path, hall_paths, output_path):
+    """Агуулах + Заалны улайлтыг нэгтгэсэн тайлан.
+
+    4 агуулах бүрд нэг хуудас: дээр нь тухайн агуулахын улайлт (Бүх агуулахын
+    үлдэгдлийн файлаас), доор нь мастерын тухайн агуулахын тагтай ЗААЛНЫ улайлт
+    (Үндсэн/Архины заалны файлаас). 5 дахь хуудас — бусад тагтай заалны улайлт;
+    агуулахын файлд 4-өөс өөр хэсэг байвал «Агуулах бусад» хуудас. MultiLocation —
+    агуулахын файлаас. Хэвлэх: «Улайлт-» хуудас бүрийг тусад нь; MultiLocation тусдаа товч."""
+    from app.scripts.no_movement_report import _master_tags
+    tags = _master_tags()
+
+    wh_df = _parse_records(warehouse_path)
+    wh_red = wh_df[wh_df["IsRed"]].copy()
+    hall_frames = [_parse_records(p) for p in hall_paths if p]
+    hall_red = pd.concat([f[f["IsRed"]] for f in hall_frames]) if hall_frames else wh_red.iloc[0:0].copy()
+    hall_red = hall_red.copy()
+    hall_red["tag"] = hall_red["Code"].map(lambda c: tags.get(str(c), "") or "(мастерт байхгүй)")
+    hall_red["_bucket"] = hall_red["Code"].map(lambda c: _tag_bucket(tags.get(str(c), "")))
+    wh_red["tag"] = wh_red["Code"].map(lambda c: tags.get(str(c), "") or "")
+
+    # Агуулахын дүн (агуулахын файл)
+    wh_summary = wh_df.groupby("Warehouse").agg(
+        Items=("Code", "nunique"),
+        RedItems=("IsRed", "sum"),
+        TotalFinalQty=("FinalQty_I", lambda s_: pd.to_numeric(s_, errors="coerce").fillna(0).sum())
+    ).reset_index().sort_values("Warehouse")
+    hall_summary = pd.concat(hall_frames).groupby("Warehouse").agg(
+        Items=("Code", "nunique"), RedItems=("IsRed", "sum"),
+        TotalFinalQty=("FinalQty_I", lambda s_: pd.to_numeric(s_, errors="coerce").fillna(0).sum())
+    ).reset_index() if hall_frames else None
+
+    # MultiLocation — агуулахын файлаас (build_report-той ижил)
+    nonzero_df = wh_df[wh_df["NonZero"]].copy()
+    wh_counts = nonzero_df.groupby("Code")["Warehouse"].nunique().reset_index(name="WarehouseCount")
+    multi_codes = set(wh_counts[wh_counts["WarehouseCount"] > 1]["Code"].tolist())
+    multi_base = nonzero_df[nonzero_df["Code"].isin(multi_codes)].copy()
+    if len(multi_base):
+        pivot = multi_base.pivot_table(index=["Code", "Name"], columns="Warehouse", values="FinalQty_I",
+                                       aggfunc="sum", fill_value=0).reset_index().copy()
+        counts_map = wh_counts.set_index("Code")["WarehouseCount"].to_dict()
+        pivot["WarehouseCount"] = pivot["Code"].map(counts_map).fillna(0).astype(int)
+        wcols = [c for c in pivot.columns if c not in ("Code", "Name", "WarehouseCount")]
+        pivot["TotalQty"] = pivot[wcols].sum(axis=1)
+        multi_report = pivot[["Code", "Name", "WarehouseCount", "TotalQty"] + wcols].sort_values(
+            ["WarehouseCount", "Code"], ascending=[False, True])
+    else:
+        multi_report = pd.DataFrame(columns=["Code", "Name", "WarehouseCount", "TotalQty"])
+
+    out_wb = Workbook()
+    out_wb.remove(out_wb.active)
+    ws_sum = add_sheet(out_wb, "Warehouse_Summary", wh_summary, borders=True, footer_center="Агуулахын дүн")
+
+    wh_sections = {_norm_ws(w): w for w in wh_red["Warehouse"].unique()}
+    used_sections = set()
+    counts = []
+    for tag, sheet in HALL_TAG_SHEETS:
+        sec_key = next((k for k, t in WAREHOUSE_SECTION_TAG.items() if t == tag), None)
+        sec_name = wh_sections.get(sec_key or "")
+        w_rows = wh_red[wh_red["Warehouse"] == sec_name].sort_values("Code").to_dict("records") if sec_name else []
+        if sec_name:
+            used_sections.add(sec_name)
+        h_rows = hall_red[hall_red["_bucket"] == tag].sort_values(["Warehouse", "Code"]).to_dict("records")
+        _write_combined_sheet(out_wb, sheet, w_rows, h_rows,
+                              wh_label=(sec_name or f"{tag} (агуулахын файлд хэсэг алга)"),
+                              hall_label=f"{tag} тагтай")
+        counts.append((sheet, len(w_rows), len(h_rows)))
+    h_other = hall_red[hall_red["_bucket"] == ""].sort_values(["tag", "Warehouse", "Code"]).to_dict("records")
+    _write_combined_sheet(out_wb, COMBINED_OTHER_HALL, [], h_other, wh_label="—", hall_label="бусад тагтай")
+    counts.append((COMBINED_OTHER_HALL, 0, len(h_other)))
+    w_other = wh_red[~wh_red["Warehouse"].isin(used_sections)].sort_values(["Warehouse", "Code"]).to_dict("records")
+    if w_other:
+        _write_combined_sheet(out_wb, COMBINED_OTHER_WH, w_other, [], wh_label="бусад хэсэг", hall_label="—")
+        counts.append((COMBINED_OTHER_WH, len(w_other), 0))
+
+    add_sheet(out_wb, "MultiLocation", multi_report, borders=True, landscape=True,
+              footer_center="Давхар байршилтай бараа")
+
+    r0 = ws_sum.max_row + 2
+    if hall_summary is not None:
+        ws_sum.cell(r0, 1, "Заалны файл:").font = Font(bold=True)
+        for i, (_, hr) in enumerate(hall_summary.iterrows(), 1):
+            ws_sum.cell(r0 + i, 1, hr["Warehouse"]); ws_sum.cell(r0 + i, 2, int(hr["Items"]))
+            ws_sum.cell(r0 + i, 3, int(hr["RedItems"])); ws_sum.cell(r0 + i, 4, float(hr["TotalFinalQty"]))
+        r0 += len(hall_summary) + 2
+    ws_sum.cell(r0, 1, "Хэвлэх:").font = Font(bold=True)
+    ws_sum.cell(r0 + 1, 1, "• Улайлт хэвлэх — хуудас бүр: агуулахын улайлт, доор нь тухайн тагтай заалны улайлт: " +
+                ", ".join(f"{sh.replace('Улайлт-', '')} ({w}+{h})" for sh, w, h in counts) + ".")
+    ws_sum.cell(r0 + 2, 1, "• Давхар байршил — агуулахын файлын MultiLocation (хэвтээ).")
+    out_wb.save(output_path)
+    return add_print_buttons(output_path, mode="combined")
+
+
+def _norm_ws(s_: str) -> str:
+    return " ".join(str(s_ or "").split()).strip().lower()
 
 
 def build_report(input_path, output_path, mode: str = "warehouse"):
@@ -610,6 +765,13 @@ def add_print_buttons(xlsx_path: str, mode: str = "warehouse") -> str:
                         # Заалны улайлт: 5 хуудас (тагаар) хэвлэх ганц товч; MultiLocation товчгүй
                         b1.OnAction = "PrintTagSheets"
                         b1.Caption = "Улайлт хэвлэх — 5 хуудас (агуулахын тагаар)"
+                    elif mode == "combined":
+                        b1.OnAction = "PrintTagSheets"
+                        b1.Caption = "Улайлт хэвлэх — агуулах + заал (хуудас бүр)"
+                        b2 = ws.Buttons().Add(anchor.Left, anchor.Top + 40, 300, 32)
+                        b2.OnAction = "PrintMultiLocation"
+                        b2.Caption = "Давхар байршил (MultiLocation) хэвлэх"
+                        b2.Font.Bold = True
                     else:
                         b1.OnAction = "PrintRedItemsByWarehouse"
                         b1.Caption = "Улайлт хэвлэх — агуулах тус бүрээр"

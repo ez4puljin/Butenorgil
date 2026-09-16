@@ -355,7 +355,7 @@ export default function Reports() {
   const [running, setRunning] = useState<string | null>(null);
   // Үлдэгдлийн файл оруулалтын төлөв — Улайлт картанд аль файл бэлэн болохыг харуулна
   const [balSlots, setBalSlots] = useState<BalanceSlots>({ warehouse: null, main: null, liquor: null });
-  const [ulailtKind, setUlailtKind] = useState<"warehouse" | "main" | "liquor">("warehouse");
+  const [ulailtKind, setUlailtKind] = useState<"warehouse" | "main" | "liquor" | "combined">("warehouse");
   // Хөдөлгөөнгүй тайлан — он сонголт + оролтын файлын төлөв
   const [movYear] = useState<number>(new Date().getFullYear());
   const [movDays, setMovDays] = useState<number>(7);
@@ -460,6 +460,7 @@ export default function Reports() {
   const isReady = (card: ReportCard) => {
     if (card.key === "ulailt") {
       // Улайлт: сонгосон kind-ийн файл оруулагдсан эсэхээр шалгана
+      if (ulailtKind === "combined") return !!balSlots.warehouse && !!balSlots.main;
       return !!balSlots[ulailtKind];
     }
     if (card.key === "no_movement") {
@@ -540,19 +541,20 @@ export default function Reports() {
                       { k: "warehouse", label: "Бүх агуулахын үлдэгдэл", color: "blue"   },
                       { k: "main",      label: "Үндсэн заалны үлдэгдэл",  color: "violet" },
                       { k: "liquor",    label: "Архины заалны үлдэгдэл",  color: "amber"  },
+                      { k: "combined",  label: "Нэгтгэсэн: Агуулах + Заал (тагаар)", color: "emerald" },
                     ] as const).map(({ k, label, color }) => {
-                      const info = balSlots[k];
+                      const info = k === "combined" ? (balSlots.warehouse && balSlots.main ? balSlots.warehouse : null) : balSlots[k];
                       const active = ulailtKind === k;
                       const has = !!info;
-                      const ring  = active ? (color === "blue" ? "ring-blue-400" : color === "violet" ? "ring-violet-400" : "ring-amber-400") : "ring-gray-200";
-                      const bg    = active ? (color === "blue" ? "bg-blue-50"    : color === "violet" ? "bg-violet-50"    : "bg-amber-50")    : "bg-white";
+                      const ring  = active ? (color === "blue" ? "ring-blue-400" : color === "violet" ? "ring-violet-400" : color === "emerald" ? "ring-emerald-400" : "ring-amber-400") : "ring-gray-200";
+                      const bg    = active ? (color === "blue" ? "bg-blue-50"    : color === "violet" ? "bg-violet-50"    : color === "emerald" ? "bg-emerald-50" : "bg-amber-50")    : "bg-white";
                       return (
                         <button
                           key={k}
                           onClick={() => setUlailtKind(k)}
                           disabled={!has}
                           className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] ring-1 ring-inset ${ring} ${bg} ${has ? "" : "opacity-50 cursor-not-allowed"} hover:bg-gray-50`}
-                          title={has ? `Файл: ${info!.filename}` : "Файл оруулаагүй"}
+                          title={has ? (k === "combined" ? "Бүх агуулах + Үндсэн заал (+ Архины заал)" : `Файл: ${info!.filename}`) : (k === "combined" ? "Бүх агуулах ба Үндсэн заалны файл хоёулаа хэрэгтэй" : "Файл оруулаагүй")}
                         >
                           <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${active ? "border-current" : "border-gray-300"}`}>
                             {active && <span className="h-2 w-2 rounded-full bg-current" />}
@@ -571,7 +573,7 @@ export default function Reports() {
                       );
                     })}
                   </div>
-                  {!balSlots[ulailtKind] && (
+                  {!(ulailtKind === "combined" ? (balSlots.warehouse && balSlots.main) : balSlots[ulailtKind]) && (
                     <div className="mt-1.5 text-[10px] text-amber-600">
                       Сонгосон файл оруулагдаагүй байна. Файл оруулалт → Үлдэгдлийн файл оруулалт хэсгээс оруулна уу.
                     </div>

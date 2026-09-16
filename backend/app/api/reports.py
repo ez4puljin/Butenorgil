@@ -196,6 +196,33 @@ def run_ulailt(
     from app.api.balance_file import UPLOAD_DIR as BAL_UPLOAD_DIR
 
     pick = (kind or BAL_KIND_WAREHOUSE).strip().lower()
+    if pick == "combined":
+        # Нэгтгэсэн: Бүх агуулах + Үндсэн заал (+ Архины заал байвал)
+        rows = {r.kind: r for r in db.query(BalanceFile).all() if r.stored_filename}
+        wh, mn, lq = rows.get("warehouse"), rows.get("main"), rows.get("liquor")
+        if not wh or not mn:
+            raise HTTPException(400, "Нэгтгэсэн улайлтад «Бүх агуулахын үлдэгдэл» ба «Үндсэн заалны үлдэгдэл» хоёулаа хэрэгтэй.")
+        wh_p = BAL_UPLOAD_DIR / wh.stored_filename
+        hall_ps = [BAL_UPLOAD_DIR / r.stored_filename for r in (mn, lq) if r]
+        hall_ps = [p for p in hall_ps if p.exists()]
+        if not wh_p.exists() or not hall_ps:
+            raise HTTPException(404, "Хадгалсан үлдэгдлийн файл олдсонгүй.")
+        ts = int(time.time())
+        out_path = OUTPUT_DIR / f"ulailt_taillan_combined_{ts}.xlsx"
+        try:
+            from app.scripts.ulailt_report import build_combined_report
+            final_path = Path(build_combined_report(str(wh_p), [str(p) for p in hall_ps], str(out_path)) or out_path)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(500, f"Нэгтгэсэн улайлт гаргахад алдаа гарлаа: {e}")
+        is_xlsm = final_path.suffix.lower() == ".xlsm"
+        return FileResponse(
+            path=str(final_path),
+            filename=f"ulailt_taillan_combined_{ts}{'.xlsm' if is_xlsm else '.xlsx'}",
+            media_type=("application/vnd.ms-excel.sheet.macroEnabled.12" if is_xlsm
+                        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        )
     if pick not in BAL_KINDS:
         raise HTTPException(400, f"kind буруу. Зөвшөөрөгдөх утгууд: {sorted(BAL_KINDS)}")
 
