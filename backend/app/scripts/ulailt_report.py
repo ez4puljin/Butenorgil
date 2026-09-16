@@ -268,7 +268,29 @@ def get_stats(input_path: str) -> dict:
     }
 
 
-def build_report(input_path, output_path):
+# Заалны улайлтыг мастерын «Байршил tag»-аар 4 агуулах + Бусад гэж 5 хуудас болгоно
+HALL_TAG_SHEETS = [
+    ("Бөөний агуулах",      "Улайлт-Бөөний агуулах"),
+    ("Архи Ус ундаа пиво",  "Улайлт-Архи ус ундаа"),
+    ("Жижиглэн агуулах",    "Улайлт-Жижиглэн"),
+    ("Гэрээт компани",      "Улайлт-Гэрээт"),
+]
+HALL_OTHER_SHEET = "Улайлт-Бусад"
+
+
+def _tag_bucket(tag_csv: str) -> str:
+    """Мастерын tag (CSV байж болно) → 4 агуулахын аль нэг, үгүй бол ''."""
+    parts = [" ".join(t.split()).strip().lower() for t in str(tag_csv or "").split(",")]
+    for tag, _sheet in HALL_TAG_SHEETS:
+        if tag.lower() in parts:
+            return tag
+    return ""
+
+
+def build_report(input_path, output_path, mode: str = "warehouse"):
+    """mode="warehouse": RedItems нэг хуудас (агуулах бүр хуудасны хуваалттай).
+    mode="hall": заалны улайлт — мастерын тагаар 5 хуудас (4 агуулах + Бусад),
+    хэвлэх товч нь тэр 5 хуудсыг дараалан хэвлэнэ; MultiLocation товчгүй."""
     df = _parse_records(input_path)
     df["Row"] = 0  # Row info not tracked in _parse_records; keep column for compat
 
@@ -315,19 +337,39 @@ def build_report(input_path, output_path):
     out_wb.remove(out_wb.active)
 
     ws_sum = add_sheet(out_wb, "Warehouse_Summary", wh_summary, borders=True, footer_center="Агуулахын дүн")
-    add_sheet(out_wb, "RedItems", red_df, borders=True, footer_center="Улайлт (үлдэгдэл < 0)",
-              page_break_col="Warehouse", min_widths={"Үлдэгдэл": 14, "Тайлбар": 30})
+    if mode == "hall":
+        # Мастерын тагаар 4 агуулах + Бусад → 5 хуудас (хуудас бүр тусдаа хэвлэгдэнэ)
+        from app.scripts.no_movement_report import _master_tags
+        tags = _master_tags()
+        red_df = red_df.copy()
+        red_df["_bucket"] = red_df["Code"].map(lambda c: _tag_bucket(tags.get(str(c), "")))
+        red_df["Байршил tag"] = red_df["Code"].map(lambda c: tags.get(str(c), "") or "(мастерт байхгүй)")
+        cols = ["Warehouse", "Code", "Name", "FinalQty_I", "Байршил tag", "Үлдэгдэл", "Тайлбар"]
+        bucket_counts = []
+        for tag, sheet in HALL_TAG_SHEETS + [("", HALL_OTHER_SHEET)]:
+            part = red_df[red_df["_bucket"] == tag][cols].sort_values(["Warehouse", "Code"])
+            add_sheet(out_wb, sheet, part, borders=True, footer_center=sheet.replace("Улайлт-", "Улайлт — "),
+                      min_widths={"Үлдэгдэл": 14, "Тайлбар": 30, "Байршил tag": 18})
+            bucket_counts.append((sheet, len(part)))
+    else:
+        add_sheet(out_wb, "RedItems", red_df, borders=True, footer_center="Улайлт (үлдэгдэл < 0)",
+                  page_break_col="Warehouse", min_widths={"Үлдэгдэл": 14, "Тайлбар": 30})
     add_sheet(out_wb, "MultiLocation", multi_report, borders=True, landscape=True,
               footer_center="Давхар байршилтай бараа")
 
     # Хэвлэх заавар (товч VBA-гүй үед ч ойлгомжтой байг)
     r0 = ws_sum.max_row + 2
     ws_sum.cell(r0, 1, "Хэвлэх:").font = Font(bold=True)
-    ws_sum.cell(r0 + 1, 1, "• RedItems хуудас — агуулах бүр тусдаа хуудаснаас эхэлнэ (хуудасны хуваалт тавьсан), бүх багана нэг хуудсанд багтана.")
-    ws_sum.cell(r0 + 2, 1, "• MultiLocation хуудас — хэвтээ, бүх багана нэг хуудсанд. Хуудас бүрийн доод хэсэгт огноо, хуудасны дугаар байна.")
+    if mode == "hall":
+        ws_sum.cell(r0 + 1, 1, "• Улайлт 5 хуудас — мастерын «Байршил tag»-аар: " +
+                    ", ".join(f"{sh.replace('Улайлт-', '')} ({n})" for sh, n in bucket_counts) + ". Хуудас бүр тусдаа хэвлэгдэнэ.")
+        ws_sum.cell(r0 + 2, 1, "• Бүх багана нэг хуудсанд; толгойд огноо, хөлд хуудасны дугаар.")
+    else:
+        ws_sum.cell(r0 + 1, 1, "• RedItems хуудас — агуулах бүр тусдаа хуудаснаас эхэлнэ (хуудасны хуваалт тавьсан), бүх багана нэг хуудсанд багтана.")
+        ws_sum.cell(r0 + 2, 1, "• MultiLocation хуудас — хэвтээ, бүх багана нэг хуудсанд. Хуудас бүрийн доод хэсэгт огноо, хуудасны дугаар байна.")
 
     out_wb.save(output_path)
-    return add_print_buttons(output_path)
+    return add_print_buttons(output_path, mode=mode)
 
 
 # ── Хэвлэх товч (VBA) ────────────────────────────────────────────────────────
@@ -438,6 +480,51 @@ Private Sub RestoreWarehouseBreaks(ws As Worksheet, lastRow As Long)
     Next r
 End Sub
 
+' Hall mode: print every sheet whose name starts with the "Ulailt-" prefix
+' (4 warehouse tags + Others), each as its own document, portrait, fit to width.
+Sub PrintTagSheets()
+    Dim pre As String
+    pre = {S_TAG_PREFIX}
+    Dim n As Long
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If Left(ws.Name, Len(pre)) = pre Then n = n + 1
+    Next ws
+    If n = 0 Then
+        MsgBox {S_NO_RED}, vbInformation
+        Exit Sub
+    End If
+    If Not AskYesNo(n & {S_CONFIRM_TAG} & vbCrLf & {S_PRINTER} & Application.ActivePrinter & ")", {S_TITLE_RED}) Then Exit Sub
+    Application.ScreenUpdating = False
+    On Error GoTo Done
+    For Each ws In ThisWorkbook.Worksheets
+        If Left(ws.Name, Len(pre)) = pre Then
+            If ws.Cells(ws.Rows.Count, 1).End(xlUp).Row >= 2 Then
+                With ws.PageSetup
+                    .Orientation = xlPortrait
+                    .Zoom = False
+                    .FitToPagesWide = 1
+                    .FitToPagesTall = False
+                    .PrintTitleRows = "$1:$1"
+                    .TopMargin = Application.InchesToPoints(1)
+                    .HeaderMargin = Application.InchesToPoints(0.3)
+                    .BottomMargin = Application.InchesToPoints(0.7)
+                    .FooterMargin = Application.InchesToPoints(0.3)
+                    .CenterHeader = "&""Arial,Bold""&12" & {S_HDR_RED} & Mid(ws.Name, Len(pre) + 1)
+                    .LeftHeader = "&D &T"
+                    .LeftFooter = ""
+                    .CenterFooter = Mid(ws.Name, Len(pre) + 1)
+                    .RightFooter = {S_PAGE} & "&P / &N"
+                End With
+                DoPrint ws, ws.Name
+            End If
+        End If
+    Next ws
+Done:
+    If Err.Number <> 0 Then MsgBox {S_ERR} & Err.Description, vbExclamation
+    Application.ScreenUpdating = True
+End Sub
+
 ' Print MultiLocation: landscape, all columns on one page.
 Sub PrintMultiLocation()
     Dim ws As Worksheet
@@ -473,6 +560,8 @@ _VBA_STRINGS = {
     "S_FOOT_RED":    "Улайлт (үлдэгдэл < 0)",
     "S_HDR_ML":      "Давхар байршилтай бараа",
     "S_CONFIRM_ML":  "MultiLocation khuudsyg khevlekh uu?",
+    "S_TAG_PREFIX":  "Улайлт-",
+    "S_CONFIRM_TAG": " khuudas (4 aguulakhyn tag + Busad) tus tusad n' khevlekh uu?",
     "S_TITLE_ML":    "Khevlekh",
 }
 
@@ -485,7 +574,7 @@ def _vba_module() -> str:
     return code
 
 
-def add_print_buttons(xlsx_path: str) -> str:
+def add_print_buttons(xlsx_path: str, mode: str = "warehouse") -> str:
     """openpyxl-ийн үүсгэсэн .xlsx-д Excel COM-оор VBA модуль + Warehouse_Summary
     дээр 2 хэвлэх товч нэмж .xlsm болгож хадгална. Буцаах: эцсийн файлын зам.
 
@@ -517,13 +606,18 @@ def add_print_buttons(xlsx_path: str) -> str:
                     ws = wb.Worksheets("Warehouse_Summary")
                     anchor = ws.Range("F2")
                     b1 = ws.Buttons().Add(anchor.Left, anchor.Top, 300, 32)
-                    b1.OnAction = "PrintRedItemsByWarehouse"
-                    b1.Caption = "Улайлт хэвлэх — агуулах тус бүрээр"
+                    if mode == "hall":
+                        # Заалны улайлт: 5 хуудас (тагаар) хэвлэх ганц товч; MultiLocation товчгүй
+                        b1.OnAction = "PrintTagSheets"
+                        b1.Caption = "Улайлт хэвлэх — 5 хуудас (агуулахын тагаар)"
+                    else:
+                        b1.OnAction = "PrintRedItemsByWarehouse"
+                        b1.Caption = "Улайлт хэвлэх — агуулах тус бүрээр"
+                        b2 = ws.Buttons().Add(anchor.Left, anchor.Top + 40, 300, 32)
+                        b2.OnAction = "PrintMultiLocation"
+                        b2.Caption = "Давхар байршил (MultiLocation) хэвлэх"
+                        b2.Font.Bold = True
                     b1.Font.Bold = True
-                    b2 = ws.Buttons().Add(anchor.Left, anchor.Top + 40, 300, 32)
-                    b2.OnAction = "PrintMultiLocation"
-                    b2.Caption = "Давхар байршил (MultiLocation) хэвлэх"
-                    b2.Font.Bold = True
                     ws.Columns("F").ColumnWidth = 45
 
                     wb.SaveAs(os.path.abspath(xlsm_path), FileFormat=52)   # xlOpenXMLWorkbookMacroEnabled

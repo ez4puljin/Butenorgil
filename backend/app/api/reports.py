@@ -216,7 +216,9 @@ def run_ulailt(
     try:
         from app.scripts.ulailt_report import build_report
         # Excel-ийн VBA хандалт нээлттэй бол хэвлэх товчтой .xlsm, үгүй бол .xlsx буцаана
-        final_path = Path(build_report(str(input_path), str(out_path)) or out_path)
+        # Заалны файл (main/liquor) → мастерын тагаар 5 хуудас; агуулахын файл → агуулах бүрээр
+        mode = "hall" if pick in ("main", "liquor") else "warehouse"
+        final_path = Path(build_report(str(input_path), str(out_path), mode=mode) or out_path)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
