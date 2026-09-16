@@ -162,16 +162,18 @@ export default function PalletsPage() {
     } catch (e: any) { flash("err", errMsg(e, "Татахад алдаа")); } finally { setDl(false); }
   };
 
-  const F = ({ k, label, unit, ph }: { k: keyof Form; label: string; unit?: string; ph?: string }) => (
-    <label className="block text-[11px] text-gray-500">
+  // Render-функц (компонент БИШ): компонент болговол render бүрд шинэ төрөл үүсч
+  // input дахин mount болж, нэг тоо бичих бүрд фокус/гар алга болдог.
+  const F = (k: keyof Form, label: string, unit?: string, ph?: string) => (
+    <label key={k} className="block text-[11px] text-gray-500">
       {label}{unit && <span className="text-gray-400"> ({unit})</span>}
       <input value={form[k] as string} onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))} inputMode="decimal" placeholder={ph}
         disabled={!canEdit}
         className="mt-0.5 w-full rounded-lg border border-gray-200 px-2.5 py-2 text-[14px] font-semibold text-gray-900 outline-none focus:border-emerald-400 disabled:bg-gray-50" />
     </label>
   );
-  const Stat = ({ label, v, unit, cls }: { label: string; v: string; unit?: string; cls?: string }) => (
-    <div className="rounded-xl bg-white p-2.5 shadow-sm">
+  const Stat = (label: string, v: string, unit?: string, cls?: string) => (
+    <div key={label} className="rounded-xl bg-white p-2.5 shadow-sm">
       <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</div>
       <div className={`text-[20px] font-black ${cls || "text-gray-800"}`}>{v}{unit && <span className="ml-1 text-[12px] font-semibold text-gray-400">{unit}</span>}</div>
     </div>
@@ -255,13 +257,13 @@ export default function PalletsPage() {
                       {tpls.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.length_cm}×{t.width_cm}×{t.height_cm} см{t.max_weight_kg ? ` · ${t.max_weight_kg} кг` : ""}</option>)}
                     </select>
                   </label>
-                  <F k="box_length_cm" label="Хайрцаг урт" unit="см" />
-                  <F k="box_width_cm" label="Хайрцаг өргөн" unit="см" />
-                  <F k="box_height_cm" label="Хайрцаг өндөр" unit="см" />
-                  <F k="boxes_per_layer" label="Нэг үед хайрцаг" unit="ш" ph="жишээ 16" />
-                  <F k="layers" label="Үе (давхар)" unit="" ph="жишээ 4" />
-                  <F k="pcs_per_box_override" label="Ширхэг/хайрцаг засах" ph={`мастер ${fmt(prod.pack_ratio, 0)}`} />
-                  <F k="box_weight_kg_override" label="Хайрцагны жин засах" unit="кг" ph={`мастер ${fmt(prod.unit_weight * prod.pack_ratio, 2)}`} />
+                  {F("box_length_cm", "Хайрцаг урт", "см")}
+                  {F("box_width_cm", "Хайрцаг өргөн", "см")}
+                  {F("box_height_cm", "Хайрцаг өндөр", "см")}
+                  {F("boxes_per_layer", "Нэг үед хайрцаг", "ш", "жишээ 16")}
+                  {F("layers", "Үе (давхар)", "", "жишээ 4")}
+                  {F("pcs_per_box_override", "Ширхэг/хайрцаг засах", undefined, `мастер ${fmt(prod.pack_ratio, 0)}`)}
+                  {F("box_weight_kg_override", "Хайрцагны жин засах", "кг", `мастер ${fmt(prod.unit_weight * prod.pack_ratio, 2)}`)}
                   <label className="col-span-2 block text-[11px] text-gray-500 sm:col-span-2">Тэмдэглэл
                     <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} disabled={!canEdit}
                       className="mt-0.5 w-full rounded-lg border border-gray-200 px-2.5 py-2 text-[13px] outline-none focus:border-emerald-400 disabled:bg-gray-50" />
@@ -287,19 +289,19 @@ export default function PalletsPage() {
             <div className="rounded-2xl bg-gradient-to-br from-amber-50 to-orange-50 p-3">
               <div className="mb-2 flex items-center gap-1.5 text-[12px] font-bold text-amber-800"><Boxes size={14} />1 поддон дээр</div>
               <div className="grid grid-cols-2 gap-2">
-                <Stat label="Нийт хайрцаг" v={fmt(live.boxes_per_pallet, 0)} unit="ш" cls="text-amber-700" />
-                <Stat label="Нийт ширхэг" v={fmt(live.pcs_per_pallet, 0)} unit="ш" cls="text-amber-700" />
-                <Stat label="Барааны жин" v={fmt(live.pallet_weight_kg, 1)} unit="кг" cls="text-gray-800" />
-                <Stat label="Хайрцагны жин" v={fmt(live.box_weight_kg, 2)} unit="кг" />
+                {Stat("Нийт хайрцаг", fmt(live.boxes_per_pallet, 0), "ш", "text-amber-700")}
+                {Stat("Нийт ширхэг", fmt(live.pcs_per_pallet, 0), "ш", "text-amber-700")}
+                {Stat("Барааны жин", fmt(live.pallet_weight_kg, 1), "кг", "text-gray-800")}
+                {Stat("Хайрцагны жин", fmt(live.box_weight_kg, 2), "кг")}
               </div>
             </div>
             <div className="rounded-2xl bg-gradient-to-br from-sky-50 to-blue-50 p-3">
               <div className="mb-2 flex items-center gap-1.5 text-[12px] font-bold text-sky-800"><Ruler size={14} />Хэмжээ</div>
               <div className="grid grid-cols-2 gap-2">
-                <Stat label="Шалнаас дээд хайрцаг" v={fmt(live.total_height_cm, 1)} unit="см" cls="text-sky-700" />
-                <Stat label="Өрөлтийн өндөр" v={fmt(live.stack_height_cm, 1)} unit="см" />
-                <Stat label="Урт × Өргөн" v={tpl ? `${fmt(tpl.length_cm, 0)}×${fmt(tpl.width_cm, 0)}` : "—"} unit="см" />
-                <Stat label="Талбайн дүүргэлт" v={live.area_fill_pct == null ? "—" : fmt(live.area_fill_pct, 0)} unit="%" cls={live.area_fill_pct != null && live.area_fill_pct > 100 ? "text-rose-600" : "text-gray-800"} />
+                {Stat("Шалнаас дээд хайрцаг", fmt(live.total_height_cm, 1), "см", "text-sky-700")}
+                {Stat("Өрөлтийн өндөр", fmt(live.stack_height_cm, 1), "см")}
+                {Stat("Урт × Өргөн", tpl ? `${fmt(tpl.length_cm, 0)}×${fmt(tpl.width_cm, 0)}` : "—", "см")}
+                {Stat("Талбайн дүүргэлт", live.area_fill_pct == null ? "—" : fmt(live.area_fill_pct, 0), "%", live.area_fill_pct != null && live.area_fill_pct > 100 ? "text-rose-600" : "text-gray-800")}
               </div>
               {tpl && <p className="mt-2 text-[10.5px] text-sky-700/70">Поддон {tpl.height_cm} см + {form.layers || 0} үе × {form.box_height_cm || 0} см</p>}
             </div>
