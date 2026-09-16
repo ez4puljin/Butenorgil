@@ -31,3 +31,4 @@ from app.api.digest import router as digest_router
 from app.api.pos_recon import router as pos_recon_router
 from app.api.price_check import router as price_check_router
 from app.api.hall_count import router as hall_count_router
+from app.api.pallets import router as pallets_router

@@ -48,6 +48,7 @@ const PosSync            = page(() => import("./pages/PosSync"));
 const PosRecon           = page(() => import("./pages/PosRecon"));
 const PriceCheck         = page(() => import("./pages/PriceCheck"));
 const HallCount          = page(() => import("./pages/HallCount"));
+const Pallets            = page(() => import("./pages/Pallets"));
 const ExpirationTracking = page(() => import("./pages/ExpirationTracking"));
 const Documents          = page(() => import("./pages/Documents"));
 const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
@@ -104,6 +105,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "pos_recon",           path: "/pos-recon" },
   { key: "price_check",         path: "/price-check" },
   { key: "hall_count",          path: "/hall-count" },
+  { key: "pallets",             path: "/pallets" },
   { key: "expiration_tracking", path: "/expiration" },
   { key: "documents",           path: "/documents" },
   { key: "attendance",          path: "/attendance" },
@@ -340,6 +342,10 @@ export default function App() {
                 <Route
                   path="/hall-count"
                   element={can("hall_count") ? <HallCount /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/pallets"
+                  element={can("pallets") ? <Pallets /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/expiration"

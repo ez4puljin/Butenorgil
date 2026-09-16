@@ -6,7 +6,7 @@ import {
   FileText, Building2, Truck, X, CalendarDays, CheckSquare,
   BadgeCheck, Settings2, Sparkles, BarChart3, MoreHorizontal,
   ChevronRight, User, Menu, ClipboardCheck, Bot, PackageCheck, Landmark, History, Timer,
-  Clock, CalendarClock, ReceiptText, Store, CalendarCheck, Tag, ScanBarcode,
+  Clock, CalendarClock, ReceiptText, Store, CalendarCheck, Tag, ScanBarcode, Layers,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 import ConnectionBanner from "../ConnectionBanner";
@@ -45,6 +45,7 @@ const navItems: NavItem[] = [
   { to: "/pos-recon",          label: "POS тулгалт",         icon: CalendarCheck,  pageKey: "pos_recon" },
   { to: "/price-check",        label: "Үнэ харах",           icon: Tag,            pageKey: "price_check" },
   { to: "/hall-count",         label: "Заалны тооллого",     icon: ScanBarcode,    pageKey: "hall_count" },
+  { to: "/pallets",            label: "Поддон хураалт",      icon: Layers,         pageKey: "pallets" },
   { to: "/expiration",         label: "Хугацааны хяналт",    icon: Timer,          pageKey: "expiration_tracking" },
   { to: "/attendance",         label: "Цаг бүртгэл",         icon: Clock,          pageKey: "attendance" },
   { to: "/attendance/admin",   label: "Цаг бүртгэл (Админ)", icon: CalendarClock,  pageKey: "attendance_admin" },
