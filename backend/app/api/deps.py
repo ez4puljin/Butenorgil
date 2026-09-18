@@ -7,7 +7,11 @@ from app.models.user import User
 
 oauth2 = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-def get_db():
+async def get_db():
+    """DB session — хүсэлт бүрд нэг. ASYNC generator: хэрэглэгч хүсэлтээ таслахад
+    (утас WiFi тасрах г.м) sync generator-ын exit нь FastAPI-д алгасагдаж session
+    (pool холболт) алдагддаг байсан; async generator-ын finally нь cancel үед ч
+    заавал ажиллана. close() нь холболтыг pool-д буцаах хөнгөн үйлдэл."""
     db = SessionLocal()
     try:
         yield db

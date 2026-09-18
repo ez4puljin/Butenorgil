@@ -49,7 +49,10 @@ class ErxesClient:
         self.password = password or settings.erxes_password
         self.timeout = timeout
         self._s: requests.Session | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()                 # зөвхөн нэвтрэлт/session солиход
+        # erxes рүү зэрэг явах хүсэлтийн дээд хязгаар — олон хэрэглэгч зэрэг
+        # дуудахад erxes-ийг дарахгүй, гэхдээ БҮГД нэг lock-д мөр дараалж гацахгүй.
+        self._inflight = threading.BoundedSemaphore(4)
 
     # ── нэвтрэлт ─────────────────────────────────────────────────────
     def _do_login(self) -> None:
@@ -84,24 +87,32 @@ class ErxesClient:
 
     # ── GraphQL ──────────────────────────────────────────────────────
     def gql(self, query: str, variables: dict | None = None, retry: bool = True) -> dict:
-        """GraphQL хүсэлт. 'Login required' гарвал нэг удаа дахин нэвтэрнэ."""
+        """GraphQL хүсэлт. 'Login required' гарвал нэг удаа дахин нэвтэрнэ.
+
+        АНХААР: сүлжээний дуудлагыг lock ДОТОР хийхгүй. Өмнө нь `with self._lock:`
+        дотроос retry хийхдээ gql()-ийг дахин дуудаж, реентрант биш Lock-ийг өөрөө
+        өөрөөсөө хүлээж БҮРМӨСӨН гацдаг байсан (2026-09-18: 100 thread + бүх DB
+        pool холболт erxes-ийн нэг lock-д гацаж сервер бүхэлдээ зогссон)."""
         with self._lock:
             s = self._session()
+        with self._inflight:
             r = s.post(self.endpoint,
                        json={"query": query, "variables": variables or {}},
                        timeout=self.timeout, verify=False)
-            try:
-                j = r.json()
-            except Exception:
-                raise ErxesError(f"erxes хариу буруу ({r.status_code}): {r.text[:120]}")
-            errs = j.get("errors")
-            if errs:
-                msg = errs[0].get("message", "")
-                if retry and ("Login required" in msg or "Unauthorized" in msg):
-                    self._s = None
-                    return self.gql(query, variables, retry=False)
-                raise ErxesError(msg[:200])
-            return j.get("data") or {}
+        try:
+            j = r.json()
+        except Exception:
+            raise ErxesError(f"erxes хариу буруу ({r.status_code}): {r.text[:120]}")
+        errs = j.get("errors")
+        if errs:
+            msg = errs[0].get("message", "")
+            if retry and ("Login required" in msg or "Unauthorized" in msg):
+                with self._lock:
+                    if self._s is s:          # өөр thread аль хэдийн шинэчилсэн бол дахин нэвтрэхгүй
+                        self._s = None
+                return self.gql(query, variables, retry=False)
+            raise ErxesError(msg[:200])
+        return j.get("data") or {}
 
     def _is_transient(self, e: Exception) -> bool:
         """erxes-ийн сервер ачаалалтай үед 504/timeout өгдөг — түр зуурын алдаа."""

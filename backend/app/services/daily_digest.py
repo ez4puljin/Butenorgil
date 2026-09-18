@@ -346,18 +346,53 @@ def send_daily_digest(notify: bool = True) -> str:
 _CACHE_TTL = 300
 _cache: dict = {"at": None, "data": None}
 _cache_lock = threading.Lock()
+# Нэг л thread цуглуулна (single-flight). Өмнө нь кэш хуучирмагц Dashboard нээсэн
+# хэрэглэгч БҮР collect_digest()-ийг зэрэг ажиллуулж (тус бүр 2 DB холболт +
+# erxes дуудлага) 100 холболтын pool дүүрч сервер бүхэлдээ зогсдог байсан.
+_build_lock = threading.Lock()
+_BUILD_WAIT_SEC = 20     # бэлэн өгөгдөлгүй үед барилт дуусахыг хүлээх дээд хугацаа
+
+
+def _cached() -> tuple:
+    with _cache_lock:
+        at, data = _cache["at"], _cache["data"]
+    fresh = (at is not None and data is not None
+             and (datetime.utcnow() - at).total_seconds() < _CACHE_TTL)
+    return fresh, data
 
 
 def cached_digest(refresh: bool = False) -> dict:
-    """Кэшлэсэн тайлан. refresh=True бол шинээр цуглуулна."""
-    with _cache_lock:
-        at, data = _cache["at"], _cache["data"]
-        fresh = (at is not None and data is not None
-                 and (datetime.utcnow() - at).total_seconds() < _CACHE_TTL)
+    """Кэшлэсэн тайлан. refresh=True бол шинээр цуглуулна.
+
+    • Шинэхэн кэш → шууд.
+    • Хуучирсан ч өгөгдөл байгаа, өөр thread аль хэдийн цуглуулж байгаа → хуучин
+      өгөгдлийг (stale=True) шууд буцаана — DB холболт барьж хүлээхгүй.
+    • Огт өгөгдөлгүй → цуглуулалтыг дээд тал нь _BUILD_WAIT_SEC хүлээнэ, эс бол
+      pending=True буцаана (frontend дараа дахин асууна)."""
+    fresh, data = _cached()
+    if fresh and not refresh:
+        return {**data, "cached": True}
+    if not _build_lock.acquire(blocking=False):
+        # Өөр thread цуглуулж байна
+        if data is not None and not refresh:
+            return {**data, "cached": True, "stale": True}
+        if not _build_lock.acquire(timeout=_BUILD_WAIT_SEC):
+            fresh, data = _cached()
+            if data is not None:
+                return {**data, "cached": True, "stale": True}
+            return {"date": datetime.utcnow().date().isoformat(), "day": "",
+                    "generated_at": datetime.utcnow().isoformat(timespec="seconds"),
+                    "sections": [], "counts": {"ok": 0, "warn": 0, "bad": 0, "none": 0},
+                    "cached": False, "pending": True}
+    try:
+        # Lock авах хооронд өөр thread цуглуулж дууссан байж болно
+        fresh, data = _cached()
         if fresh and not refresh:
             return {**data, "cached": True}
-    d = collect_digest()
-    with _cache_lock:
-        _cache["at"] = datetime.utcnow()
-        _cache["data"] = d
-    return {**d, "cached": False}
+        d = collect_digest()
+        with _cache_lock:
+            _cache["at"] = datetime.utcnow()
+            _cache["data"] = d
+        return {**d, "cached": False}
+    finally:
+        _build_lock.release()
