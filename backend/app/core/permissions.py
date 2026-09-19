@@ -32,6 +32,7 @@ PERMISSION_MANIFEST = [
     {"key": "price_check",         "label": "Үнэ харах",       "universal": True},
     {"key": "hall_count",          "label": "Заалны тооллого", "universal": True},
     {"key": "pallets",             "label": "Поддон хураалт"},
+    {"key": "custom_master",       "label": "Нэмэлт талбар (мастер)"},
     {"key": "expiration_tracking", "label": "Хугацааны хяналт", "universal": True},
     {"key": "attendance",          "label": "Цаг бүртгэл",      "universal": True},
     {"key": "attendance_admin",    "label": "Цаг бүртгэл (Админ)"},

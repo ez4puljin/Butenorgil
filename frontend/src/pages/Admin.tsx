@@ -81,6 +81,7 @@ const FALLBACK_PAGE_KEYS = [
   { key: "price_check",         label: "Үнэ харах" },
   { key: "hall_count",          label: "Заалны тооллого" },
   { key: "pallets",             label: "Поддон хураалт" },
+  { key: "custom_master",       label: "Нэмэлт талбар (мастер)" },
   { key: "expiration_tracking", label: "Хугацааны хяналт" },
   { key: "attendance",          label: "Цаг бүртгэл" },
   { key: "attendance_admin",    label: "Цаг бүртгэл (Админ)" },

@@ -14,6 +14,7 @@ from app.services.price_refresh import refresh_prices_from_file
 from app.services.refresh_prices_from_income_report import refresh_prices_from_income_report
 from app.services.refresh_stock_from_balance import refresh_stock_from_balance_report
 from app.models.import_log import ImportLog
+from app.services.custom_master import after_import as custom_after_import
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -131,6 +132,8 @@ async def run_master_merge(
 
         master_path = result.get("master_path") or str(OUTPUT_DIR / "master_latest.xlsx")
         refresh_products_from_master(db, master_path)
+        # Нэмэлт талбар: код өөрчлөгдсөн барааг зангуугаар холбож, мастер Excel-д баганаа нэмнэ
+        result["custom_master"] = custom_after_import(db, "product", Path(master_path), by=(u.username or "import"))
 
         log.status = "ok"
         log.message = "done"
@@ -185,6 +188,12 @@ async def upload_and_run(
         if meta["refresh_master"]:
             master_path = result.get("master_path") or str(OUTPUT_DIR / "master_latest.xlsx")
             refresh_products_from_master(db, master_path)
+            result["custom_master"] = custom_after_import(db, "product", Path(master_path), by=(u.username or "import"))
+
+        if import_key == "customer_info":
+            # Харилцагчийн нэмэлт талбар: код өөрчлөгдсөнийг холбож, файлд баганаа нэмнэ
+            cust_path = Path(result.get("out_path") or str(OUTPUT_DIR / "customer_info_last.xlsx"))
+            result["custom_master"] = custom_after_import(db, "customer", cust_path, by=(u.username or "import"))
 
         if meta.get("refresh_prices"):
             price_result = refresh_prices_from_file(db, str(saved_path))

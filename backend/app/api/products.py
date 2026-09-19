@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_role
 from app.models.product import Product
+from app.services.custom_master import values_map as _custom_values
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -61,12 +62,14 @@ def search_products(
     exact = [r for r in rows if r.barcode == q]
     partial = [r for r in rows if r.barcode != q]
     ordered = exact + partial
+    custom = _custom_values(db, "product", [r.item_code for r in ordered])   # нэмэлт талбар (ж: Ачааны ангилал)
     return [
         {
             "id": r.id, "item_code": r.item_code, "name": r.name, "brand": r.brand,
             "unit_weight": r.unit_weight, "warehouse_tag_id": r.warehouse_tag_id,
             "warehouse_name": r.warehouse_name, "pack_ratio": r.pack_ratio,
             "barcode": r.barcode or "",
+            "custom": custom.get(r.item_code, {}),
         }
         for r in ordered
     ]
