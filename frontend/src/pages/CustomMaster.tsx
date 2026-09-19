@@ -70,8 +70,35 @@ export default function CustomMasterPage() {
   const [dirty, setDirty] = useState<Record<string, Vals>>({});
   const [savingCode, setSavingCode] = useState<string | null>(null);
   const SIZE = 100;
-  useEffect(() => { setPage(1); setFField(""); setFValue("__any__"); setEGroup(""); setDirty({}); }, [entity]);
-  useEffect(() => { setPage(1); }, [dq, onlyFilled, fField, fValue, eGroup]);
+  // Entity солих: хуучин мөр/мета/шүүлтийг ТЭР ДАРУЙ (нэг render дотор) цэвэрлэнэ — өөр баганатай хуучин хүснэгт огт харагдахгүй
+  const switchEntity = (k: Entity) => { if (k === entity) return; setEntity(k); setMeta(null); setRows([]); setTotal(0); setPage(1); setFField(""); setFValue("__any__"); setEGroup(""); setDirty({}); setSel(new Set()); setSelAll(false); };
+  useEffect(() => { setPage(1); setSel(new Set()); setSelAll(false); }, [dq, onlyFilled, fField, fValue, eGroup]);
+
+  /* ── Олноор засах (сонголт) ── */
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [selAll, setSelAll] = useState(false);          // шүүлтэнд таарах БҮХ мөр (хуудаснаас гадуур ч)
+  const [bulkField, setBulkField] = useState("");
+  const [bulkValue, setBulkValue] = useState<string | boolean>("");
+  const [bulking, setBulking] = useState(false);
+  const toggleSel = (code: string) => setSel((st) => { const n = new Set(st); if (n.has(code)) n.delete(code); else n.add(code); return n; });
+  const togglePage = () => setSel((st) => { const all = rows.length > 0 && rows.every((r) => st.has(r.code)); const n = new Set(st); rows.forEach((r) => (all ? n.delete(r.code) : n.add(r.code))); return n; });
+  const selCount = selAll ? total : sel.size;
+  const applyBulk = async (clear = false) => {
+    const f = fields.find((x) => x.key === bulkField);
+    if (!f) return;
+    const v = clear ? "" : (f.ftype === "bool" ? Boolean(bulkValue) : String(bulkValue));
+    if (!clear && v === "") { flash("err", "Утга оруулна уу"); return; }
+    if (!confirm(`${selCount} мөрийн «${f.label}» талбарыг ${clear ? "хоослох" : `«${f.ftype === "bool" ? (v ? "Тийм" : "Үгүй") : v}» болгох`} уу?`)) return;
+    setBulking(true);
+    try {
+      const r = await api.post("/custom-master/records/bulk", { entity, values: { [bulkField]: v }, codes: selAll ? [] : Array.from(sel),
+        all_matching: selAll, q: dq, only_filled: onlyFilled, field: fField, value: fField ? fValue : "", erkhet_group: eGroup });
+      const d = r.data;
+      flash("ok", `${d.updated} мөр шинэчлэгдлээ${d.skipped_group ? `, ${d.skipped_group} нь бүлэгт хамаарахгүй тул алгасав` : ""}`);
+      setSel(new Set()); setSelAll(false); setDirty({}); loadRows(); loadMeta();
+    } catch (e) { flash("err", errMsg(e, "Олноор засахад алдаа")); }
+    finally { setBulking(false); }
+  };
 
   const loadRows = useCallback(async () => {
     setLoading(true);
@@ -205,7 +232,7 @@ export default function CustomMasterPage() {
         </div>
         <div className="flex rounded-xl bg-gray-100 p-0.5">
           {ENTITY_TABS.map(([k, l]) => (
-            <button key={k} onClick={() => setEntity(k)} className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold ${entity === k ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>{l}</button>
+            <button key={k} onClick={() => switchEntity(k)} className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold ${entity === k ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>{l}</button>
           ))}
         </div>
         <div className="flex rounded-xl bg-gray-100 p-0.5">
@@ -252,6 +279,22 @@ export default function CustomMasterPage() {
             </div>
           </div>
 
+          {canEdit && selCount > 0 && (() => { const bf = fields.find((x) => x.key === bulkField); return (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-[12.5px] text-violet-900">
+              <span className="font-semibold">Сонгосон: {selCount.toLocaleString()} мөр</span>
+              {!selAll && total > rows.length && <button onClick={() => setSelAll(true)} className="rounded-lg border border-violet-300 px-2 py-0.5 text-[11.5px] hover:bg-violet-100">Бүх илэрцийг сонгох ({total.toLocaleString()})</button>}
+              {selAll && <button onClick={() => setSelAll(false)} className="rounded-lg border border-violet-300 px-2 py-0.5 text-[11.5px] hover:bg-violet-100">Зөвхөн чеклэснийг ({sel.size})</button>}
+              <select value={bulkField} onChange={(e) => { setBulkField(e.target.value); setBulkValue(""); }} className="rounded-lg border border-violet-200 bg-white px-2 py-1 text-[12.5px] outline-none">
+                <option value="">Талбар сонгох…</option>{fields.map((f) => <option key={f.key} value={f.key}>{f.label}{f.group_filter ? ` (${f.group_filter})` : ""}</option>)}
+              </select>
+              {bf && bf.ftype === "select" && <select value={String(bulkValue)} onChange={(e) => setBulkValue(e.target.value)} className="rounded-lg border border-violet-200 bg-white px-2 py-1 text-[12.5px] outline-none"><option value="">—</option>{bf.options.map((o) => <option key={o} value={o}>{o}</option>)}</select>}
+              {bf && bf.ftype === "bool" && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(bulkValue)} onChange={(e) => setBulkValue(e.target.checked)} className="accent-violet-600" />Тийм</label>}
+              {bf && (bf.ftype === "text" || bf.ftype === "number" || bf.ftype === "date") && <input value={String(bulkValue)} onChange={(e) => setBulkValue(e.target.value)} type={bf.ftype === "date" ? "date" : "text"} inputMode={bf.ftype === "number" ? "decimal" : undefined} placeholder="Утга…" className="w-44 rounded-lg border border-violet-200 bg-white px-2 py-1 text-[12.5px] outline-none" />}
+              <button onClick={() => applyBulk(false)} disabled={!bf || bulking} className="inline-flex items-center gap-1 rounded-lg bg-violet-600 px-2.5 py-1 text-[12px] font-semibold text-white disabled:opacity-40">{bulking ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}Бүгдэд оноох</button>
+              <button onClick={() => applyBulk(true)} disabled={!bf || bulking} className="rounded-lg border border-violet-300 px-2.5 py-1 text-[12px] font-semibold disabled:opacity-40">Хоослох</button>
+              <button onClick={() => { setSel(new Set()); setSelAll(false); }} className="ml-auto rounded-lg p-1 text-violet-500 hover:bg-violet-100" title="Сонголт цуцлах"><X size={14} /></button>
+            </div>); })()}
+
           {dirtyCount > 0 && (
             <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12.5px] text-emerald-800">
               Хадгалаагүй өөрчлөлт: {dirtyCount} мөр
@@ -264,6 +307,7 @@ export default function CustomMasterPage() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[900px] text-[12.5px]">
                 <thead className="bg-gray-50 text-[11px] uppercase tracking-wider text-gray-500"><tr>
+                  {canEdit && <th className="w-8 px-2 py-2"><input type="checkbox" title="Энэ хуудасны бүх мөр" checked={rows.length > 0 && rows.every((r) => sel.has(r.code))} onChange={togglePage} className="h-4 w-4 accent-violet-600" /></th>}
                   <th className="px-3 py-2 text-left">Код</th><th className="px-3 py-2 text-left">Нэр</th>
                   {INFO_COLS[entity].map(([k, l]) => <th key={k} className="px-3 py-2 text-left">{l}</th>)}
                   {fields.map((f) => <th key={f.key} className="bg-amber-50/70 px-3 py-2 text-left text-amber-800" title={f.group_filter ? `Зөвхөн «${f.group_filter}» бүлэгт` : ""}>{f.label}{f.group_filter && <span className="ml-1 font-normal normal-case text-amber-500">({f.group_filter})</span>}</th>)}
@@ -271,7 +315,8 @@ export default function CustomMasterPage() {
                 </tr></thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr key={r.code} className={`border-t border-gray-50 ${dirty[r.code] ? "bg-emerald-50/40" : "hover:bg-gray-50/60"}`}>
+                    <tr key={r.code} className={`border-t border-gray-50 ${dirty[r.code] ? "bg-emerald-50/40" : (selAll || sel.has(r.code)) ? "bg-violet-50/50" : "hover:bg-gray-50/60"}`}>
+                      {canEdit && <td className="px-2 py-1.5"><input type="checkbox" checked={selAll || sel.has(r.code)} disabled={selAll} onChange={() => toggleSel(r.code)} className="h-4 w-4 accent-violet-600" /></td>}
                       <td className="whitespace-nowrap px-3 py-1.5 font-mono text-gray-600">
                         {r.code}
                         {r.prev_codes.length > 0 && <span title={`Өмнөх код: ${r.prev_codes.map((p) => `${p.code} (${fmtDate(p.at, true)}, ${p.matched?.join("/") || p.by})`).join("; ")}`} className="ml-1 inline-flex items-center text-sky-500"><History size={11} /></span>}

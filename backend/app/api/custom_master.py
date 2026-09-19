@@ -175,6 +175,14 @@ def list_records(
     db: Session = Depends(get_db), _=Depends(get_current_user),
 ):
     _entity(entity)
+    out = _filtered(db, entity, q, only_filled, field, value, erkhet_group)
+    total = len(out)
+    start = (page - 1) * size
+    return {"total": total, "page": page, "size": size, "items": out[start:start + size]}
+
+
+def _filtered(db: Session, entity: str, q: str, only_filled: bool, field: str, value: str, erkhet_group: str) -> list[dict]:
+    """Одоогийн жагсаалт + бичлэгүүдийг шүүнэ (жагсаалт ба bulk «бүх илэрц» хоёулаа үүнийг хэрэглэнэ)."""
     rows = cm.current_rows(entity)
     recs = {r.code: r for r in db.query(CustomRecord).filter(CustomRecord.entity == entity).all()}
     qn = cm.norm_text(q)
@@ -203,9 +211,37 @@ def list_records(
                     "status": rec.status if rec else "", "updated_by": rec.updated_by if rec else "",
                     "updated_at": rec.updated_at.isoformat(timespec="minutes") if rec and rec.updated_at else None,
                     "prev_codes": cm._j(rec.prev_codes, []) if rec else []})
-    total = len(out)
-    start = (page - 1) * size
-    return {"total": total, "page": page, "size": size, "items": out[start:start + size]}
+    return out
+
+
+class BulkIn(BaseModel):
+    entity: str
+    values: dict                      # {key: value}; хоосон утга = тэр талбарыг хоослох
+    codes: list[str] = []             # сонгосон кодууд
+    all_matching: bool = False        # True бол шүүлтэнд таарах БҮХ мөр (codes хэрэглэхгүй)
+    q: str = ""
+    only_filled: bool = False
+    field: str = ""
+    value: str = ""
+    erkhet_group: str = ""
+
+
+@router.post("/records/bulk")
+def bulk_records(body: BulkIn, request: Request, db: Session = Depends(get_db), u: User = Depends(require_role(*EDIT_ROLES))):
+    _entity(body.entity)
+    codes = [x["code"] for x in _filtered(db, body.entity, body.q, body.only_filled, body.field, body.value, body.erkhet_group)] \
+        if body.all_matching else body.codes
+    if not codes:
+        raise HTTPException(400, "Мөр сонгоогүй байна")
+    if len(codes) > 20000:
+        raise HTTPException(400, "Хэт олон мөр")
+    try:
+        res = cm.bulk_update(db, body.entity, codes, body.values, by=_who(u))
+    except cm.CustomMasterError as e:
+        raise HTTPException(400, str(e))
+    audit(db, request, u, action="custom_record_bulk", entity_type=f"custom_{body.entity}", entity_id=0,
+          extra=f"{res['updated']}/{len(codes)}: {json.dumps(body.values, ensure_ascii=False)[:200]}", autocommit=True)
+    return res
 
 
 @router.get("/records/{entity}/{code}")

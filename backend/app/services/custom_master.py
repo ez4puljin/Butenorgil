@@ -595,6 +595,69 @@ def after_import(db: Session, entity: str, path: Optional[Path] = None, by: str 
         out["sync_error"] = f"{type(e).__name__}: {e}"
     try:
         out["excel"] = apply_to_excel(db, entity, path)
+        current_rows(entity, path)   # кэшийг урьдчилан дулаацуулна (дараагийн хүсэлт хүлээхгүй)
     except Exception as e:   # noqa: BLE001
         out["excel_error"] = f"{type(e).__name__}: {e}"
     return out
+
+
+def bulk_update(db: Session, entity: str, codes: list[str], patch: dict, by: str,
+                rows: list[dict] | None = None) -> dict:
+    """Олон бичлэгт нэг дор утга оноох. patch: {key: value}; value хоосон/None бол тэр талбарыг хоослоно.
+    «Зөвхөн бүлэгт» талбарыг тухайн бүлгийн бус бичлэгт оноохгүй (skipped_group)."""
+    fields = active_fields(db, entity)
+    fmap = {f.key: f for f in fields}
+    for k in patch:
+        if k not in fmap:
+            raise CustomMasterError(f"Тодорхойгүй талбар: {k}")
+    clear_keys = [k for k, v in patch.items() if v is None or (isinstance(v, str) and not v.strip())]
+    clean = validate_values(fields, {k: v for k, v in patch.items() if k not in clear_keys})
+    if not clean and not clear_keys:
+        raise CustomMasterError("Оноох утга алга")
+    rows = rows if rows is not None else current_rows(entity)
+    by_code = {x["code"]: x for x in rows}
+    codes = [c for c in dict.fromkeys(codes) if c]
+    recs = {r.code: r for r in db.query(CustomRecord).filter(CustomRecord.entity == entity, CustomRecord.code.in_(codes)).all()} if codes else {}
+    now = datetime.utcnow()
+    updated = 0
+    skipped_unknown: list[str] = []
+    skipped_group = 0
+    unchanged = 0
+    for code in codes:
+        row = by_code.get(code)
+        rec = recs.get(code)
+        if row is None and rec is None:
+            skipped_unknown.append(code)
+            continue
+        cur = _j(rec.values, {}) if rec else {}
+        new = dict(cur)
+        eff_group = str(clean.get(GROUP_KEY, cur.get(GROUP_KEY, "")))
+        skipped_here = False
+        for k, v in clean.items():
+            f = fmap[k]
+            if f.group_filter and eff_group != f.group_filter:
+                skipped_here = True
+                continue
+            new[k] = v
+        for k in clear_keys:
+            new.pop(k, None)
+        if skipped_here:
+            skipped_group += 1
+        if new == cur:
+            if not skipped_here:
+                unchanged += 1
+            continue
+        if rec is None:
+            rec = CustomRecord(entity=entity, code=code, status="active")
+            db.add(rec)
+        if row is not None:
+            rec.name = row["name"]
+            rec.anchors = json.dumps(row["anchors"], ensure_ascii=False)
+            rec.status = "active"
+            rec.seen_at = now
+        rec.values = json.dumps(new, ensure_ascii=False)
+        rec.updated_by = by
+        rec.updated_at = now
+        updated += 1
+    db.commit()
+    return {"updated": updated, "selected": len(codes), "unchanged": unchanged, "skipped_group": skipped_group, "skipped_unknown": skipped_unknown[:20]}
