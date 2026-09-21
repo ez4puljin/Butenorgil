@@ -21,16 +21,16 @@ type Tpl = { id: number; name: string; length_cm: number; width_cm: number; heig
 type Prod = { item_code: string; name: string; brand?: string; warehouse_name?: string; barcode?: string;
   pack_ratio: number; unit_weight: number; box_weight_kg?: number };
 type Calc = { boxes_per_pallet: number; pcs_per_box: number; pcs_per_pallet: number; box_weight_kg: number;
-  pallet_weight_kg: number; total_height_cm: number; stack_height_cm: number; pallet_length_cm: number;
+  unit_weight_kg: number; pallet_weight_kg: number; total_height_cm: number; stack_height_cm: number; pallet_length_cm: number;
   pallet_width_cm: number; layer_area_cm2: number; pallet_area_cm2: number; area_fill_pct: number | null; warnings: string[] };
 type Cfg = { item_code: string; template_id: number; template_name: string; box_length_cm: number; box_width_cm: number;
   box_height_cm: number; boxes_per_layer: number; layers: number; pcs_per_box_override: number;
-  box_weight_kg_override: number; note: string; updated_by: string; updated_at: string | null; product: Prod; calc: Calc };
+  unit_weight_kg_override: number; box_weight_kg_override: number; note: string; updated_by: string; updated_at: string | null; product: Prod; calc: Calc };
 type Form = { template_id: number; box_length_cm: string; box_width_cm: string; box_height_cm: string;
-  boxes_per_layer: string; layers: string; pcs_per_box_override: string; box_weight_kg_override: string; note: string };
+  boxes_per_layer: string; layers: string; pcs_per_box_override: string; unit_weight_kg_override: string; box_weight_kg_override: string; note: string };
 
 const EMPTY_FORM: Form = { template_id: 0, box_length_cm: "", box_width_cm: "", box_height_cm: "",
-  boxes_per_layer: "", layers: "", pcs_per_box_override: "", box_weight_kg_override: "", note: "" };
+  boxes_per_layer: "", layers: "", pcs_per_box_override: "", unit_weight_kg_override: "", box_weight_kg_override: "", note: "" };
 const EDIT_ROLES = ["admin", "supervisor", "manager", "warehouse_clerk"];
 
 const n = (s: string | number) => { const v = parseFloat(String(s).replace(",", ".")); return Number.isFinite(v) ? v : 0; };
@@ -41,7 +41,8 @@ const errMsg = (e: any, f: string) => (typeof e?.response?.data?.detail === "str
 /* Frontend дээр бодох (backend calc-тай ижил томьёо) — оруулж байх үед шууд харуулна */
 function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
   const pcsBox = n(f.pcs_per_box_override) > 0 ? n(f.pcs_per_box_override) : (p?.pack_ratio ?? 0);
-  const boxW = n(f.box_weight_kg_override) > 0 ? n(f.box_weight_kg_override) : (p?.unit_weight ?? 0) * pcsBox;
+  const unitW = n(f.unit_weight_kg_override) > 0 ? n(f.unit_weight_kg_override) : (p?.unit_weight ?? 0);
+  const boxW = n(f.box_weight_kg_override) > 0 ? n(f.box_weight_kg_override) : unitW * pcsBox;
   const boxes = Math.max(0, Math.floor(n(f.boxes_per_layer))) * Math.max(0, Math.floor(n(f.layers)));
   const stack = Math.floor(n(f.layers)) * n(f.box_height_cm);
   const th = (tpl?.height_cm ?? 0) + stack;
@@ -54,7 +55,7 @@ function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
   if (tpl && tpl.max_weight_kg > 0 && weight > tpl.max_weight_kg) w.push(`Жин ${weight.toFixed(0)} кг > даац ${tpl.max_weight_kg} кг`);
   if (pcsBox <= 0) w.push("Хайрцаг дахь ширхэг мэдэгдэхгүй (мастерт 0) — гараар оруулна уу");
   if (boxW <= 0) w.push("Хайрцагны жин мэдэгдэхгүй (мастерт жин 0) — гараар оруулна уу");
-  return { boxes_per_pallet: boxes, pcs_per_box: pcsBox, pcs_per_pallet: boxes * pcsBox, box_weight_kg: boxW,
+  return { boxes_per_pallet: boxes, pcs_per_box: pcsBox, pcs_per_pallet: boxes * pcsBox, unit_weight_kg: unitW, box_weight_kg: boxW,
     pallet_weight_kg: weight, total_height_cm: th, stack_height_cm: stack, pallet_length_cm: tpl?.length_cm ?? 0,
     pallet_width_cm: tpl?.width_cm ?? 0, layer_area_cm2: layerArea, pallet_area_cm2: palletArea,
     area_fill_pct: palletArea > 0 ? layerArea / palletArea * 100 : null, warnings: w };
@@ -112,6 +113,7 @@ export default function PalletsPage() {
         template_id: cfg.template_id, box_length_cm: String(cfg.box_length_cm || ""), box_width_cm: String(cfg.box_width_cm || ""),
         box_height_cm: String(cfg.box_height_cm || ""), boxes_per_layer: String(cfg.boxes_per_layer || ""), layers: String(cfg.layers || ""),
         pcs_per_box_override: cfg.pcs_per_box_override ? String(cfg.pcs_per_box_override) : "",
+        unit_weight_kg_override: cfg.unit_weight_kg_override ? String(cfg.unit_weight_kg_override) : "",
         box_weight_kg_override: cfg.box_weight_kg_override ? String(cfg.box_weight_kg_override) : "", note: cfg.note || "",
       } : { ...EMPTY_FORM, template_id: tpls[0]?.id ?? 0 });
       setTab("product");
@@ -126,7 +128,7 @@ export default function PalletsPage() {
       const r = await api.put(`/pallets/products/${encodeURIComponent(prod.item_code)}`, {
         template_id: form.template_id, box_length_cm: n(form.box_length_cm), box_width_cm: n(form.box_width_cm),
         box_height_cm: n(form.box_height_cm), boxes_per_layer: Math.floor(n(form.boxes_per_layer)), layers: Math.floor(n(form.layers)),
-        pcs_per_box_override: n(form.pcs_per_box_override), box_weight_kg_override: n(form.box_weight_kg_override), note: form.note,
+        pcs_per_box_override: n(form.pcs_per_box_override), unit_weight_kg_override: n(form.unit_weight_kg_override), box_weight_kg_override: n(form.box_weight_kg_override), note: form.note,
       });
       setExisting(r.data); flash("ok", `${prod.item_code} хадгалагдлаа`); loadList();
     } catch (e: any) { flash("err", errMsg(e, "Хадгалж чадсангүй")); }
@@ -263,7 +265,8 @@ export default function PalletsPage() {
                   {F("boxes_per_layer", "Нэг үед хайрцаг", "ш", "жишээ 16")}
                   {F("layers", "Үе (давхар)", "", "жишээ 4")}
                   {F("pcs_per_box_override", "Ширхэг/хайрцаг засах", undefined, `мастер ${fmt(prod.pack_ratio, 0)}`)}
-                  {F("box_weight_kg_override", "Хайрцагны жин засах", "кг", `мастер ${fmt(prod.unit_weight * prod.pack_ratio, 2)}`)}
+                  {F("unit_weight_kg_override", "Хувийн жин (1 ш)", "кг", `мастер ${fmt(prod.unit_weight, 3)}`)}
+                  {F("box_weight_kg_override", "Хайрцагны жин засах", "кг", `бодолт ${fmt(live.unit_weight_kg * live.pcs_per_box, 2)}`)}
                   <label className="col-span-2 block text-[11px] text-gray-500 sm:col-span-2">Тэмдэглэл
                     <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} disabled={!canEdit}
                       className="mt-0.5 w-full rounded-lg border border-gray-200 px-2.5 py-2 text-[13px] outline-none focus:border-emerald-400 disabled:bg-gray-50" />
@@ -291,8 +294,10 @@ export default function PalletsPage() {
               <div className="grid grid-cols-2 gap-2">
                 {Stat("Нийт хайрцаг", fmt(live.boxes_per_pallet, 0), "ш", "text-amber-700")}
                 {Stat("Нийт ширхэг", fmt(live.pcs_per_pallet, 0), "ш", "text-amber-700")}
-                {Stat("Барааны жин", fmt(live.pallet_weight_kg, 1), "кг", "text-gray-800")}
+                {Stat("Хувийн жин (1 ш)", fmt(live.unit_weight_kg, 3), "кг")}
                 {Stat("Хайрцагны жин", fmt(live.box_weight_kg, 2), "кг")}
+                {Stat("Поддоны нийт жин", fmt(live.pallet_weight_kg, 1), "кг", "text-gray-800")}
+                <div className="col-span-2 -mt-1 text-[10.5px] text-gray-500">Хайрцагны жин = ширхэг/хайрцаг × хувийн жин; Поддоны нийт жин = нийт хайрцаг × хайрцагны жин (поддоны өөрийн жин ороогүй)</div>
               </div>
             </div>
             <div className="rounded-2xl bg-gradient-to-br from-sky-50 to-blue-50 p-3">

@@ -14,7 +14,8 @@
   boxes_per_pallet = boxes_per_layer × layers
   pcs_per_box      = override > 0 ? override : Product.pack_ratio
   pcs_per_pallet   = boxes_per_pallet × pcs_per_box
-  box_weight_kg    = override > 0 ? override : Product.unit_weight × pcs_per_box
+  unit_weight_kg   = override > 0 ? override : Product.unit_weight   (ширхгийн хувийн жин)
+  box_weight_kg    = override > 0 ? override : unit_weight_kg × pcs_per_box
   pallet_weight_kg = boxes_per_pallet × box_weight_kg   (+ поддоны жин орохгүй)
   total_height_cm  = template.height_cm + layers × box_height_cm   (шалнаас дээд хайрцаг)
   footprint        = template.length × width; нэг үеийн талбай = boxes_per_layer × box_L × box_W
@@ -64,7 +65,8 @@ def _product_dict(p: Product) -> dict:
 
 def calc(cfg: ProductPallet, tpl: Optional[PalletTemplate], p: Optional[Product]) -> dict:
     pcs_per_box = cfg.pcs_per_box_override if cfg.pcs_per_box_override > 0 else float((p.pack_ratio if p else 0) or 0)
-    box_w = cfg.box_weight_kg_override if cfg.box_weight_kg_override > 0 else float((p.unit_weight if p else 0) or 0) * pcs_per_box
+    unit_w = cfg.unit_weight_kg_override if cfg.unit_weight_kg_override > 0 else float((p.unit_weight if p else 0) or 0)
+    box_w = cfg.box_weight_kg_override if cfg.box_weight_kg_override > 0 else unit_w * pcs_per_box
     boxes = int(cfg.boxes_per_layer or 0) * int(cfg.layers or 0)
     th = (tpl.height_cm if tpl else 0.0) + (cfg.layers or 0) * (cfg.box_height_cm or 0)
     layer_area = (cfg.boxes_per_layer or 0) * (cfg.box_length_cm or 0) * (cfg.box_width_cm or 0)
@@ -83,7 +85,7 @@ def calc(cfg: ProductPallet, tpl: Optional[PalletTemplate], p: Optional[Product]
         warnings.append("Хайрцагны жин мэдэгдэхгүй (мастерт жин 0) — гараар оруулна уу")
     return {
         "boxes_per_pallet": boxes, "pcs_per_box": pcs_per_box, "pcs_per_pallet": round(boxes * pcs_per_box, 3),
-        "box_weight_kg": round(box_w, 3), "pallet_weight_kg": round(weight, 2),
+        "unit_weight_kg": round(unit_w, 4), "box_weight_kg": round(box_w, 3), "pallet_weight_kg": round(weight, 2),
         "total_height_cm": round(th, 1), "stack_height_cm": round((cfg.layers or 0) * (cfg.box_height_cm or 0), 1),
         "pallet_length_cm": tpl.length_cm if tpl else 0, "pallet_width_cm": tpl.width_cm if tpl else 0,
         "layer_area_cm2": round(layer_area, 1), "pallet_area_cm2": round(pallet_area, 1),
@@ -97,7 +99,8 @@ def _cfg_dict(cfg: ProductPallet, tpl: Optional[PalletTemplate], p: Optional[Pro
         "item_code": cfg.item_code, "template_id": cfg.template_id, "template_name": tpl.name if tpl else "",
         "box_length_cm": cfg.box_length_cm, "box_width_cm": cfg.box_width_cm, "box_height_cm": cfg.box_height_cm,
         "boxes_per_layer": cfg.boxes_per_layer, "layers": cfg.layers,
-        "pcs_per_box_override": cfg.pcs_per_box_override, "box_weight_kg_override": cfg.box_weight_kg_override,
+        "pcs_per_box_override": cfg.pcs_per_box_override, "unit_weight_kg_override": cfg.unit_weight_kg_override,
+        "box_weight_kg_override": cfg.box_weight_kg_override,
         "note": cfg.note or "", "updated_by": cfg.updated_by or "", "updated_at": _iso(cfg.updated_at),
         "product": _product_dict(p) if p else {"item_code": cfg.item_code, "name": "", "pack_ratio": 0, "unit_weight": 0},
         "calc": calc(cfg, tpl, p),
@@ -218,6 +221,7 @@ class ProductPalletIn(BaseModel):
     boxes_per_layer: int = 0
     layers: int = 0
     pcs_per_box_override: float = 0
+    unit_weight_kg_override: float = 0
     box_weight_kg_override: float = 0
     note: str = ""
 
@@ -244,6 +248,7 @@ def upsert_product(item_code: str, body: ProductPalletIn, request: Request, db: 
     cfg.box_length_cm, cfg.box_width_cm, cfg.box_height_cm = max(body.box_length_cm, 0), max(body.box_width_cm, 0), body.box_height_cm
     cfg.boxes_per_layer, cfg.layers = int(body.boxes_per_layer), int(body.layers)
     cfg.pcs_per_box_override = max(body.pcs_per_box_override, 0)
+    cfg.unit_weight_kg_override = max(body.unit_weight_kg_override, 0)
     cfg.box_weight_kg_override = max(body.box_weight_kg_override, 0)
     cfg.note = body.note.strip()[:300]
     cfg.updated_by = str(getattr(u, "nickname", "") or getattr(u, "username", "") or "")
@@ -281,9 +286,9 @@ def export_xlsx(template_id: Optional[int] = None, db: Session = Depends(get_db)
     cols = ["Код", "Нэр", "Бренд", "Байршил tag", "Поддон загвар", "Поддон урт (см)", "Поддон өргөн (см)",
             "Поддон өндөр (см)", "Хайрцаг урт (см)", "Хайрцаг өргөн (см)", "Хайрцаг өндөр (см)",
             "Нэг үед (хайрцаг)", "Үе", "Нийт хайрцаг", "Ширхэг/хайрцаг", "Нийт ширхэг",
-            "Хайрцагны жин (кг)", "Поддоны бараа жин (кг)", "Өрөлтийн өндөр (см)", "Шалнаас дээд хайрцаг (см)",
+            "Хувийн жин (кг/ш)", "Хайрцагны жин (кг)", "Поддоны бараа жин (кг)", "Өрөлтийн өндөр (см)", "Шалнаас дээд хайрцаг (см)",
             "Талбайн дүүргэлт %", "Анхааруулга", "Тэмдэглэл", "Шинэчилсэн", "Хэн"]
-    widths = [10, 40, 18, 18, 18, 10, 10, 10, 10, 10, 10, 10, 6, 10, 10, 10, 12, 14, 12, 14, 10, 40, 30, 16, 12]
+    widths = [10, 40, 18, 18, 18, 10, 10, 10, 10, 10, 10, 10, 6, 10, 10, 10, 12, 12, 14, 12, 14, 10, 40, 30, 16, 12]
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     hf, hfont = PatternFill("solid", fgColor="1F4E78"), Font(color="FFFFFF", bold=True)
@@ -300,7 +305,7 @@ def export_xlsx(template_id: Optional[int] = None, db: Session = Depends(get_db)
         vals = [d["item_code"], p.get("name", ""), p.get("brand", ""), tags.get(d["item_code"], p.get("warehouse_name", "")),
                 d["template_name"], k["pallet_length_cm"], k["pallet_width_cm"], k["total_height_cm"] - k["stack_height_cm"],
                 d["box_length_cm"], d["box_width_cm"], d["box_height_cm"], d["boxes_per_layer"], d["layers"],
-                k["boxes_per_pallet"], k["pcs_per_box"], k["pcs_per_pallet"], k["box_weight_kg"], k["pallet_weight_kg"],
+                k["boxes_per_pallet"], k["pcs_per_box"], k["pcs_per_pallet"], k["unit_weight_kg"], k["box_weight_kg"], k["pallet_weight_kg"],
                 k["stack_height_cm"], k["total_height_cm"], k["area_fill_pct"], "; ".join(k["warnings"]), d["note"],
                 (d["updated_at"] or "")[:16].replace("T", " "), d["updated_by"]]
         for ci, v in enumerate(vals, 1):

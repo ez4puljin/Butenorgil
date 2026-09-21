@@ -43,6 +43,7 @@ class ProductPallet(Base):
     layers: Mapped[int] = mapped_column(Integer, default=0)
     # Мастерын утга буруу/хоосон үед гараар засах (0 = мастераас)
     pcs_per_box_override: Mapped[float] = mapped_column(Float, default=0.0)
+    unit_weight_kg_override: Mapped[float] = mapped_column(Float, default=0.0)   # ширхгийн хувийн жин (0 = мастераас)
     box_weight_kg_override: Mapped[float] = mapped_column(Float, default=0.0)
     note: Mapped[str] = mapped_column(String(300), default="")
 

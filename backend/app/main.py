@@ -411,6 +411,14 @@ def ensure_income_files_schema():
     os.makedirs(inc_dir, exist_ok=True)
 
 
+def ensure_product_pallets_schema():
+    """Поддон хураалт — unit_weight_kg_override багана (хувийн жин засах) хуучин суурьт нэмнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(product_pallets)")).fetchall()]
+        if cols and "unit_weight_kg_override" not in cols:
+            conn.execute(text("ALTER TABLE product_pallets ADD COLUMN unit_weight_kg_override FLOAT DEFAULT 0"))
+
+
 def ensure_balance_files_schema():
     """Үлдэгдлийн файл (balance_files) — ОН ХЭМЖЭЭСГҮЙ болгосон (өдөр бүр
     шинэчилнэ). Хэрэв хуучин (year-тэй) схем байвал устгаж, шинэ (зөвхөн kind)
@@ -1037,6 +1045,7 @@ def startup():
     ensure_product_yearly_movement_schema()
     ensure_income_files_schema()
     ensure_balance_files_schema()
+    ensure_product_pallets_schema()
     ensure_attendance_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()
