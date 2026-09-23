@@ -4,10 +4,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronLeft, ChevronRight, RefreshCw, Package, Truck,
   ChevronDown, Layers, Box, Scale, DollarSign,
-  PlusCircle, Pencil, ArrowRight, Weight, Trash2, UserRound, X, Save,
+  PlusCircle, Pencil, ArrowRight, Weight, Trash2, UserRound, X, Save, History,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
+import OrderHistoryModal from "../components/OrderHistoryModal";
 import { useLiveRefresh } from "../lib/liveEvents";
 import { STATUS_COLOR, STATUS_LABEL } from "../store/purchaseOrderStore";
 
@@ -162,6 +163,7 @@ export default function OrderDashboard() {
     orig: VehicleInfo | null };
   const [shipEdit, setShipEdit] = useState<ShipEdit | null>(null);
   const [shipSaving, setShipSaving] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [addingVehicle, setAddingVehicle] = useState(false);
   const [assignBusy, setAssignBusy] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -536,6 +538,11 @@ export default function OrderDashboard() {
             <button onClick={() => load()} disabled={loading} aria-label="Шинэчлэх" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-2.5 text-xs text-gray-600 hover:bg-gray-50 active:bg-gray-100 transition-colors">
               <RefreshCw size={13} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Шинэчлэх</span>
             </button>
+            {canEdit && (
+              <button onClick={() => setShowHistory(true)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-2.5 text-xs text-gray-600 hover:bg-gray-50 active:bg-gray-100 transition-colors" title="Захиалгын өөрчлөлтийн түүх">
+                <History size={13} /><span className="hidden sm:inline">Түүх</span>
+              </button>
+            )}
             <button onClick={() => navigate(`/order/${id}`)} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 text-xs font-semibold text-white shadow-sm hover:bg-[#005BB5] active:bg-[#004aad] transition-colors">
               <Pencil size={13} /> Дэлгэрэнгүй
             </button>
@@ -886,6 +893,10 @@ export default function OrderDashboard() {
           )}
         </div>
       </div>
+
+      {showHistory && (
+        <OrderHistoryModal orderId={order.id} orderLabel={`${order.order_date.split("-").join("/")} #${order.id}`} onClose={() => setShowHistory(false)} />
+      )}
 
       {shipEdit && (
         <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/30 p-0 sm:items-center sm:p-4" onClick={() => !shipSaving && setShipEdit(null)}>

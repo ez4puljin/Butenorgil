@@ -4,7 +4,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ChevronLeft, RefreshCw, CheckCircle2, Save, FileDown,
   Trash2, Plus, Search, X, Package, AlertCircle, CheckCheck,
-  Truck, RotateCcw, ChevronDown, ChevronUp, Columns3, Lock,
+  Truck, RotateCcw, ChevronDown, ChevronUp, Columns3, Lock, History,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useLiveRefresh } from "../lib/liveEvents";
@@ -17,6 +17,7 @@ import {
 } from "../store/purchaseOrderStore";
 import PDFExportModal from "../components/PDFExportModal";
 import ERPExcelModal from "../components/ERPExcelModal";
+import OrderHistoryModal from "../components/OrderHistoryModal";
 
 /* ── Багануудын харагдац ──────────────────────────────────────────────────
    Өмнө нь багана бүр захиалгын СТАТУСААР нуугддаг байсан: жишээ нь үнийн
@@ -183,6 +184,7 @@ export default function PurchaseOrderDetail() {
   const [liveUpdatePending, setLiveUpdatePending] = useState(false);
   const localActionAt = useRef<number>(0);
   const [showPDFModal, setShowPDFModal] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [showERPModal, setShowERPModal] = useState(false);
 
   // Багануудын харагдац (өгөгдмөл нь бүгд асаалттай) — [[COLUMN_GROUPS]]
@@ -2053,6 +2055,16 @@ export default function PurchaseOrderDetail() {
               <FileDown size={13} />
               PDF татах
             </button>
+            {["admin", "supervisor", "manager"].includes(eff) && (
+              <button
+                onClick={() => setShowHistory(true)}
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 active:bg-gray-100 transition-colors"
+                title="Захиалгын өөрчлөлтийн түүх"
+              >
+                <History size={13} />
+                Түүх
+              </button>
+            )}
             {(eff === "accountant" || eff === "admin") && effectiveStatus === "accounting" && (
               <button
                 onClick={revertStatus}
@@ -3539,6 +3551,10 @@ export default function PurchaseOrderDetail() {
       </div>
 
       {/* ── Modals ── */}
+      {showHistory && order && (
+        <OrderHistoryModal orderId={order.id} orderLabel={`${order.order_date} #${order.id}`}
+          initialBrand={brandMode && brandFilter ? brandFilter : undefined} onClose={() => setShowHistory(false)} />
+      )}
       {showPDFModal && (
         <PDFExportModal
           orderId={order.id}

@@ -34,3 +34,4 @@ from app.api.hall_count import router as hall_count_router
 from app.api.pallets import router as pallets_router
 from app.api.custom_master import router as custom_master_router
 from app.api.brand_orderers import router as brand_orderers_router
+from app.api.po_history import router as po_history_router
