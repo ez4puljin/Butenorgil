@@ -150,7 +150,8 @@ class ErkhetImportLog(Base):
     __tablename__ = "erkhet_import_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    purchase_order_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    purchase_order_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)   # 0 = receivings
+    receiving_session_id: Mapped[int] = mapped_column(Integer, index=True, default=0)     # Бараа тулгаж авах (нэгтгэсэн ERP)
     brand: Mapped[str] = mapped_column(String(200), default="")          # "" = бүх бренд
     qty_source: Mapped[str] = mapped_column(String(20), default="received")
     company: Mapped[str] = mapped_column(String(30), default="buten_orgil")

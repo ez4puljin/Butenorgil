@@ -893,6 +893,11 @@ def export_erp_excel(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "manager", "supervisor", "accountant")),
 ):
+    return _build_recv_erp_excel(session_id, body, db)
+
+
+def _build_recv_erp_excel(session_id: int, body: "ERPCfg", db: Session, as_bytes: bool = False):
+    """Нэгтгэсэн ERP Excel. as_bytes=True → (bytes, файлын нэр, мөрийн тоо, огноо, байршилгүй мөр)."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
@@ -1037,6 +1042,9 @@ def export_erp_excel(
     date_str = s.date.strftime("%Y%m%d")
     brand_part = re.sub(r"[\\/:*?\"<>|]", "_", brand_filter) if brand_filter else "all"
     filename = f"{date_str}_RECV{s.id}_{brand_part}.xlsx"
+    if as_bytes:
+        missing_loc = sum(1 for v in valid if not (v[4] or "").strip())
+        return data, filename, len(valid), date_val, missing_loc
     ascii_fallback = re.sub(r"[^\w\-.]", "_", filename.encode("ascii", "ignore").decode("ascii")) or f"RECV{s.id}.xlsx"
     utf8_quoted = quote(filename, safe="")
     return StreamingResponse(
@@ -1044,3 +1052,88 @@ def export_erp_excel(
         media_type=XLSX_MIME,
         headers={"Content-Disposition": f"attachment; filename={ascii_fallback}; filename*=UTF-8''{utf8_quoted}"},
     )
+
+
+
+# ── Эрхэт рүү ШУУД импортлох (нэгтгэсэн ERP) ──────────────────────────────────
+# Захиалгын ERP-тэй ижил: Гарчиг = Excel-ийн нэр, Төрөл = Бараа материалын орлого,
+# Файл = нэгтгэсэн ERP Excel. Үр дүнг Эрхэтийн «Ажлын захиалга» (queue)-аас хянана.
+from app.services import erkhet_import as _eimp  # noqa: E402
+from app.models.purchase_order import ErkhetImportLog  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+
+class ERPImportCfg(ERPCfg):
+    force: bool = False
+
+
+@router.get("/{session_id}/erkhet-imports")
+def list_recv_erkhet_imports(
+    session_id: int,
+    brand: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    u: User = Depends(get_current_user),
+):
+    q = db.query(ErkhetImportLog).filter(ErkhetImportLog.receiving_session_id == session_id)
+    if brand is not None:
+        q = q.filter(ErkhetImportLog.brand == brand.strip())
+    logs = q.order_by(ErkhetImportLog.id.desc()).limit(50).all()
+    _eimp.refresh_pending(db, logs)
+    return [_eimp.log_dict(r) for r in logs]
+
+
+@router.post("/{session_id}/erkhet-imports/{log_id}/refresh")
+def refresh_recv_erkhet_import(
+    session_id: int,
+    log_id: int,
+    db: Session = Depends(get_db),
+    u: User = Depends(get_current_user),
+):
+    from app.services.erkhet_client import ErkhetError
+    r = db.query(ErkhetImportLog).filter(ErkhetImportLog.id == log_id, ErkhetImportLog.receiving_session_id == session_id).first()
+    if not r:
+        raise HTTPException(404, "Импортын бүртгэл олдсонгүй")
+    try:
+        _eimp.refresh_logs(db, [r])
+    except ErkhetError as e:
+        raise HTTPException(502, str(e))
+    return {**_eimp.log_dict(r), "ok": True if r.status == "ok" else (False if r.status == "fail" else None),
+            "errors": [r.message] if r.status == "fail" and r.message else []}
+
+
+@router.post("/{session_id}/erkhet-import")
+def recv_erkhet_import(
+    session_id: int,
+    body: ERPImportCfg,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role(*_eimp.IMPORT_ROLES)),
+):
+    """Нэгтгэсэн ERP Excel-ийг үүсгээд Эрхэтийн «Бараа материалын орлого» импорт руу шууд илгээнэ."""
+    if (body.company or "") != _eimp.IMPORT_COMPANY:
+        raise HTTPException(400, _eimp.COMPANY_ERROR)
+    brand = (body.brand_filter or "").strip()
+    prev = _eimp.previous(db, brand=brand, recv_id=session_id)
+    if prev and not body.force:
+        return JSONResponse(status_code=409, content={
+            "detail": "Энэ тулгалтыг Эрхэт рүү өмнө импортолсон байна — дахин импортлобол орлого ДАВХАР бүртгэгдэнэ.",
+            "previous": [_eimp.log_dict(r) for r in prev[:5]],
+        })
+    try:
+        data, filename, nrows, date_val, missing_loc = _build_recv_erp_excel(session_id, body, db, as_bytes=True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Excel үүсгэхэд алдаа: {type(e).__name__}: {e}")
+    if nrows == 0:
+        raise HTTPException(400, "Эрхэт рүү илгээх мөр алга (тулгасан брендийн тоотой бараа байхгүй).")
+    if missing_loc:
+        raise HTTPException(400, f"{missing_loc} мөрийн «Барааны байршил» код хоосон байна — агуулах бүрийн ERP кодыг бөглөнө үү.")
+    year = date_val.year if date_val else datetime.now().year
+    log, res = _eimp.submit(db, data=data, filename=filename, nrows=nrows, year=year, company=body.company,
+                            brand=brand, qty_source="received", username=(u.username or ""), recv_id=session_id)
+    audit(db, request, u, action="receiving_erkhet_import", entity_type="receiving_session", entity_id=session_id,
+          after={"brand": brand, "title": log.title, "status": log.status, "erkhet_import_id": log.erkhet_import_id,
+                 "queue_id": log.queue_id, "doc_count": log.doc_count, "rows": nrows},
+          extra={"message": log.message[:500]} if log.message else None, autocommit=True)
+    return _eimp.response(log, res, year)

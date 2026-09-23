@@ -2608,20 +2608,14 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session,
 # «Файл импортлох» (/import/create/) формыг гараар бөглөхтэй ижил:
 #   Гарчиг = ERP Excel-ийн нэр, Төрөл = Бараа материалын орлого (inv_income), Файл = ERP Excel
 ERKHET_IMPORT_ROLES = ("admin", "accountant", "supervisor")
-ERKHET_IMPORT_KIND = "inv_income"
-ERKHET_IMPORT_COMPANY = "buten_orgil"      # Эрхэтийн нэвтрэх эрх нь Бүтэн-Оргил ХХК-ийнх
 
 
 class ErkhetImportIn(ERPExcelConfigIn):
     force: bool = False                    # өмнө импортолсон ч дахин импортлох
 
 
-def _erkhet_log_dict(r: ErkhetImportLog) -> dict:
-    return {"id": r.id, "brand": r.brand, "qty_source": r.qty_source, "title": r.title, "status": r.status,
-            "queue_id": r.queue_id or None,
-            "erkhet_import_id": r.erkhet_import_id or None, "erkhet_status": r.erkhet_status, "doc_count": r.doc_count,
-            "row_count": r.row_count, "message": r.message, "username": r.username,
-            "created_at": (r.created_at.isoformat() + "Z") if r.created_at else None}
+from app.services import erkhet_import as _eimp  # noqa: E402
+_erkhet_log_dict = _eimp.log_dict
 
 
 @router.get("/{order_id}/erkhet-imports")
@@ -2631,49 +2625,15 @@ def list_erkhet_imports(
     db: Session = Depends(get_db),
     u: User = Depends(get_current_user),
 ):
-    q = db.query(ErkhetImportLog).filter(ErkhetImportLog.purchase_order_id == order_id)
+    q = db.query(ErkhetImportLog).filter(ErkhetImportLog.purchase_order_id == order_id, ErkhetImportLog.receiving_session_id == 0)
     if brand is not None:
         q = q.filter(ErkhetImportLog.brand == brand.strip())
     logs = q.order_by(ErkhetImportLog.id.desc()).limit(50).all()
-    pending = [r for r in logs if r.status in ("queued", "unknown")]
-    if pending:
-        try:
-            _refresh_erkhet_logs(db, pending)
-        except Exception as e:                                   # noqa: BLE001
-            print(f"[erkhet] төлөв шинэчлэхэд алдаа: {e}")
+    _eimp.refresh_pending(db, logs)
     return [_erkhet_log_dict(r) for r in logs]
 
 
-def _local_since(r: ErkhetImportLog) -> str:
-    """Бүртгэлийн UTC цагийг Эрхэтийн queue-ийн локал «YYYY-MM-DD HH:MM» хэлбэрт (−2 мин)."""
-    from datetime import timedelta as _td
-    off = datetime.now().astimezone().utcoffset() or _td(0)
-    return (r.created_at + off - _td(minutes=2)).strftime("%Y-%m-%d %H:%M") if r.created_at else ""
-
-
-def _apply_erkhet_result(r: ErkhetImportLog, res: dict) -> None:
-    state = res.get("state") or "unknown"
-    r.status = state if state in ("ok", "fail", "queued") else "unknown"
-    if res.get("queue_id"):
-        r.queue_id = int(res["queue_id"])
-    r.erkhet_status = (res.get("queue_status") or "")[:100]
-    if res.get("import_id"):
-        r.erkhet_import_id = int(res["import_id"])
-    if res.get("count") is not None:
-        r.doc_count = int(res["count"] or 0)
-    msg = "; ".join(res.get("errors") or []) or (res.get("result") or "")
-    r.message = msg[:2000]
-
-
-def _refresh_erkhet_logs(db: Session, logs: list) -> None:
-    from app.services.erkhet_client import get_client
-    c = get_client()
-    for r in logs:
-        res = c.refresh_import(r.title, r.queue_id or 0, _local_since(r))
-        if res.get("state") == "missing" and not r.queue_id:
-            continue                                             # queue-д олдоогүй хэвээр — хэвээр үлдээнэ
-        _apply_erkhet_result(r, res)
-    db.commit()
+_refresh_erkhet_logs = _eimp.refresh_logs
 
 
 @router.post("/{order_id}/erkhet-imports/{log_id}/refresh")
@@ -2685,7 +2645,8 @@ def refresh_erkhet_import(
 ):
     """Эрхэтийн «Ажлын захиалга»-аас импортын одоогийн төлөвийг дахин уншина."""
     from app.services.erkhet_client import ErkhetError
-    r = db.query(ErkhetImportLog).filter(ErkhetImportLog.id == log_id, ErkhetImportLog.purchase_order_id == order_id).first()
+    r = db.query(ErkhetImportLog).filter(ErkhetImportLog.id == log_id, ErkhetImportLog.purchase_order_id == order_id,
+                                         ErkhetImportLog.receiving_session_id == 0).first()
     if not r:
         raise HTTPException(404, "Импортын бүртгэл олдсонгүй")
     try:
@@ -2705,20 +2666,13 @@ def erkhet_import(
     u: User = Depends(require_role(*ERKHET_IMPORT_ROLES)),
 ):
     """ERP Excel-ийг үүсгээд Эрхэтийн «Бараа материалын орлого» импорт руу шууд илгээнэ."""
-    from pathlib import Path as _P
-    from app.services.erkhet_client import ErkhetError, get_client
-
-    if (body.company or "") != ERKHET_IMPORT_COMPANY:
-        raise HTTPException(400, "Эрхэт рүү шууд импорт зөвхөн Бүтэн-Оргил ХХК-д тохируулагдсан. "
-                                 "Оргил-Хорумын файлыг Excel-ээр татаж гараар импортлоно уу.")
+    if (body.company or "") != _eimp.IMPORT_COMPANY:
+        raise HTTPException(400, _eimp.COMPANY_ERROR)
     brand = (body.brand_filter or "").strip()
     src = (body.qty_source or "received").strip()
 
     # Давхар орлогоос сэргийлэх: энэ захиалга+брендийг өмнө импортолсон (эсвэл үр дүн тодорхойгүй) бол
-    prev = (db.query(ErkhetImportLog)
-            .filter(ErkhetImportLog.purchase_order_id == order_id, ErkhetImportLog.brand == brand,
-                    ErkhetImportLog.status.in_(("ok", "unknown", "queued")))
-            .order_by(ErkhetImportLog.id.desc()).all())
+    prev = _eimp.previous(db, brand=brand, po_id=order_id)
     if prev and not body.force:
         return JSONResponse(status_code=409, content={
             "detail": "Энэ захиалга/брендийг Эрхэт рүү өмнө импортолсон байна — дахин импортлобол орлого ДАВХАР бүртгэгдэнэ.",
@@ -2731,21 +2685,6 @@ def erkhet_import(
         raise
     except Exception as e:
         raise HTTPException(500, f"Excel үүсгэхэд алдаа: {type(e).__name__}: {e}")
-    title = filename[:-5] if filename.lower().endswith(".xlsx") else filename
-
-    # Илгээсэн файлыг хадгална (аудит/дахин шалгахад)
-    store_dir = _P("app/data/erkhet_imports")
-    store_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    stored = store_dir / f"{stamp}_PO{order_id}_{re.sub(r'[^0-9A-Za-z_.-]', '_', filename)}"
-    stored.write_bytes(data)
-
-    log = ErkhetImportLog(purchase_order_id=order_id, brand=brand, qty_source=src, company=body.company,
-                          title=title, filename=filename, stored_path=str(stored), row_count=nrows,
-                          username=(u.username or ""), status="unknown")
-    db.add(log)
-    db.commit()
-    db.refresh(log)
 
     # Огноо нь клиентийн идэвхтэй тайлант үед багтах ёстой → импортын огнооны оноор тохируулна
     try:
@@ -2753,25 +2692,14 @@ def erkhet_import(
     except Exception:
         po_ = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
         imp_year = po_.order_date.year if po_ else datetime.now().year
-    try:
-        res = get_client().import_file(title, ERKHET_IMPORT_KIND, filename, data, year=imp_year)
-    except ErkhetError as e:
-        res = {"state": "fail", "errors": [str(e)]}
-    except Exception as e:
-        res = {"state": "unknown", "errors": [f"{type(e).__name__}: {e}"]}
-
-    _apply_erkhet_result(log, res)
-    db.commit()
+    log, res = _eimp.submit(db, data=data, filename=filename, nrows=nrows, year=imp_year, company=body.company,
+                            brand=brand, qty_source=src, username=(u.username or ""), po_id=order_id)
     audit(db, request, u, action="po_erkhet_import", entity_type="erkhet_import", entity_id=log.id,
           parent_type="purchase_order", parent_id=order_id,
-          after={"brand": brand, "title": title, "status": log.status, "erkhet_import_id": log.erkhet_import_id,
+          after={"brand": brand, "title": log.title, "status": log.status, "erkhet_import_id": log.erkhet_import_id,
                  "doc_count": log.doc_count, "rows": nrows, "qty_source": src},
           extra={"message": log.message[:500]} if log.message else None, autocommit=True)
-    ok = True if log.status == "ok" else (False if log.status == "fail" else None)
-    from app.services.erkhet_client import get_client as _gc
-    base = _gc().base
-    return {**_erkhet_log_dict(log), "ok": ok, "errors": res.get("errors") or [], "period": imp_year,
-            "erkhet_url": f"{base}/queue/"}
+    return _eimp.response(log, res, imp_year)
 
 
 # ── PDF Export ─────────────────────────────────────────────────────────────────

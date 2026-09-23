@@ -11,6 +11,7 @@ import { api } from "../lib/api";
 import { useLiveRefresh } from "../lib/liveEvents";
 import { useAuthStore } from "../store/authStore";
 import BarcodeScanner from "../components/BarcodeScanner";
+import { useErkhetImport, ErkhetImportStatus, ErkhetImportButton } from "../components/ErkhetImport";
 
 type Line = {
   id: number;
@@ -2196,6 +2197,16 @@ function ERPExportModal({ session, onClose }: { session: Session; onClose: () =>
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Эрхэт рүү ШУУД импорт (Файл импортлох → Бараа материалын орлого)
+  const erk = useErkhetImport(`/receivings/${session.id}`, "");
+  const locationsReady = cfg.company === "orgil_khorum"
+    ? cfg.single_location.trim() !== ""
+    : warehouses.every(wh => (cfg.warehouse_map[wh] ?? "").trim() !== "") && (untaggedCount === 0 || (cfg.warehouse_map[""] ?? "").trim() !== "");
+  const canErkhet = cfg.company === "buten_orgil" && cfg.document_note.trim() !== "" && cfg.account.trim() !== "" && locationsReady && positiveLines.length > 0;
+  const erkhetHint = cfg.company !== "buten_orgil" ? "Эрхэт рүү шууд импорт зөвхөн Бүтэн-Оргил ХХК-д"
+    : !cfg.document_note.trim() ? "Гүйлгээний утгыг бөглөнө үү"
+    : !locationsReady ? "Агуулах бүрийн ERP байршил кодыг бөглөнө үү" : "Эрхэт → Файл импортлох → Бараа материалын орлого";
+
   // Esc to close
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -2368,6 +2379,8 @@ function ERPExportModal({ session, onClose }: { session: Session; onClose: () =>
             </div>
           )}
 
+          {erk.allowed && <ErkhetImportStatus prev={erk.prev} res={erk.res} error={erk.error} subject="тулгалтыг" />}
+
           {err && (
             <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 ring-1 ring-inset ring-red-200/60">
               {err}
@@ -2375,7 +2388,7 @@ function ERPExportModal({ session, onClose }: { session: Session; onClose: () =>
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-3">
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 px-5 py-3">
           <button
             onClick={onClose}
             className="flex-1 rounded-apple border border-gray-200 bg-white py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 sm:flex-none sm:px-4 sm:py-1.5"
@@ -2390,6 +2403,15 @@ function ERPExportModal({ session, onClose }: { session: Session; onClose: () =>
             {loading ? <RefreshCw size={13} className="animate-spin"/> : <FileDown size={13}/>}
             Excel татах
           </button>
+          {erk.allowed && (
+            <ErkhetImportButton
+              onClick={() => erk.run({ ...cfg, brand_filter: "" }, `Тулгалт #${session.id} · ${positiveLines.length} бараа (тулгасан брендүүд)`)}
+              busy={erk.busy}
+              disabled={!canErkhet || loading}
+              title={erkhetHint}
+              className="w-full rounded-apple py-2.5 sm:w-auto sm:px-4 sm:py-1.5"
+            />
+          )}
         </div>
       </div>
     </div>

@@ -418,6 +418,9 @@ def ensure_erkhet_import_logs_schema():
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(erkhet_import_logs)")).fetchall()]
         if cols and "queue_id" not in cols:
             conn.execute(text("ALTER TABLE erkhet_import_logs ADD COLUMN queue_id INTEGER DEFAULT 0"))
+        if cols and "receiving_session_id" not in cols:
+            conn.execute(text("ALTER TABLE erkhet_import_logs ADD COLUMN receiving_session_id INTEGER DEFAULT 0"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_erkhet_import_logs_receiving_session_id ON erkhet_import_logs(receiving_session_id)"))
 
 
 def ensure_product_pallets_schema():
