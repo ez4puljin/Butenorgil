@@ -756,22 +756,42 @@ export default function PurchaseOrderDetail() {
     if (!order) return;
     setSaving(true);
     try {
-      const payload = order.lines.map((l) => ({
-        product_id: l.product_id,
-        order_qty_box: store.quantities[l.product_id] ?? 0,
-        supplier_qty_box: suppQtys[l.product_id] ?? l.supplier_qty_box,
-        loaded_qty_box: loadedQtys[l.product_id] ?? l.loaded_qty_box,
-        received_qty_box: receivedQtys[l.product_id] ?? l.received_qty_box,
-        received_qty_extra_pcs: receivedExtraPcs[l.product_id] ?? l.received_qty_extra_pcs ?? 0,
-        unit_price: priceInputs[l.product_id] ?? l.unit_price ?? 0,
-        remark: remarkInputs[l.product_id] ?? l.remark ?? "",
-      }));
-      await api.post(`/purchase-orders/${order.id}/set-lines`, payload);
+      // ЗӨВХӨН энэ хуудсан дээр өөрчилсөн мөр/талбарыг илгээнэ — `set_lines` илгээгээгүй
+      // мөрийг хөндөхгүй. Өмнө нь БҮХ мөрийг хуудас нээх үеийн утгаар илгээдэг байсан тул
+      // өөр хүний завсар оруулсан тоог 0-ээр дарж байв (2026-09-22, #110, 13 бренд).
+      // order_qty_box-той хамт хуудас нээх үеийн утгыг (expected) илгээж сервер тулгана.
+      const diff = (a: unknown, b: unknown) => Number(a ?? 0) !== Number(b ?? 0);
+      const payload: Record<string, unknown>[] = [];
+      for (const l of order.lines) {
+        const pid = l.product_id;
+        const row: Record<string, unknown> = { product_id: pid };
+        const q = store.quantities[pid];
+        if (q !== undefined && diff(q, l.order_qty_box)) { row.order_qty_box = q; row.expected_order_qty_box = Number(l.order_qty_box ?? 0); }
+        if (suppQtys[pid] !== undefined && diff(suppQtys[pid], l.supplier_qty_box)) row.supplier_qty_box = suppQtys[pid];
+        if (loadedQtys[pid] !== undefined && diff(loadedQtys[pid], l.loaded_qty_box)) row.loaded_qty_box = loadedQtys[pid];
+        if (receivedQtys[pid] !== undefined && diff(receivedQtys[pid], l.received_qty_box)) row.received_qty_box = receivedQtys[pid];
+        if (receivedExtraPcs[pid] !== undefined && diff(receivedExtraPcs[pid], l.received_qty_extra_pcs)) row.received_qty_extra_pcs = receivedExtraPcs[pid];
+        if (priceInputs[pid] !== undefined && diff(priceInputs[pid], l.unit_price)) row.unit_price = priceInputs[pid];
+        if (remarkInputs[pid] !== undefined && (remarkInputs[pid] ?? "") !== (l.remark ?? "")) row.remark = remarkInputs[pid];
+        if (Object.keys(row).length > 1) payload.push(row);
+      }
+      if (payload.length === 0 && !(effectiveStatus === "loading" && Object.keys(brandVehicles).length > 0)) {
+        flash("Өөрчлөлт алга — хадгалах зүйлгүй"); setSaving(false); return;
+      }
+      const res = payload.length ? await api.post(`/purchase-orders/${order.id}/set-lines`, payload) : { data: { conflicts: [] } };
+      const conflicts: { product_name: string; brand: string; server_qty_box: number; your_qty_box: number }[] = res.data?.conflicts ?? [];
       if (effectiveStatus === "loading" && Object.keys(brandVehicles).length > 0) {
         const bvPayload = Object.entries(brandVehicles).map(([brand, vehicle_id]) => ({ brand, vehicle_id: vehicle_id ?? null }));
         await api.post(`/purchase-orders/${order.id}/brand-vehicles`, bvPayload);
       }
-      flash("Хадгалагдлаа");
+      if (conflicts.length) {
+        flash(`${conflicts.length} мөрийг өөр хүн завсар нь өөрчилсөн тул хадгалсангүй — хуудас шинэчлэгдлээ`, false);
+        alert(`Дараах ${conflicts.length} мөрийн тоог та хуудас нээснээс хойш ӨӨР ХҮН өөрчилсөн байна.\nТаны утга хадгалагдаагүй, серверийн утга хэвээр үлдэв:\n\n` +
+          conflicts.slice(0, 30).map((c) => `• ${c.brand} — ${c.product_name}: сервер ${c.server_qty_box}, таных ${c.your_qty_box}`).join("\n") +
+          (conflicts.length > 30 ? `\n… нийт ${conflicts.length}` : "") + "\n\nХуудас шинэчлэгдсэний дараа шаардлагатай бол дахин засна уу.");
+      } else {
+        flash("Хадгалагдлаа");
+      }
       await loadOrder();
       // Тоо=0 болсон мөр "ороогүй" болж болзошгүй — тоолол хуучрахаас сэргийлнэ
       void refreshUnordCounts();

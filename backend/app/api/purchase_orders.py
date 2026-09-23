@@ -357,6 +357,10 @@ class POLineIn(BaseModel):
     received_qty_extra_pcs: Optional[float] = None
     unit_price: Optional[float] = None
     remark: Optional[str] = None
+    # Хуудас нээх үеийн захиалгын тоо. Илгээвэл серверийн одоогийн утгатай тулгана:
+    # зөрвөл ӨӨР ХҮН завсар нь өөрчилсөн гэж үзэж энэ мөрийг ХӨНДӨХГҮЙ, хариунд
+    # conflicts-д буцаана (2026-09-22 #110: хуучирсан хуудас 13 брендийн тоог 0 болгосон).
+    expected_order_qty_box: Optional[float] = None
 
 
 class AddLineIn(BaseModel):
@@ -1614,6 +1618,8 @@ def set_lines(
 
     # Audit log хадгалах: өөрчлөгдсөн line бүрт өмнөх ба шинэ snapshot
     audit_entries: list[dict] = []
+    # Хуучирсан хуудаснаас ирсэн (өөр хүн завсар нь өөрчилсөн) мөрүүд — хөндөхгүй
+    conflicts: list[dict] = []
 
     def _snapshot(ln: PurchaseOrderLine) -> dict:
         """Audit-д хадгалах гол талбаруудыг dict болгож буцаана."""
@@ -1641,6 +1647,14 @@ def set_lines(
 
         # Use per-brand status if available, fallback to PO status
         effective_st = brand_status_map.get(p.brand, po.status)
+
+        if (li.expected_order_qty_box is not None and li.order_qty_box is not None
+                and abs(float(line.order_qty_box or 0) - float(li.expected_order_qty_box)) > 1e-9
+                and abs(float(line.order_qty_box or 0) - float(li.order_qty_box)) > 1e-9):
+            conflicts.append({"product_id": int(p.id), "product_name": p.name, "brand": p.brand or "",
+                              "server_qty_box": float(line.order_qty_box or 0),
+                              "your_qty_box": float(li.order_qty_box), "expected_qty_box": float(li.expected_order_qty_box)})
+            continue
 
         before_snap = _snapshot(line)
 
@@ -1759,7 +1773,10 @@ def set_lines(
     _ensure_brand_statuses(order_id, db)
     db.commit()
 
-    return {"ok": True}
+    if conflicts:
+        audit(db, request, u, action="po_set_lines_conflict", entity_type="purchase_order", entity_id=int(po.id),
+              parent_type="purchase_order", parent_id=int(po.id), extra={"count": len(conflicts), "items": conflicts[:50]}, autocommit=True)
+    return {"ok": True, "conflicts": conflicts, "applied": len(audit_entries)}
 
 
 @router.delete("/{order_id}")
