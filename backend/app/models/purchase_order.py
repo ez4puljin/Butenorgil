@@ -157,7 +157,8 @@ class ErkhetImportLog(Base):
     title: Mapped[str] = mapped_column(String(255), default="")
     filename: Mapped[str] = mapped_column(String(255), default="")
     stored_path: Mapped[str] = mapped_column(String(500), default="")
-    status: Mapped[str] = mapped_column(String(10), default="")          # ok | fail | unknown
+    status: Mapped[str] = mapped_column(String(10), default="")          # ok | fail | queued | unknown
+    queue_id: Mapped[int] = mapped_column(Integer, default=0)            # Эрхэтийн «Ажлын захиалга» (/queue/) мөр
     erkhet_import_id: Mapped[int] = mapped_column(Integer, default=0)
     erkhet_status: Mapped[str] = mapped_column(String(100), default="")
     doc_count: Mapped[int] = mapped_column(Integer, default=0)

@@ -412,6 +412,14 @@ def ensure_income_files_schema():
     os.makedirs(inc_dir, exist_ok=True)
 
 
+def ensure_erkhet_import_logs_schema():
+    """Эрхэт импортын бүртгэл — queue_id багана (Ажлын захиалгын мөр) хуучин суурьт нэмнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(erkhet_import_logs)")).fetchall()]
+        if cols and "queue_id" not in cols:
+            conn.execute(text("ALTER TABLE erkhet_import_logs ADD COLUMN queue_id INTEGER DEFAULT 0"))
+
+
 def ensure_product_pallets_schema():
     """Поддон хураалт — unit_weight_kg_override багана (хувийн жин засах) хуучин суурьт нэмнэ."""
     with engine.begin() as conn:
@@ -1047,6 +1055,7 @@ def startup():
     ensure_income_files_schema()
     ensure_balance_files_schema()
     ensure_product_pallets_schema()
+    ensure_erkhet_import_logs_schema()
     ensure_attendance_schema()
     ensure_admin_task_target_schema()
     ensure_bank_account_configs_schema()

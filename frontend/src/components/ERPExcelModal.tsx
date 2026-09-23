@@ -88,9 +88,9 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
   /* ── Эрхэт рүү ШУУД импорт (Файл импортлох → Бараа материалын орлого) ── */
   const { role, baseRole } = useAuthStore();
   const canErkhet = ["admin", "accountant", "supervisor"].includes((baseRole || role || "") as string);
-  type ImpLog = { id: number; brand: string; title: string; status: string; erkhet_import_id: number | null; erkhet_status: string;
+  type ImpLog = { id: number; brand: string; title: string; status: string; queue_id: number | null; erkhet_import_id: number | null; erkhet_status: string;
     doc_count: number; row_count: number; message: string; username: string; created_at: string | null; qty_source: string };
-  type ImpRes = ImpLog & { ok: boolean | null; errors: string[]; erkhet_url?: string };
+  type ImpRes = ImpLog & { ok: boolean | null; errors: string[]; erkhet_url?: string; period?: number };
   const [prevImports, setPrevImports] = useState<ImpLog[]>([]);
   const [erkhetBusy, setErkhetBusy] = useState(false);
   const [erkhetRes, setErkhetRes] = useState<ImpRes | null>(null);
@@ -105,7 +105,25 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   };
   const impStatus = (x: ImpLog) => x.status === "ok" ? `Амжилттай${x.erkhet_import_id ? ` · Эрхэт #${x.erkhet_import_id}` : ""}${x.doc_count ? ` · ${x.doc_count} баримт` : ""}`
-    : x.status === "fail" ? "Алдаатай (импорт хийгдээгүй)" : "Тодорхойгүй — Эрхэтээс шалгана уу";
+    : x.status === "fail" ? `Алдаатай${x.message ? `: ${x.message}` : ""}`
+    : x.status === "queued" ? `Эрхэтийн дараалалд${x.erkhet_status ? ` (${x.erkhet_status})` : ""}` : "Тодорхойгүй — Эрхэтээс шалгана уу";
+
+  // Эрхэт импортыг «Ажлын захиалга» (queue)-д оруулдаг — дуусах хүртэл 5 сек тутам шалгана
+  useEffect(() => {
+    if (!erkhetRes || (erkhetRes.status !== "queued" && erkhetRes.status !== "unknown")) return;
+    let n = 0;
+    const t = setInterval(async () => {
+      n += 1;
+      try {
+        const r = await api.post(`/purchase-orders/${order.id}/erkhet-imports/${erkhetRes.id}/refresh`);
+        setErkhetRes((prev) => prev && ({ ...prev, ...r.data, erkhet_url: prev.erkhet_url, period: prev.period }));
+        if (r.data?.status === "ok" || r.data?.status === "fail") loadPrevImports();
+      } catch { /* дараагийн удаа */ }
+      if (n >= 120) clearInterval(t);   // ~10 минут
+    }, 5000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [erkhetRes?.id, erkhetRes?.status]);
 
   const handleErkhet = async (force = false) => {
     setError(null); setErkhetRes(null);
@@ -489,19 +507,25 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
           )}
 
           {erkhetRes && (
-            <div className={`rounded-lg px-4 py-3 text-sm ${erkhetRes.ok === true ? "bg-emerald-50 text-emerald-800" : erkhetRes.ok === false ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-800"}`}>
+            <div className={`rounded-lg px-4 py-3 text-sm ${erkhetRes.ok === true ? "bg-emerald-50 text-emerald-800" : erkhetRes.ok === false ? "bg-red-50 text-red-700" : erkhetRes.status === "queued" ? "bg-sky-50 text-sky-800" : "bg-amber-50 text-amber-800"}`}>
               <div className="flex items-center gap-2 font-semibold">
-                {erkhetRes.ok === true ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                {erkhetRes.ok === true ? "Эрхэтэд амжилттай импортлогдлоо" : erkhetRes.ok === false ? "Эрхэт импортыг хүлээж аваагүй — юу ч бүртгэгдээгүй" : "Үр дүн тодорхойгүй"}
+                {erkhetRes.ok === true ? <CheckCircle2 size={16} /> : erkhetRes.status === "queued" ? <RefreshCw size={15} className="animate-spin" /> : <AlertCircle size={16} />}
+                {erkhetRes.ok === true ? "Эрхэтэд амжилттай импортлогдлоо"
+                  : erkhetRes.ok === false ? "Эрхэт импортыг амжилтгүй болгосон — орлого бүртгэгдээгүй"
+                  : erkhetRes.status === "queued" ? "Эрхэтийн «Ажлын захиалга»-д орсон — ажиллаж байна…"
+                  : "Үр дүн тодорхойгүй — Эрхэтийн «Ажлын захиалга»-аас шалгана уу"}
               </div>
+              {(erkhetRes.queue_id || erkhetRes.erkhet_status) && (
+                <div className="mt-0.5 text-xs">Ажлын захиалга{erkhetRes.queue_id ? ` #${erkhetRes.queue_id}` : ""}{erkhetRes.erkhet_status ? ` · ${erkhetRes.erkhet_status}` : ""}{erkhetRes.period ? ` · Тайлант үе ${erkhetRes.period}` : ""}</div>
+              )}
               <div className="mt-1 text-xs">«{erkhetRes.title}» · {erkhetRes.row_count} мөр
                 {erkhetRes.erkhet_import_id ? ` · Эрхэт импорт #${erkhetRes.erkhet_import_id}` : ""}{erkhetRes.doc_count ? ` · ${erkhetRes.doc_count} баримт` : ""}</div>
               {erkhetRes.errors?.length > 0 && (
                 <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs">{erkhetRes.errors.map((m, i) => <li key={i}>{m}</li>)}</ul>
               )}
               {erkhetRes.erkhet_url && (
-                <a href={erkhetRes.erkhet_url.replace(/import\/create\/?$/, "import/")} target="_blank" rel="noreferrer" className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold underline">
-                  Эрхэтийн импортын жагсаалт <ExternalLink size={11} />
+                <a href={erkhetRes.erkhet_url} target="_blank" rel="noreferrer" className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold underline">
+                  Эрхэтийн «Ажлын захиалга» <ExternalLink size={11} />
                 </a>
               )}
             </div>

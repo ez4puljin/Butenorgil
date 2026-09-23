@@ -302,29 +302,128 @@ class ErkhetClient:
 
 
     # ── Файл импорт (Файл импортлох → /import/create/) ───────────────
+    # Эрхэт импортыг ШУУД биш «Ажлын захиалга» (/queue/) дараалалд оруулдаг:
+    #   илгээмэгц queue-д мөр нэмэгдэнэ → хэдэн секунд/минутын дараа ажиллаж
+    #   «Амжилттай ажилласан» / «Буруу өгөгдөл» / «Алдаа гарсан» болно (Үр дүн баганад
+    #   шалтгаан). Амжилттай бол /import/ жагсаалтад «Амжилттай импорт» гарна.
+    # Огноо нь клиентийн ИДЭВХТЭЙ ТАЙЛАНТ ҮЕД багтах ёстой («date: Идэвхтэй тайлант
+    # үед хамаарахгүй байна») тул илгээхийн өмнө тайлант үеийг огнооны онд тааруулна.
+    QUEUE_OK = "Амжилттай ажилласан"
+    QUEUE_FAIL = ("Буруу өгөгдөл", "Алдаа гарсан")
     IMPORT_OK_STATUS = "Амжилттай импорт"
 
-    def import_file(self, title: str, kind: str, filename: str, data: bytes,
-                    timeout: int | None = None) -> dict:
-        """Эрхэтийн «Файл импортлох» формоор файл илгээнэ (гараар хийхтэй ижил).
+    def current_period(self) -> tuple[str, str]:
+        """(идэвхтэй тайлант үе (он) эсвэл "", хадгалах URL)."""
+        with self._lock:
+            html = self._get("import/create/").text
+        m = re.search(r'<select[^>]*class="[^"]*period-year[^"]*"[^>]*>', html)
+        if not m:
+            raise ErkhetError("Эрхэтийн тайлант үеийн сонголт олдсонгүй.")
+        tag = m.group(0)
+        cur = re.search(r'current="([^"]*)"', tag)
+        url = re.search(r'save_url="([^"]+)"', tag)
+        cur_v = (cur.group(1) if cur else "").strip()
+        return ("" if cur_v in ("", "None") else cur_v), (url.group(1) if url else f"/{self.company_id}/periods/save/")
 
-        Эрхэт импортыг СИНХРОН хийдэг: амжилттай бол /import/ жагсаалт руу шилжиж
-        шинэ мөр «Амжилттай импорт» + баримтын тоотой гарна; алдаатай бол формын
-        хуудас алдааны мэдээлэлтэй буцаж, юу ч хадгалагдахгүй.
+    def ensure_period(self, year: str) -> dict:
+        """Клиентийн идэвхтэй тайлант үеийг `year` болгоно (Эрхэтийн тохиргоо цэсний
+        «Тайлант үе сонгох»-той ижил: GET periods/save/?year=…)."""
+        cur, save_url = self.current_period()
+        if cur == str(year):
+            return {"changed": False, "period": cur}
+        with self._lock:
+            s = self._session()
+            r = s.get(self.base + save_url, params={"year": str(year), "period": ""},
+                      headers={"X-Requested-With": "XMLHttpRequest", "Referer": self._url("import/create/")},
+                      timeout=60)
+        after, _ = self.current_period()
+        if after != str(year):
+            raise ErkhetError(f"Эрхэтийн тайлант үеийг {year} болгож чадсангүй (одоо: {after or 'сонгоогүй'}, HTTP {r.status_code}).")
+        print(f"[erkhet] тайлант үе: {cur or '—'} → {after}")
+        return {"changed": True, "period": after, "was": cur}
 
-        Буцаах: {"ok": bool|None, "import_id", "status", "count", "errors": [...], "url"}
-          ok=None — хариу тодорхойгүй (timeout г.м) → Эрхэтийн жагсаалтыг шалгах хэрэгтэй.
+    def queue_rows(self) -> list[dict]:
+        """«Ажлын захиалга» (/queue/) — хамгийн сүүлийн мөрүүд."""
+        with self._lock:
+            s = self._session()
+            r = s.get(f"{self.base}/queue/", timeout=60)
+            if "/login" in r.url:
+                self._s = None
+                s = self._session()
+                r = s.get(f"{self.base}/queue/", timeout=60)
+        out = []
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", r.text, re.S):
+            m = re.search(r"/queue/delete/(\d+)/", tr)
+            if not m:
+                continue
+            c = [_text(x) for x in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+            if len(c) < 11:
+                continue
+            out.append({"id": int(m.group(1)), "created": c[1], "company": c[2], "user": c[3], "kind": c[4],
+                        "status": c[5], "started": c[7], "finished": c[8], "title": c[9], "result": c[10]})
+        return out
+
+    def find_queue_row(self, title: str, since_local: str = "", queue_id: int = 0) -> dict | None:
+        """Гарчгаар (эсвэл queue id-аар) хамгийн сүүлийн мөрийг олно. since_local='YYYY-MM-DD HH:MM'."""
+        rows = self.queue_rows()
+        if queue_id:
+            return next((r for r in rows if r["id"] == queue_id), None)
+        cand = [r for r in rows if r["title"] == title.strip() and (not since_local or r["created"] >= since_local)]
+        return max(cand, key=lambda r: r["id"]) if cand else None
+
+    @classmethod
+    def queue_state(cls, row: dict | None) -> str:
+        """ok | fail | queued (дараалалд/ажиллаж байна) | missing"""
+        if not row:
+            return "missing"
+        if row["status"] == cls.QUEUE_OK:
+            return "ok"
+        if row["status"] in cls.QUEUE_FAIL:
+            return "fail"
+        return "queued"
+
+    def import_list_find(self, title: str) -> dict | None:
+        """/import/ жагсаалтаас гарчиг таарсан хамгийн шинэ мөр (импортын дугаар, баримтын тоо)."""
+        with self._lock:
+            html = self._get("import/").text
+        best = None
+        for tid, body in re.findall(r'<tr[^>]*id="(\d+)"[^>]*>(.*?)</tr>', html, re.S):
+            cells = [_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", body, re.S)]
+            if len(cells) >= 6 and cells[2] == title.strip():
+                if best is None or int(tid) > int(best[0]):
+                    best = (tid, cells)
+        if not best:
+            return None
+        tid, cells = best
+        return {"import_id": int(tid), "status": cells[4], "count": int(cells[5]) if cells[5].isdigit() else None}
+
+    def import_file(self, title: str, kind: str, filename: str, data: bytes, year: str | int | None = None,
+                    wait_sec: int = 25, timeout: int | None = None) -> dict:
+        """«Файл импортлох» формоор илгээж, «Ажлын захиалга» (queue)-гаас хянана.
+
+        Буцаах: {"state": ok|fail|queued|missing|unknown, "queue_id", "queue_status", "result",
+                 "import_id", "count", "errors", "period"}.
         POST-ыг ХЭЗЭЭ Ч давтахгүй (давхар орлого үүсэхээс сэргийлнэ)."""
+        title = title[:200].strip()
+        period = self.ensure_period(str(year)) if year else None
         path = "import/create/"
+        from datetime import datetime, timedelta
+        since = (datetime.now() - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
         with self._lock:
             page = self._get(path)                       # session/CSRF шинэчилнэ
             if "/login" in page.url:
                 raise ErkhetError("Эрхэтэд нэвтэрч чадсангүй.")
+            # Тайлант үе нь SESSION-д хадгалагддаг — яг энэ session дээр тохирсон эсэхийг
+            # илгээхийн өмнө формын хуудаснаас дахин баталгаажуулна (дахин нэвтэрвэл алдагдана).
+            if year:
+                cm = re.search(r'<select[^>]*class="[^"]*period-year[^"]*"[^>]*current="([^"]*)"', page.text)
+                if not cm or cm.group(1) != str(year):
+                    raise ErkhetError(f"Эрхэтийн тайлант үе {year} болж тохироогүй байна — импорт илгээгдээгүй. Дахин оролдоно уу.")
             s = self._session()
             url = self._url(path)
-            m = re.search(r'name="csrfmiddlewaretoken"[^>]*value="([^"]+)"', page.text)                 or re.search(r'value="([^"]+)"[^>]*name="csrfmiddlewaretoken"', page.text)
+            m = re.search(r'name="csrfmiddlewaretoken"[^>]*value="([^"]+)"', page.text)
             token = m.group(1) if m else s.cookies.get("csrftoken", "")
-            payload = {"csrfmiddlewaretoken": token, "title": title[:200], "kind": kind, "year": "", "month": ""}
+            payload = {"csrfmiddlewaretoken": token, "title": title, "kind": kind, "year": "", "month": ""}
             files = {"f": (filename, data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
             t0 = time.time()
             try:
@@ -332,42 +431,59 @@ class ErkhetClient:
                            headers={"Referer": url, "Origin": self.base},
                            timeout=timeout or max(self.timeout, 300))
             except requests.Timeout:
-                return {"ok": None, "errors": ["Эрхэт хариу өгөөгүй (timeout) — импорт орсон эсэхийг Эрхэтийн импортын жагсаалтаас шалгана уу."],
-                        "url": self._url("import/")}
-            print(f"[erkhet] import {kind} '{title}' -> {r.status_code} {r.url} {time.time()-t0:.1f}s")
-            if "/login" in r.url:
-                self._s = None
-                raise ErkhetError("Эрхэтийн session дууссан — импорт хийгдээгүй. Дахин оролдоно уу.")
-            final = r.url.split("?")[0]
-            html = r.text
-            if r.ok and final.rstrip("/").endswith("/import"):
-                # Жагсаалт: хамгийн шинэ (id их) бөгөөд гарчиг таарсан мөр
-                best = None
-                for tid, body in re.findall(r'<tr[^>]*id="(\d+)"[^>]*>(.*?)</tr>', html, re.S):
-                    cells = [_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", body, re.S)]
-                    if len(cells) >= 6 and cells[2] == title[:200].strip():
-                        if best is None or int(tid) > int(best[0]):
-                            best = (tid, cells)
-                if best:
-                    tid, cells = best
-                    cnt = int(cells[5]) if cells[5].isdigit() else None
-                    return {"ok": cells[4] == self.IMPORT_OK_STATUS, "import_id": int(tid), "status": cells[4],
-                            "count": cnt, "date": cells[1], "errors": [] if cells[4] == self.IMPORT_OK_STATUS else [cells[4]],
-                            "url": self._url("import/")}
-                return {"ok": None, "errors": ["Эрхэт жагсаалт руу шилжсэн ч энэ гарчигтай мөр олдсонгүй — Эрхэтээс шалгана уу."],
-                        "url": self._url("import/")}
-            # Формын хуудас буцсан → алдаа
-            errs: list[str] = []
+                r = None
+            if r is not None:
+                print(f"[erkhet] import {kind} '{title}' -> {r.status_code} {r.url} {time.time()-t0:.1f}s")
+                if "/login" in r.url:
+                    self._s = None
+                    raise ErkhetError("Эрхэтийн session дууссан — импорт хийгдээгүй. Дахин оролдоно уу.")
+        # Формын хуудас алдаатай буцсан бол (queue-д ороогүй)
+        form_errors: list[str] = []
+        if r is not None and not r.url.split("?")[0].rstrip("/").endswith("/import"):
             for pat in (r'<ul[^>]*class="[^"]*errorlist[^"]*"[^>]*>(.*?)</ul>',
-                        r'<div[^>]*class="[^"]*alert[^"]*"[^>]*>(.*?)</div>',
-                        r'<(?:span|p|div)[^>]*class="[^"]*(?:help-block|text-danger|error)[^"]*"[^>]*>(.*?)</(?:span|p|div)>'):
-                for blk in re.findall(pat, html, re.S | re.I):
+                        r'<div[^>]*class="[^"]*alert[^"]*"[^>]*>(.*?)</div>'):
+                for blk in re.findall(pat, r.text, re.S | re.I):
                     t = _text(blk)
-                    if t and t not in errs:
-                        errs.append(t)
-            if not errs:
-                errs = [f"Эрхэт импортыг хүлээж аваагүй (HTTP {r.status_code}, {final})."]
-            return {"ok": False, "errors": errs[:30], "url": url}
+                    if t and t not in form_errors:
+                        form_errors.append(t)
+        # Queue-д мөр нэмэгдсэн эсэх, дуусах хүртэл богино хугацаанд хүлээнэ
+        row = None
+        deadline = time.time() + wait_sec
+        while True:
+            try:
+                row = self.find_queue_row(title, since)
+            except Exception as e:                        # noqa: BLE001
+                print(f"[erkhet] queue уншихад алдаа: {e}")
+            st = self.queue_state(row)
+            if st in ("ok", "fail") or time.time() >= deadline:
+                break
+            time.sleep(3)
+        out = self._result_from_row(row, title)
+        out["period"] = period
+        if out["state"] == "missing":
+            out["state"] = "fail" if form_errors else "unknown"
+            out["errors"] = form_errors or ["Эрхэтийн «Ажлын захиалга»-д энэ гарчигтай мөр олдсонгүй — импорт илгээгдээгүй байж магадгүй."]
+        return out
+
+    def _result_from_row(self, row: dict | None, title: str) -> dict:
+        st = self.queue_state(row)
+        out = {"state": st, "queue_id": row["id"] if row else None, "queue_status": row["status"] if row else "",
+               "result": row["result"] if row else "", "import_id": None, "count": None, "errors": []}
+        if st == "fail":
+            out["errors"] = [row["result"] or row["status"]]
+        if st == "ok":
+            try:
+                imp = self.import_list_find(title)
+                if imp:
+                    out["import_id"], out["count"] = imp["import_id"], imp["count"]
+            except Exception as e:                        # noqa: BLE001
+                print(f"[erkhet] import жагсаалт уншихад алдаа: {e}")
+        return out
+
+    def refresh_import(self, title: str, queue_id: int = 0, since_local: str = "") -> dict:
+        """Өмнө илгээсэн импортын одоогийн төлөвийг queue-ээс дахин уншина."""
+        row = self.find_queue_row(title, since_local, queue_id)
+        return self._result_from_row(row, title)
 
 
 # ── Дундын instance (session дахин ашиглана) ─────────────────────────────────
