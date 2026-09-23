@@ -150,8 +150,11 @@ export default function OrderDashboard() {
   const [vehicles, setVehicles] = useState<VehicleInfo[]>([]);
   const { role, baseRole } = useAuthStore();
   const canEdit = EDIT_ROLES.includes((baseRole || role || "") as string);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const toggleGroup = (k: string) => setCollapsed((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  // Захиалагчийн бүлгүүд анхдагчаар ХУРААНГУЙ — дарж нээнэ
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleGroup = (k: string) => setExpanded((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  // Бүлэг доторх машины шүүлт: "all" | "none" (машинд хуваарилаагүй) | "sh:<ачилтын id>"
+  const [groupVeh, setGroupVeh] = useState<Record<string, string>>({});
   const [ordererBusy, setOrdererBusy] = useState<string | null>(null);
   // Ачилтын машин засах цонх
   type ShipEdit = { sid: number; origVehicleId: number | null; vehicle_id: number | null; name: string; plate: string;
@@ -342,6 +345,11 @@ export default function OrderDashboard() {
       </div>
     );
   };
+
+  const brandShipIds: Record<string, number[]> = {};
+  for (const sh of shipments) for (const sb of sh.brands) (brandShipIds[sb.brand] ??= []).push(sh.id);
+  for (const b of brands) if (b.plan_shipment_id != null && !(brandShipIds[b.brand] ?? []).includes(b.plan_shipment_id))
+    (brandShipIds[b.brand] ??= []).push(b.plan_shipment_id);
 
   const renderBrand = (b: Brand) => {
                 const isExp = expandedBrand === b.brand;
@@ -621,18 +629,45 @@ export default function OrderDashboard() {
                 </div>
               ) : groupByOrderer(filteredBrands, ordererNames, unassignedLabel).map((g) => {
                 const gk = `brand:${g.key}`;
-                const isCol = collapsed.has(gk);
+                const isCol = !expanded.has(gk);
                 const gBoxes = g.items.reduce((t, b) => t + b.total_order_boxes, 0);
                 const gKg = g.items.reduce((t, b) => t + b.total_weight, 0);
+                // Машины шүүлт: бренд бүрийн машинууд (төлөвлөгөө + бодит ачилт)
+                const vehChips = shipments
+                  .map((sh) => ({ sh, n: g.items.filter((b) => (brandShipIds[b.brand] ?? []).includes(sh.id)).length }))
+                  .filter((x) => x.n > 0);
+                const noneN = g.items.filter((b) => !(brandShipIds[b.brand]?.length)).length;
+                const vf = groupVeh[gk] ?? "all";
+                const shown = vf === "all" ? g.items
+                  : vf === "none" ? g.items.filter((b) => !(brandShipIds[b.brand]?.length))
+                  : g.items.filter((b) => (brandShipIds[b.brand] ?? []).includes(Number(vf.slice(3))));
+                const chip = (key: string, label: React.ReactNode, n: number) => (
+                  <button key={key} onClick={() => setGroupVeh((m) => ({ ...m, [gk]: key }))}
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors ${vf === key ? "border-indigo-300 bg-indigo-600 text-white" : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"}`}>
+                    {label}<span className={`rounded-full px-1.5 text-[10px] font-bold ${vf === key ? "bg-white/25" : "bg-gray-100"}`}>{n}</span>
+                  </button>
+                );
                 return (
                   <div key={gk} className="space-y-2">
-                    <button onClick={() => toggleGroup(gk)} className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors ${g.key ? "bg-indigo-50/70 hover:bg-indigo-50" : "bg-gray-100/80 hover:bg-gray-100"}`}>
+                    <button onClick={() => toggleGroup(gk)} className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-colors ${g.key ? "bg-indigo-50/70 hover:bg-indigo-50" : "bg-gray-100/80 hover:bg-gray-100"}`}>
                       <UserRound size={14} className={g.key ? "text-indigo-500" : "text-gray-400"} />
                       <span className={`text-[13px] font-bold ${g.key ? "text-indigo-900" : "text-gray-600"}`}>{g.name}</span>
                       <span className="text-[11px] text-gray-500">{g.items.length} бренд · {fmtNum(Math.round(gBoxes))} хайрцаг · {fmtNum(Math.round(gKg))} кг</span>
-                      <ChevronDown size={14} className={`ml-auto text-gray-400 transition-transform ${isCol ? "-rotate-90" : ""}`} />
+                      <span className="hidden text-[11px] text-gray-400 sm:inline">· машинд {g.items.length - noneN} / хуваарилаагүй {noneN}</span>
+                      <ChevronDown size={14} className={`ml-auto shrink-0 text-gray-400 transition-transform ${isCol ? "-rotate-90" : ""}`} />
                     </button>
-                    {!isCol && g.items.map(renderBrand)}
+                    {!isCol && (
+                      <>
+                        <div className="flex flex-wrap gap-1.5 px-1">
+                          {chip("all", "Бүгд", g.items.length)}
+                          {vehChips.map(({ sh, n }) => chip(`sh:${sh.id}`, <><Truck size={11} />{sh.vehicle_name ?? `Ачилт #${sh.id}`}</>, n))}
+                          {chip("none", "Машинд хуваарилаагүй", noneN)}
+                        </div>
+                        {shown.length === 0
+                          ? <div className="rounded-2xl bg-white p-6 text-center text-xs text-gray-400 shadow-sm">Энэ шүүлтэд бренд алга</div>
+                          : shown.map(renderBrand)}
+                      </>
+                    )}
                   </div>
                 );
               })}
