@@ -33,3 +33,4 @@ from app.api.price_check import router as price_check_router
 from app.api.hall_count import router as hall_count_router
 from app.api.pallets import router as pallets_router
 from app.api.custom_master import router as custom_master_router
+from app.api.brand_orderers import router as brand_orderers_router

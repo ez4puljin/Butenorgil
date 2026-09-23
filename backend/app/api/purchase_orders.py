@@ -375,6 +375,29 @@ class POVehicleIn(BaseModel):
     vehicle_id: Optional[int] = None
 
 
+# ── Ачааны төрөл (Нэмэлт талбар → Бараа → freight_class) ─────────────────────
+FREIGHT_KEY = "freight_class"
+
+
+def _freight_info(db: Session, item_codes: list[str]) -> tuple[list[str], dict[str, str]]:
+    """(ангиллын дараалал, {item_code: ангилал}). Талбар идэвхгүй/алга бол ([], {})."""
+    try:
+        from app.services.custom_master import active_fields, field_options, values_map
+        f = next((x for x in active_fields(db, "product") if x.key == FREIGHT_KEY), None)
+        if f is None:
+            return [], {}
+        vals = values_map(db, "product", item_codes)
+        return field_options(f), {c: str(v.get(FREIGHT_KEY) or "") for c, v in vals.items() if v.get(FREIGHT_KEY)}
+    except Exception:
+        return [], {}
+
+
+def _freight_list(weights: dict[str, float], classes: list[str]) -> list[dict]:
+    """[{class, weight}] — тохиргооны дарааллаар, тодорхойгүй ("") хамгийн сүүлд."""
+    order = list(classes) + sorted(k for k in weights if k and k not in classes) + [""]
+    return [{"class": k, "weight": round(weights[k], 1)} for k in order if weights.get(k, 0) > 0.05]
+
+
 # ── Dashboard endpoint ────────────────────────────────────────────────────────
 
 @router.get("/{order_id}/dashboard")
@@ -417,6 +440,11 @@ def get_order_dashboard(
 
     # Shipment status map
     shipment_status_map = {s.id: s.status for s in shipments}
+
+    # ── Захиалагч (бренд → ажилтан) ба ачааны төрөл (Нэмэлт талбар: freight_class) ──
+    from app.api.brand_orderers import orderer_map, orderer_names, UNASSIGNED
+    brand_orderer = orderer_map(db)
+    freight_classes, freight_of = _freight_info(db, [p.item_code for p in products.values()])
 
     # ── Group lines by brand ──
     brand_data: dict[str, dict] = {}
@@ -555,6 +583,7 @@ def get_order_dashboard(
             "brand_status": persisted_bs.get(bd["brand"], _brand_status(bd)),
             "brand_status_label": STATUS_LABEL.get(persisted_bs.get(bd["brand"], _brand_status(bd)), ""),
             "vehicle_names": vehicle_names,
+            "orderer": brand_orderer.get(bd["brand"], ""),
             "items": bd["items"],
         })
 
@@ -585,6 +614,7 @@ def get_order_dashboard(
         v = vehicle_map.get(sh.vehicle_id) if sh.vehicle_id else None
         sh_lines = [sl for sl in all_ship_lines if sl.shipment_id == sh.id]
         sh_brand_map: dict[str, dict] = {}
+        sh_freight: dict[str, float] = {}
         total_weight = 0.0
         for sl in sh_lines:
             pl = active_line_by_id.get(sl.po_line_id)
@@ -596,6 +626,8 @@ def get_order_dashboard(
             b = (pl.override_brand or "").strip() or p.brand or "Брэнд байхгүй"
             w = sl.loaded_qty_box * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
             total_weight += w
+            fc = freight_of.get(p.item_code, "")
+            sh_freight[fc] = sh_freight.get(fc, 0.0) + w
             if b not in sh_brand_map:
                 sh_brand_map[b] = {"brand": b, "loaded_boxes": 0, "received_boxes": 0, "weight": 0, "line_count": 0}
             sh_brand_map[b]["loaded_boxes"] += sl.loaded_qty_box
@@ -616,10 +648,15 @@ def get_order_dashboard(
             "total_loaded_boxes": round(sum(sl.loaded_qty_box for sl in sh_lines), 1),
             "total_weight": round(total_weight, 1),
             "capacity_pct": round(total_weight / cap_kg * 100, 1) if cap_kg > 0 else 0,
+            "freight": _freight_list(sh_freight, freight_classes),
+            "notes": sh.notes or "",
+            "vehicle": ({"id": v.id, "name": v.name, "plate": v.plate or "", "capacity_kg": float(v.capacity_kg or 0),
+                         "driver_name": v.driver_name or "", "driver_phone": v.driver_phone or "", "is_active": bool(v.is_active)} if v else None),
         })
 
     # ── Unloaded pool ──
     unloaded_brands: dict[str, dict] = {}
+    pool_freight: dict[str, float] = {}
     for l in active_lines:
         if l.order_qty_box <= 0:
             continue
@@ -636,6 +673,8 @@ def get_order_dashboard(
         w = remaining * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
         unloaded_brands[b]["total_remaining_boxes"] += remaining
         unloaded_brands[b]["total_weight"] += w
+        fc = freight_of.get(p.item_code, "")
+        pool_freight[fc] = pool_freight.get(fc, 0.0) + w
         unloaded_brands[b]["items"].append({
             "item_code": p.item_code, "name": p.name,
             "remaining_boxes": round(remaining, 1), "weight": round(w, 2),
@@ -645,6 +684,7 @@ def get_order_dashboard(
     for ub in unloaded_list:
         ub["total_remaining_boxes"] = round(ub["total_remaining_boxes"], 1)
         ub["total_weight"] = round(ub["total_weight"], 1)
+        ub["orderer"] = brand_orderer.get(ub["brand"], "")
 
     active_brands = [b for b in brands_list if b["brand_status"] != "cancelled" and b["total_order_boxes"] > 0]
 
@@ -671,9 +711,13 @@ def get_order_dashboard(
             "brands": unloaded_list,
             "total_remaining_boxes": round(sum(ub["total_remaining_boxes"] for ub in unloaded_list), 1),
             "total_weight": round(sum(ub["total_weight"] for ub in unloaded_list), 1),
+            "freight": _freight_list(pool_freight, freight_classes),
         },
+        "orderers": {"names": orderer_names(db), "unassigned_label": UNASSIGNED},
+        "freight_classes": freight_classes,
         "available_vehicles": [
-            {"id": v.id, "name": v.name, "plate": v.plate, "is_active": v.is_active}
+            {"id": v.id, "name": v.name, "plate": v.plate, "is_active": v.is_active, "capacity_kg": float(v.capacity_kg or 0),
+             "driver_name": v.driver_name or "", "driver_phone": v.driver_phone or ""}
             for v in db.query(Vehicle).filter(Vehicle.is_active == True).order_by(Vehicle.name).all()
         ],
     }
