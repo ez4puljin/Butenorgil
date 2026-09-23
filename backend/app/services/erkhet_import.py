@@ -84,13 +84,14 @@ def previous(db: Session, *, brand: str, po_id: int = 0, recv_id: int = 0) -> li
 
 
 def submit(db: Session, *, data: bytes, filename: str, nrows: int, year: int, company: str, brand: str,
-           qty_source: str, username: str, po_id: int = 0, recv_id: int = 0) -> tuple[ErkhetImportLog, dict]:
+           qty_source: str, username: str, po_id: int = 0, recv_id: int = 0,
+           kind: str = IMPORT_KIND, tag: str = "") -> tuple[ErkhetImportLog, dict]:
     """Файлыг хадгалж, бүртгэл үүсгээд Эрхэт рүү илгээнэ. (log, client-ийн хариу) буцаана."""
     from app.services.erkhet_client import ErkhetError, get_client
     title = filename[:-5] if filename.lower().endswith(".xlsx") else filename
     STORE_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    tag = f"RECV{recv_id}" if recv_id else f"PO{po_id}"
+    tag = tag or (f"RECV{recv_id}" if recv_id else f"PO{po_id}")
     stored = STORE_DIR / f"{stamp}_{tag}_{re.sub(r'[^0-9A-Za-z_.-]', '_', filename)}"
     stored.write_bytes(data)
 
@@ -101,7 +102,7 @@ def submit(db: Session, *, data: bytes, filename: str, nrows: int, year: int, co
     db.commit()
     db.refresh(log)
     try:
-        res = get_client().import_file(title, IMPORT_KIND, filename, data, year=year)
+        res = get_client().import_file(title, kind, filename, data, year=year)
     except ErkhetError as e:
         res = {"state": "fail", "errors": [str(e)]}
     except Exception as e:                                       # noqa: BLE001

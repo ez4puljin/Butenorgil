@@ -18,4 +18,5 @@ from app.models.hall_count import HallCountSession, HallCountItem, HallCountScan
 from app.models.pallet import PalletTemplate, ProductPallet
 from app.models.custom_master import CustomField, CustomRecord
 from app.models.brand_orderer import BrandOrderer
+from app.models.new_product import NewProduct
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule

@@ -41,6 +41,7 @@ from app.models.hall_count import HallCountSession, HallCountItem, HallCountScan
 from app.models.pallet import PalletTemplate, ProductPallet  # noqa: F401 – registers tables
 from app.models.custom_master import CustomField, CustomRecord  # noqa: F401 – registers tables
 from app.models.brand_orderer import BrandOrderer  # noqa: F401 – registers tables
+from app.models.new_product import NewProduct  # noqa: F401 – registers tables
 from app.models.ebarimt_file import EbarimtFile  # noqa: F401 – registers table
 from app.models.ai_chat_log import AiChatLog  # noqa: F401 – registers table
 from app.models.pos_recon import PosReconDay  # noqa: F401 – registers table
@@ -1109,6 +1110,12 @@ async def _dashboard_warm_loop():
             await asyncio.to_thread(warm_balance_maps)
         except Exception as e:
             print(f"[balance] warm алдаа: {e}")
+        # Шинэ бараа цэсний лавлах (Эрхэтийн барааны жагсаалт, ~4с parse) — эхний нээлт хүлээхгүй
+        try:
+            from app.api.new_product import refs as _np_refs
+            await asyncio.to_thread(_np_refs)
+        except Exception as e:
+            print(f"[new-product] refs warm алдаа: {e}")
         # Tag vs Байршил шалгалтын орлого/мастер кэшийг урьдчилан ачаална
         # (анхны шалгалт том файл parse хүлээхгүй, шууд гарна)
         try:
