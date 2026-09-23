@@ -301,6 +301,75 @@ class ErkhetClient:
             return r.content
 
 
+    # ── Файл импорт (Файл импортлох → /import/create/) ───────────────
+    IMPORT_OK_STATUS = "Амжилттай импорт"
+
+    def import_file(self, title: str, kind: str, filename: str, data: bytes,
+                    timeout: int | None = None) -> dict:
+        """Эрхэтийн «Файл импортлох» формоор файл илгээнэ (гараар хийхтэй ижил).
+
+        Эрхэт импортыг СИНХРОН хийдэг: амжилттай бол /import/ жагсаалт руу шилжиж
+        шинэ мөр «Амжилттай импорт» + баримтын тоотой гарна; алдаатай бол формын
+        хуудас алдааны мэдээлэлтэй буцаж, юу ч хадгалагдахгүй.
+
+        Буцаах: {"ok": bool|None, "import_id", "status", "count", "errors": [...], "url"}
+          ok=None — хариу тодорхойгүй (timeout г.м) → Эрхэтийн жагсаалтыг шалгах хэрэгтэй.
+        POST-ыг ХЭЗЭЭ Ч давтахгүй (давхар орлого үүсэхээс сэргийлнэ)."""
+        path = "import/create/"
+        with self._lock:
+            page = self._get(path)                       # session/CSRF шинэчилнэ
+            if "/login" in page.url:
+                raise ErkhetError("Эрхэтэд нэвтэрч чадсангүй.")
+            s = self._session()
+            url = self._url(path)
+            m = re.search(r'name="csrfmiddlewaretoken"[^>]*value="([^"]+)"', page.text)                 or re.search(r'value="([^"]+)"[^>]*name="csrfmiddlewaretoken"', page.text)
+            token = m.group(1) if m else s.cookies.get("csrftoken", "")
+            payload = {"csrfmiddlewaretoken": token, "title": title[:200], "kind": kind, "year": "", "month": ""}
+            files = {"f": (filename, data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+            t0 = time.time()
+            try:
+                r = s.post(url, data=payload, files=files,
+                           headers={"Referer": url, "Origin": self.base},
+                           timeout=timeout or max(self.timeout, 300))
+            except requests.Timeout:
+                return {"ok": None, "errors": ["Эрхэт хариу өгөөгүй (timeout) — импорт орсон эсэхийг Эрхэтийн импортын жагсаалтаас шалгана уу."],
+                        "url": self._url("import/")}
+            print(f"[erkhet] import {kind} '{title}' -> {r.status_code} {r.url} {time.time()-t0:.1f}s")
+            if "/login" in r.url:
+                self._s = None
+                raise ErkhetError("Эрхэтийн session дууссан — импорт хийгдээгүй. Дахин оролдоно уу.")
+            final = r.url.split("?")[0]
+            html = r.text
+            if r.ok and final.rstrip("/").endswith("/import"):
+                # Жагсаалт: хамгийн шинэ (id их) бөгөөд гарчиг таарсан мөр
+                best = None
+                for tid, body in re.findall(r'<tr[^>]*id="(\d+)"[^>]*>(.*?)</tr>', html, re.S):
+                    cells = [_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", body, re.S)]
+                    if len(cells) >= 6 and cells[2] == title[:200].strip():
+                        if best is None or int(tid) > int(best[0]):
+                            best = (tid, cells)
+                if best:
+                    tid, cells = best
+                    cnt = int(cells[5]) if cells[5].isdigit() else None
+                    return {"ok": cells[4] == self.IMPORT_OK_STATUS, "import_id": int(tid), "status": cells[4],
+                            "count": cnt, "date": cells[1], "errors": [] if cells[4] == self.IMPORT_OK_STATUS else [cells[4]],
+                            "url": self._url("import/")}
+                return {"ok": None, "errors": ["Эрхэт жагсаалт руу шилжсэн ч энэ гарчигтай мөр олдсонгүй — Эрхэтээс шалгана уу."],
+                        "url": self._url("import/")}
+            # Формын хуудас буцсан → алдаа
+            errs: list[str] = []
+            for pat in (r'<ul[^>]*class="[^"]*errorlist[^"]*"[^>]*>(.*?)</ul>',
+                        r'<div[^>]*class="[^"]*alert[^"]*"[^>]*>(.*?)</div>',
+                        r'<(?:span|p|div)[^>]*class="[^"]*(?:help-block|text-danger|error)[^"]*"[^>]*>(.*?)</(?:span|p|div)>'):
+                for blk in re.findall(pat, html, re.S | re.I):
+                    t = _text(blk)
+                    if t and t not in errs:
+                        errs.append(t)
+            if not errs:
+                errs = [f"Эрхэт импортыг хүлээж аваагүй (HTTP {r.status_code}, {final})."]
+            return {"ok": False, "errors": errs[:30], "url": url}
+
+
 # ── Дундын instance (session дахин ашиглана) ─────────────────────────────────
 _client: ErkhetClient | None = None
 _client_lock = threading.Lock()

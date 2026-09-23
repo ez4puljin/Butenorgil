@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import { X, Download, RefreshCw, Building2 } from "lucide-react";
+import { X, Download, RefreshCw, Building2, UploadCloud, CheckCircle2, AlertCircle, ExternalLink } from "lucide-react";
 import { api } from "../lib/api";
+import { useAuthStore } from "../store/authStore";
 import type { PODetail } from "../store/purchaseOrderStore";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -83,6 +84,57 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /* ── Эрхэт рүү ШУУД импорт (Файл импортлох → Бараа материалын орлого) ── */
+  const { role, baseRole } = useAuthStore();
+  const canErkhet = ["admin", "accountant", "supervisor"].includes((baseRole || role || "") as string);
+  type ImpLog = { id: number; brand: string; title: string; status: string; erkhet_import_id: number | null; erkhet_status: string;
+    doc_count: number; row_count: number; message: string; username: string; created_at: string | null; qty_source: string };
+  type ImpRes = ImpLog & { ok: boolean | null; errors: string[]; erkhet_url?: string };
+  const [prevImports, setPrevImports] = useState<ImpLog[]>([]);
+  const [erkhetBusy, setErkhetBusy] = useState(false);
+  const [erkhetRes, setErkhetRes] = useState<ImpRes | null>(null);
+  const loadPrevImports = async () => {
+    try { const r = await api.get(`/purchase-orders/${order.id}/erkhet-imports`, { params: { brand: brandFilter ?? "" } }); setPrevImports(r.data); }
+    catch { /* мэдээлэл л */ }
+  };
+  useEffect(() => { if (canErkhet) loadPrevImports(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [order.id, brandFilter, canErkhet]);
+  const fmtWhen = (s: string | null) => {
+    if (!s) return "";
+    const d = new Date(s); const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+  const impStatus = (x: ImpLog) => x.status === "ok" ? `Амжилттай${x.erkhet_import_id ? ` · Эрхэт #${x.erkhet_import_id}` : ""}${x.doc_count ? ` · ${x.doc_count} баримт` : ""}`
+    : x.status === "fail" ? "Алдаатай (импорт хийгдээгүй)" : "Тодорхойгүй — Эрхэтээс шалгана уу";
+
+  const handleErkhet = async (force = false) => {
+    setError(null); setErkhetRes(null);
+    if (!force && !confirm(
+      `Эрхэт → «Бараа материалын орлого» импорт руу ШУУД илгээх үү?\n\n` +
+      `Бренд: ${brandFilter || "бүх бренд"}\nМөр: ${srcInfo?.rows ?? 0} · Эх сурвалж: ${srcInfo?.label ?? qtySource}\n` +
+      `Гарчиг: ERP Excel-ийн файлын нэр\n\nИлгээмэгц Эрхэт дээр орлого бүртгэгдэнэ.`)) return;
+    setErkhetBusy(true);
+    try {
+      const r = await api.post(`/purchase-orders/${order.id}/erkhet-import`, {
+        ...cfg, brand_filter: brandFilter ?? "", qty_source: qtySource, confirm_estimate: confirmEstimate, force,
+      });
+      setErkhetRes(r.data);
+      loadPrevImports();
+    } catch (e: any) {
+      const d = e?.response?.data;
+      if (e?.response?.status === 409 && Array.isArray(d?.previous)) {
+        const lines = d.previous.map((x: ImpLog) => `• ${fmtWhen(x.created_at)} ${x.username} — ${impStatus(x)}`).join("\n");
+        if (confirm(`⚠ ${d.detail}\n\n${lines}\n\nДахин импортлох уу? (Эрхэт дээр орлого ДАВХАР бүртгэгдэнэ)`)) {
+          setErkhetBusy(false);
+          return handleErkhet(true);
+        }
+      } else {
+        setError(typeof d?.detail === "string" ? d.detail : "Эрхэт рүү импортлоход алдаа гарлаа");
+      }
+    } finally {
+      setErkhetBusy(false);
+    }
+  };
 
   /* ── Тооны эх сурвалж ────────────────────────────────────────────────
      Өмнө нь экспорт зөвхөн «ачигдсан/ирсэн > 0» мөрийг авдаг байсан тул
@@ -427,6 +479,34 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
             </div>
           )}
 
+          {canErkhet && prevImports.length > 0 && !erkhetRes && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+              <div className="mb-1 font-semibold">Энэ {brandFilter ? "брендийг" : "захиалгыг"} Эрхэт рүү өмнө импортолсон:</div>
+              {prevImports.slice(0, 4).map((x) => (
+                <div key={x.id}>• {fmtWhen(x.created_at)} · {x.username} · {impStatus(x)}</div>
+              ))}
+            </div>
+          )}
+
+          {erkhetRes && (
+            <div className={`rounded-lg px-4 py-3 text-sm ${erkhetRes.ok === true ? "bg-emerald-50 text-emerald-800" : erkhetRes.ok === false ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-800"}`}>
+              <div className="flex items-center gap-2 font-semibold">
+                {erkhetRes.ok === true ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                {erkhetRes.ok === true ? "Эрхэтэд амжилттай импортлогдлоо" : erkhetRes.ok === false ? "Эрхэт импортыг хүлээж аваагүй — юу ч бүртгэгдээгүй" : "Үр дүн тодорхойгүй"}
+              </div>
+              <div className="mt-1 text-xs">«{erkhetRes.title}» · {erkhetRes.row_count} мөр
+                {erkhetRes.erkhet_import_id ? ` · Эрхэт импорт #${erkhetRes.erkhet_import_id}` : ""}{erkhetRes.doc_count ? ` · ${erkhetRes.doc_count} баримт` : ""}</div>
+              {erkhetRes.errors?.length > 0 && (
+                <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs">{erkhetRes.errors.map((m, i) => <li key={i}>{m}</li>)}</ul>
+              )}
+              {erkhetRes.erkhet_url && (
+                <a href={erkhetRes.erkhet_url.replace(/import\/create\/?$/, "import/")} target="_blank" rel="noreferrer" className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold underline">
+                  Эрхэтийн импортын жагсаалт <ExternalLink size={11} />
+                </a>
+              )}
+            </div>
+          )}
+
           {error && (
             <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
           )}
@@ -452,6 +532,17 @@ export default function ERPExcelModal({ order, onClose, brandFilter }: Props) {
             )}
             Excel татах
           </button>
+          {canErkhet && (
+            <button
+              onClick={() => handleErkhet(false)}
+              disabled={erkhetBusy || loading || !canExport || cfg.company !== "buten_orgil"}
+              title={cfg.company !== "buten_orgil" ? "Эрхэт рүү шууд импорт зөвхөн Бүтэн-Оргил ХХК-д" : "Эрхэт → Файл импортлох → Бараа материалын орлого"}
+              className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-700 disabled:opacity-40"
+            >
+              {erkhetBusy ? <RefreshCw size={14} className="animate-spin" /> : <UploadCloud size={14} />}
+              {erkhetBusy ? "Эрхэт рүү илгээж байна…" : "Эрхэт рүү импортлох"}
+            </button>
+          )}
         </div>
       </div>
     </div>

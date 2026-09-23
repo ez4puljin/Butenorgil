@@ -140,3 +140,28 @@ class POShipmentBrand(Base):
     brand: Mapped[str] = mapped_column(String(200), nullable=False)
     created_by: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ErkhetImportLog(Base):
+    """Захиалгын ERP Excel-ийг Эрхэт рүү ШУУД импортолсон бүртгэл.
+
+    Давхар орлого үүсэхээс сэргийлж (ижил захиалга+брендийг дахин импортлоход
+    анхааруулна), илгээсэн файлыг ч хадгална (app/data/erkhet_imports/)."""
+    __tablename__ = "erkhet_import_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    purchase_order_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    brand: Mapped[str] = mapped_column(String(200), default="")          # "" = бүх бренд
+    qty_source: Mapped[str] = mapped_column(String(20), default="received")
+    company: Mapped[str] = mapped_column(String(30), default="buten_orgil")
+    title: Mapped[str] = mapped_column(String(255), default="")
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    stored_path: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(10), default="")          # ok | fail | unknown
+    erkhet_import_id: Mapped[int] = mapped_column(Integer, default=0)
+    erkhet_status: Mapped[str] = mapped_column(String(100), default="")
+    doc_count: Mapped[int] = mapped_column(Integer, default=0)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str] = mapped_column(String(2000), default="")
+    username: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

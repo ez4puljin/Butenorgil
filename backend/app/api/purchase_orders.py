@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import date as date_type, datetime
 from typing import Optional, List
 import io
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -15,6 +16,7 @@ from app.core import dashboard_cache
 from app.models.purchase_order import (
     PurchaseOrder, PurchaseOrderLine, PurchaseOrderBrandVehicle,
     PurchaseOrderBrandStatus, OrderExtraLine, POShipment, POShipmentLine, POShipmentBrand,
+    ErkhetImportLog,
 )
 from app.models.product import Product
 from app.models.user import User
@@ -2396,7 +2398,8 @@ def export_erp_excel(
         raise HTTPException(500, f"Excel үүсгэхэд алдаа: {type(e).__name__}: {e}")
 
 
-def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session):
+def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session, as_bytes: bool = False):
+    """as_bytes=True → (xlsx bytes, файлын нэр, мөрийн тоо) буцаана (Эрхэт рүү шууд импортлоход)."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
@@ -2586,6 +2589,8 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
     filename = f"{date_str}_PO{po.id}_{brand_part}_{ERP_QTY_SOURCE_SLUG[src]}.xlsx"
     # RFC 5987: ASCII fallback + UTF-8 encoded filename* (Cyrillic-д зориулж)
     # ASCII fallback нь зай/тусгай тэмдэггүй учир хашилт хэрэггүй
+    if as_bytes:
+        return buf.getvalue(), filename, len(picked)
     ascii_fallback = re.sub(r"[^\w\-.]", "_", filename.encode("ascii", "ignore").decode("ascii")) or f"PO{po.id}.xlsx"
     utf8_quoted = quote(filename, safe="")
     return StreamingResponse(
@@ -2597,6 +2602,110 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
             )
         },
     )
+
+
+# ── Эрхэт рүү ШУУД импортлох ─────────────────────────────────────────────────
+# «Файл импортлох» (/import/create/) формыг гараар бөглөхтэй ижил:
+#   Гарчиг = ERP Excel-ийн нэр, Төрөл = Бараа материалын орлого (inv_income), Файл = ERP Excel
+ERKHET_IMPORT_ROLES = ("admin", "accountant", "supervisor")
+ERKHET_IMPORT_KIND = "inv_income"
+ERKHET_IMPORT_COMPANY = "buten_orgil"      # Эрхэтийн нэвтрэх эрх нь Бүтэн-Оргил ХХК-ийнх
+
+
+class ErkhetImportIn(ERPExcelConfigIn):
+    force: bool = False                    # өмнө импортолсон ч дахин импортлох
+
+
+def _erkhet_log_dict(r: ErkhetImportLog) -> dict:
+    return {"id": r.id, "brand": r.brand, "qty_source": r.qty_source, "title": r.title, "status": r.status,
+            "erkhet_import_id": r.erkhet_import_id or None, "erkhet_status": r.erkhet_status, "doc_count": r.doc_count,
+            "row_count": r.row_count, "message": r.message, "username": r.username,
+            "created_at": (r.created_at.isoformat() + "Z") if r.created_at else None}
+
+
+@router.get("/{order_id}/erkhet-imports")
+def list_erkhet_imports(
+    order_id: int,
+    brand: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    u: User = Depends(get_current_user),
+):
+    q = db.query(ErkhetImportLog).filter(ErkhetImportLog.purchase_order_id == order_id)
+    if brand is not None:
+        q = q.filter(ErkhetImportLog.brand == brand.strip())
+    return [_erkhet_log_dict(r) for r in q.order_by(ErkhetImportLog.id.desc()).limit(50).all()]
+
+
+@router.post("/{order_id}/erkhet-import")
+def erkhet_import(
+    order_id: int,
+    body: ErkhetImportIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role(*ERKHET_IMPORT_ROLES)),
+):
+    """ERP Excel-ийг үүсгээд Эрхэтийн «Бараа материалын орлого» импорт руу шууд илгээнэ."""
+    from pathlib import Path as _P
+    from app.services.erkhet_client import ErkhetError, get_client
+
+    if (body.company or "") != ERKHET_IMPORT_COMPANY:
+        raise HTTPException(400, "Эрхэт рүү шууд импорт зөвхөн Бүтэн-Оргил ХХК-д тохируулагдсан. "
+                                 "Оргил-Хорумын файлыг Excel-ээр татаж гараар импортлоно уу.")
+    brand = (body.brand_filter or "").strip()
+    src = (body.qty_source or "received").strip()
+
+    # Давхар орлогоос сэргийлэх: энэ захиалга+брендийг өмнө импортолсон (эсвэл үр дүн тодорхойгүй) бол
+    prev = (db.query(ErkhetImportLog)
+            .filter(ErkhetImportLog.purchase_order_id == order_id, ErkhetImportLog.brand == brand,
+                    ErkhetImportLog.status.in_(("ok", "unknown")))
+            .order_by(ErkhetImportLog.id.desc()).all())
+    if prev and not body.force:
+        return JSONResponse(status_code=409, content={
+            "detail": "Энэ захиалга/брендийг Эрхэт рүү өмнө импортолсон байна — дахин импортлобол орлого ДАВХАР бүртгэгдэнэ.",
+            "previous": [_erkhet_log_dict(r) for r in prev[:5]],
+        })
+
+    try:
+        data, filename, nrows = _export_erp_excel_impl(order_id, body, db, as_bytes=True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Excel үүсгэхэд алдаа: {type(e).__name__}: {e}")
+    title = filename[:-5] if filename.lower().endswith(".xlsx") else filename
+
+    # Илгээсэн файлыг хадгална (аудит/дахин шалгахад)
+    store_dir = _P("app/data/erkhet_imports")
+    store_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    stored = store_dir / f"{stamp}_PO{order_id}_{re.sub(r'[^0-9A-Za-z_.-]', '_', filename)}"
+    stored.write_bytes(data)
+
+    log = ErkhetImportLog(purchase_order_id=order_id, brand=brand, qty_source=src, company=body.company,
+                          title=title, filename=filename, stored_path=str(stored), row_count=nrows,
+                          username=(u.username or ""), status="unknown")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    try:
+        res = get_client().import_file(title, ERKHET_IMPORT_KIND, filename, data)
+    except ErkhetError as e:
+        res = {"ok": False, "errors": [str(e)]}
+    except Exception as e:
+        res = {"ok": None, "errors": [f"{type(e).__name__}: {e}"]}
+
+    log.status = "ok" if res.get("ok") is True else ("fail" if res.get("ok") is False else "unknown")
+    log.erkhet_import_id = int(res.get("import_id") or 0)
+    log.erkhet_status = (res.get("status") or "")[:100]
+    log.doc_count = int(res.get("count") or 0)
+    log.message = "; ".join(res.get("errors") or [])[:2000]
+    db.commit()
+    audit(db, request, u, action="po_erkhet_import", entity_type="erkhet_import", entity_id=log.id,
+          parent_type="purchase_order", parent_id=order_id,
+          after={"brand": brand, "title": title, "status": log.status, "erkhet_import_id": log.erkhet_import_id,
+                 "doc_count": log.doc_count, "rows": nrows, "qty_source": src},
+          extra={"message": log.message[:500]} if log.message else None, autocommit=True)
+    return {**_erkhet_log_dict(log), "ok": res.get("ok"), "errors": res.get("errors") or [], "erkhet_url": res.get("url")}
 
 
 # ── PDF Export ─────────────────────────────────────────────────────────────────

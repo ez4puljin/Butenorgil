@@ -52,6 +52,7 @@ ACTION_LABEL = {
     "po_shipment_unplan_brand": "Машинаас хассан",
     "po_set_lines_conflict": "Зөрчилтэй хадгалалт (хөндөөгүй)",
     "po_delete": "Захиалга устгасан",
+    "po_erkhet_import": "Эрхэт рүү импортолсон",
 }
 KIND_LABEL = {
     "zeroed": "Захиалгын тоог 0 болгосон",
@@ -69,6 +70,7 @@ KIND_LABEL = {
     "vehicle": "Машин хуваарилалт",
     "archive": "Архив",
     "conflict": "Зөрчил",
+    "erkhet": "Эрхэт импорт",
     "other": "Бусад",
 }
 FIELD_LABEL = {
@@ -168,6 +170,14 @@ def _event(r: AuditLog, code_of: dict, vehicle_of: dict) -> dict:
                         "before": vehicle_of.get(bs, f"Ачилт #{bs}") if bs else "—",
                         "after": vehicle_of.get(as_, f"Ачилт #{as_}") if as_ else "—"})
         kinds.append("vehicle")
+    elif r.action == "po_erkhet_import":
+        brand = a.get("brand", "")
+        st = {"ok": "Амжилттай", "fail": "Алдаатай", "unknown": "Тодорхойгүй"}.get(a.get("status"), a.get("status", ""))
+        changes.append({"field": "erkhet", "label": f"«{a.get('title', '')}» · {a.get('rows', 0)} мөр", "before": None,
+                        "after": f"{st}" + (f" · Эрхэт #{a.get('erkhet_import_id')} · {a.get('doc_count')} баримт" if a.get("erkhet_import_id") else "")})
+        if ex.get("message"):
+            changes.append({"field": "erkhet_msg", "label": ex.get("message"), "before": None, "after": None})
+        kinds.append("erkhet")
     elif r.action == "po_set_lines_conflict":
         n = ex.get("count", 0)
         items = ex.get("items") or []
