@@ -43,46 +43,47 @@ class OptimizeIn(BaseModel):
 def list_vehicles(db: Session = Depends(get_db), _=Depends(require_role("admin", "supervisor", "manager"))):
     rows = db.query(Vehicle).order_by(Vehicle.name).all()
 
-    # Bulk load all data in 4 queries (instead of thousands)
-    all_shipments = db.query(POShipment).all()
-    all_ship_lines = db.query(POShipmentLine).all()
-    all_po_lines = db.query(PurchaseOrderLine).all()
-    all_products = db.query(Product).all()
-    all_pos = db.query(PurchaseOrder).all()
+    # ⚠ Өмнө нь purchase_order_lines-ийг БҮХЭЛД нь (1.4 сая мөр) + бүх бараа, бүх
+    # захиалгыг ORM объект болгож ачаалдаг байсан — хэмжсэнээр 42 СЕКУНД, мөн тэр
+    # хугацаанд серверийн CPU/GIL-ийг эзэлж бусад бүх хүсэлтийг удаашруулж байв.
+    # Захиалгын дэлгэрэнгүй хуудас (admin/manager) бүр үүнийг дууддаг. Одоо жинг
+    # SQL GROUP BY-гоор, ачилтын түүхийг зөвхөн шаардлагатай баганаар авна.
+    from sqlalchemy import func
+    weight_expr = func.sum(
+        POShipmentLine.loaded_qty_box
+        * func.coalesce(func.nullif(Product.pack_ratio, 0), 1)
+        * func.coalesce(Product.unit_weight, 0)
+    )
+    weight_by_vehicle = {
+        vid: float(w or 0)
+        for vid, w in db.query(POShipment.vehicle_id, weight_expr)
+        .join(POShipmentLine, POShipmentLine.shipment_id == POShipment.id)
+        .join(PurchaseOrderLine, PurchaseOrderLine.id == POShipmentLine.po_line_id)
+        .join(Product, Product.id == PurchaseOrderLine.product_id)
+        .filter(POShipment.vehicle_id.isnot(None))
+        .group_by(POShipment.vehicle_id)
+        .all()
+    }
 
-    # Build lookup maps
-    po_line_map = {pl.id: pl for pl in all_po_lines}
-    product_map = {p.id: p for p in all_products}
-    po_map = {po.id: po for po in all_pos}
-
-    # Group shipment lines by shipment_id
-    ship_lines_by_sid: dict[int, list] = {}
-    for sl in all_ship_lines:
-        ship_lines_by_sid.setdefault(sl.shipment_id, []).append(sl)
-
-    # Build vehicle stats
     vehicle_stats: dict[int, dict] = {}
-    for sh in all_shipments:
-        if not sh.vehicle_id:
-            continue
-        if sh.vehicle_id not in vehicle_stats:
-            vehicle_stats[sh.vehicle_id] = {"trip_count": 0, "total_weight": 0.0, "shipments": []}
-        if sh.status not in ("loading",):
-            vehicle_stats[sh.vehicle_id]["trip_count"] += 1
-        # Weight from pre-loaded data
-        for sl in ship_lines_by_sid.get(sh.id, []):
-            pl = po_line_map.get(sl.po_line_id)
-            if pl:
-                p = product_map.get(pl.product_id)
-                if p:
-                    vehicle_stats[sh.vehicle_id]["total_weight"] += sl.loaded_qty_box * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
-        po = po_map.get(sh.purchase_order_id)
-        vehicle_stats[sh.vehicle_id]["shipments"].append({
-            "shipment_id": sh.id,
-            "po_id": sh.purchase_order_id,
-            "po_date": po.order_date.isoformat() if po else "",
-            "status": sh.status,
-            "created_at": sh.created_at.isoformat() if sh.created_at else "",
+    ship_rows = (
+        db.query(POShipment.id, POShipment.vehicle_id, POShipment.purchase_order_id, POShipment.status,
+                 POShipment.created_at, PurchaseOrder.order_date)
+        .outerjoin(PurchaseOrder, PurchaseOrder.id == POShipment.purchase_order_id)
+        .filter(POShipment.vehicle_id.isnot(None))
+        .order_by(POShipment.id)
+        .all()
+    )
+    for sid, vid, po_id, st, created_at, po_date in ship_rows:
+        vs = vehicle_stats.setdefault(vid, {"trip_count": 0, "total_weight": weight_by_vehicle.get(vid, 0.0), "shipments": []})
+        if st not in ("loading",):
+            vs["trip_count"] += 1
+        vs["shipments"].append({
+            "shipment_id": sid,
+            "po_id": po_id,
+            "po_date": po_date.isoformat() if po_date else "",
+            "status": st,
+            "created_at": created_at.isoformat() if created_at else "",
         })
 
     result = []

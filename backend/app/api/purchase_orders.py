@@ -101,6 +101,7 @@ def _serialize_order_detail(
     db: Session,
     filter_tag_ids: Optional[List[int]] = None,
     all_lines_at_preparing: bool = True,
+    brand: Optional[str] = None,
 ) -> dict:
     """Full detail including product info for each line.
     If filter_tag_ids is provided, only lines whose product belongs to those warehouses are returned.
@@ -148,6 +149,13 @@ def _serialize_order_detail(
         lines_q = lines_q.filter(
             (PurchaseOrderLine.order_qty_box > 0) | (PurchaseOrderLine.supplier_qty_box > 0)
         )
+    if brand is not None:
+        # Брендийн дэлгэрэнгүй: 22 мянган мөрийг бүгдийг боловсруулаад дараа нь хаяхын
+        # оронд SQL-д шүүнэ (үр дүнгийн бренд = override_brand, эс бол Product.brand).
+        _ovr = func.coalesce(func.trim(PurchaseOrderLine.override_brand), "")
+        lines_q = lines_q.join(Product, Product.id == PurchaseOrderLine.product_id).filter(
+            (_ovr == brand.strip()) | ((_ovr == "") & (Product.brand == brand))
+        )
     all_lines = lines_q.all()
 
     # Bulk load products.
@@ -165,7 +173,11 @@ def _serialize_order_detail(
         prod_q = prod_q.filter(
             (PurchaseOrderLine.order_qty_box > 0) | (PurchaseOrderLine.supplier_qty_box > 0)
         )
-    products = prod_q.distinct().all() if all_lines else []
+    if brand is not None:
+        _pids = list({l.product_id for l in all_lines})
+        products = db.query(Product).filter(Product.id.in_(_pids)).all() if _pids else []
+    else:
+        products = prod_q.distinct().all() if all_lines else []
     product_map = {p.id: p for p in products}
 
     # Min-stock rules (нэг удаа ачаалаад бараа бүрт match хийнэ)
@@ -906,8 +918,10 @@ def get_brand_detail(
 
     brand_status = bs.status if bs else po.status
 
-    # Filter lines to this brand
-    detail = _serialize_order_detail(po, db)
+    # Зөвхөн энэ брендийн мөрүүдийг serializer дотор SQL-ээр шүүнэ (өмнө нь бүх
+    # 22 мянган мөрийг боловсруулаад дараа нь хаядаг байсан). Нийт дүн (тооцоолсон
+    # дүн, үнэ зөрсөн тоо) нь хуудсан дээрх хайрцаг/жингийн адил БРЕНДИЙН дүн болно.
+    detail = _serialize_order_detail(po, db, brand=brand)
     detail["lines"] = [l for l in detail["lines"] if l["brand"] == brand]
     detail["brand_filter"] = brand
     detail["brand_status"] = brand_status
@@ -3019,13 +3033,19 @@ def list_shipments(
         assigned_map[sl.po_line_id] = assigned_map.get(sl.po_line_id, 0) + sl.loaded_qty_box
 
     unassigned_lines = []
-    for pl in po.lines:
-        if pl.order_qty_box <= 0:
-            continue
+    # po.lines (22 мянган мөр) + мөр бүрт Product query хийхийн оронд зөвхөн тоотой мөрийг
+    # бараатай нь нэг JOIN-оор авна.
+    ordered = (
+        db.query(PurchaseOrderLine, Product)
+        .outerjoin(Product, Product.id == PurchaseOrderLine.product_id)
+        .filter(PurchaseOrderLine.purchase_order_id == order_id, PurchaseOrderLine.order_qty_box > 0)
+        .order_by(PurchaseOrderLine.id)
+        .all()
+    )
+    for pl, p in ordered:
         assigned = assigned_map.get(pl.id, 0)
         remaining = pl.order_qty_box - assigned
         if remaining > 0:
-            p = db.query(Product).filter(Product.id == pl.product_id).first()
             unassigned_lines.append({
                 "po_line_id": pl.id,
                 "product_id": pl.product_id,
