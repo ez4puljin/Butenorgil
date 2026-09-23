@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 import ConnectionBanner from "../ConnectionBanner";
+import DailyGreeting from "../DailyGreeting";
 
 type NavItem = {
   to: string;
@@ -221,6 +222,8 @@ export default function Shell(props: { children: React.ReactNode }) {
     <div className="min-h-screen bg-[#F5F5F7]">
       {/* Холболтын төлөв (WiFi / сервер тасрахад тодорхой мэдээлнэ) */}
       <ConnectionBanner />
+      {/* Нэвтрэх үеийн мэндчилгээ — өнөөдрийн календарийн ажил + урмын үг (өдөрт нэг удаа) */}
+      <DailyGreeting />
 
       {/* ══ DESKTOP (lg+) ═══════════════════════════════════════════════ */}
       <div className="hidden lg:flex min-h-screen print:block">

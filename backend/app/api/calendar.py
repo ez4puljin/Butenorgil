@@ -274,3 +274,39 @@ def delete_label(
         return {"ok": True, "deactivated": True, "used_by_events": used}
     db.delete(lb); db.commit()
     return {"ok": True, "deleted": True}
+
+
+# ── Өнөөдрийн ажил (нэвтрэх үеийн мэндчилгээний цонх) ─────────────────────────
+_WEEKDAYS = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"]
+
+
+@router.get("/today")
+def today_events(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Өнөөдөр (серверийн локал огноо) календарт төлөвлөсөн ажлууд + label-ийн мэдээлэл.
+    Нэвтэрсэн хэн бүхэнд — мэндчилгээний цонхонд сануулга болгон харуулна."""
+    today = date_type.today()
+    events = (
+        db.query(CalendarEvent)
+        .filter(CalendarEvent.date == today)
+        .order_by(CalendarEvent.is_done, CalendarEvent.created_at)
+        .all()
+    )
+    labels = {l.key: l for l in db.query(CalendarLabel).all()}
+    rows = []
+    for r in _serialize_many(events, db):
+        lb = labels.get(r["task_type"])
+        rows.append({**r,
+                     "label": lb.label if lb else r["task_type"],
+                     "short": (lb.short if lb else "") or "",
+                     "color": lb.color if lb else "gray",
+                     "icon": lb.icon if lb else "MoreHorizontal"})
+    return {
+        "date": today.isoformat(),
+        "weekday": _WEEKDAYS[today.weekday()],
+        "events": rows,
+        "total": len(rows),
+        "done": sum(1 for r in rows if r["is_done"]),
+    }
