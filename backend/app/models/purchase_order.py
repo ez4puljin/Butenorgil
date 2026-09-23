@@ -121,3 +121,22 @@ class POShipmentLine(Base):
     received_qty_box: Mapped[float] = mapped_column(Float, default=0.0)
 
     shipment = relationship("POShipment", back_populates="lines")
+
+
+class POShipmentBrand(Base):
+    """Брендийг машинд (ачилтад) ТӨЛӨВЛӨЖ хуваарилах — брендийн статусаас үл хамаарна.
+
+    Бэлдэж/хянаж/илгээж байгаа брендийг ч машинд урьдчилан оноож дүүргэлтийг харна.
+    Машины доор брендийн статусаар «Ачигдаагүй» (ачигдаж байна-аас өмнө) эсвэл
+    «Ачигдсан» (ачигдаж байна ба түүнээс хойш) ангилалд харагдана. Бодит ачилт нь
+    POShipmentLine хэвээр; нэг захиалгад нэг бренд нэг л машинд төлөвлөгдөнө.
+    """
+    __tablename__ = "po_shipment_brands"
+    __table_args__ = (UniqueConstraint("purchase_order_id", "brand", name="uq_po_shipment_brand"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    purchase_order_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False, index=True)
+    shipment_id: Mapped[int] = mapped_column(ForeignKey("po_shipments.id"), nullable=False, index=True)
+    brand: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

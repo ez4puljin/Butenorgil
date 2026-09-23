@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 from typing import Optional, List
 import io
 
@@ -14,7 +14,7 @@ from app.core.audit import audit
 from app.core import dashboard_cache
 from app.models.purchase_order import (
     PurchaseOrder, PurchaseOrderLine, PurchaseOrderBrandVehicle,
-    PurchaseOrderBrandStatus, OrderExtraLine, POShipment, POShipmentLine,
+    PurchaseOrderBrandStatus, OrderExtraLine, POShipment, POShipmentLine, POShipmentBrand,
 )
 from app.models.product import Product
 from app.models.user import User
@@ -625,6 +625,38 @@ def get_order_dashboard(
         for b, items in sorted(extra_brand_map.items())
     ]
 
+    # ── Машинд төлөвлөсөн брендүүд (статусаас үл хамаарна) ──
+    plans = db.query(POShipmentBrand).filter(POShipmentBrand.purchase_order_id == order_id).all()
+    shipment_ids = {sh.id for sh in shipments}
+    plan_by_brand = {pb.brand: pb.shipment_id for pb in plans if pb.shipment_id in shipment_ids}
+    status_by_brand = {b["brand"]: b["brand_status"] for b in brands_list}
+    for b in brands_list:
+        b["plan_shipment_id"] = plan_by_brand.get(b["brand"])
+
+    # ── Брендийн ачигдаагүй үлдэгдэл (захиалга − бүх машинд ачигдсан) ──
+    remain_by_brand: dict[str, dict] = {}
+    for l in active_lines:
+        if l.order_qty_box <= 0:
+            continue
+        remaining = l.order_qty_box - assigned_map.get(l.id, 0)
+        if remaining <= 0.001:
+            continue
+        p = products.get(l.product_id)
+        if not p:
+            continue
+        b = (l.override_brand or "").strip() or p.brand or "Брэнд байхгүй"
+        rb = remain_by_brand.setdefault(b, {"boxes": 0.0, "weight": 0.0, "freight": {}, "items": []})
+        w = remaining * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
+        rb["boxes"] += remaining
+        rb["weight"] += w
+        fc = freight_of.get(p.item_code, "")
+        rb["freight"][fc] = rb["freight"].get(fc, 0.0) + w
+        rb["items"].append({"item_code": p.item_code, "name": p.name,
+                            "remaining_boxes": round(remaining, 1), "weight": round(w, 2)})
+
+    # «Ачигдсан» ангилал: брендийн статус ачигдаж байна ба түүнээс хойш
+    LOADED_STATUSES = {"loading", "transit", "arrived", "accounting", "confirmed", "received", "partial", "loaded"}
+
     # ── Shipments with per-brand breakdown ──
     active_line_by_id = {l.id: l for l in active_lines}
     shipments_out = []
@@ -634,6 +666,16 @@ def get_order_dashboard(
         sh_brand_map: dict[str, dict] = {}
         sh_freight: dict[str, float] = {}
         total_weight = 0.0
+
+        def _row(b: str) -> dict:
+            if b not in sh_brand_map:
+                st = status_by_brand.get(b, "")
+                sh_brand_map[b] = {"brand": b, "loaded_boxes": 0.0, "received_boxes": 0.0, "weight": 0.0, "line_count": 0,
+                                   "planned_boxes": 0.0, "planned": plan_by_brand.get(b) == sh.id,
+                                   "brand_status": st, "brand_status_label": STATUS_LABEL.get(st, st)}
+            return sh_brand_map[b]
+
+        # Бодит ачилт (POShipmentLine)
         for sl in sh_lines:
             pl = active_line_by_id.get(sl.po_line_id)
             if not pl:
@@ -646,12 +688,35 @@ def get_order_dashboard(
             total_weight += w
             fc = freight_of.get(p.item_code, "")
             sh_freight[fc] = sh_freight.get(fc, 0.0) + w
-            if b not in sh_brand_map:
-                sh_brand_map[b] = {"brand": b, "loaded_boxes": 0, "received_boxes": 0, "weight": 0, "line_count": 0}
-            sh_brand_map[b]["loaded_boxes"] += sl.loaded_qty_box
-            sh_brand_map[b]["received_boxes"] += sl.received_qty_box
-            sh_brand_map[b]["weight"] += w
-            sh_brand_map[b]["line_count"] += 1
+            r = _row(b)
+            r["loaded_boxes"] += sl.loaded_qty_box
+            r["received_boxes"] += sl.received_qty_box
+            r["weight"] += w
+            r["line_count"] += 1
+
+        # Төлөвлөсөн брендүүдийн ачигдаагүй үлдэгдэл
+        for b, sid in plan_by_brand.items():
+            if sid != sh.id or status_by_brand.get(b) == "cancelled":
+                continue
+            r = _row(b)
+            rb = remain_by_brand.get(b)
+            if rb:
+                r["planned_boxes"] += rb["boxes"]
+                r["weight"] += rb["weight"]
+                total_weight += rb["weight"]
+                for fc, w in rb["freight"].items():
+                    sh_freight[fc] = sh_freight.get(fc, 0.0) + w
+
+        loaded_w = planned_w = 0.0
+        for r in sh_brand_map.values():
+            r["category"] = "loaded" if (r["loaded_boxes"] > 0 or r["brand_status"] in LOADED_STATUSES) else "planned"
+            r["loaded_boxes"] = round(r["loaded_boxes"], 1)
+            r["planned_boxes"] = round(r["planned_boxes"], 1)
+            r["weight"] = round(r["weight"], 1)
+            if r["category"] == "loaded":
+                loaded_w += r["weight"]
+            else:
+                planned_w += r["weight"]
 
         cap_kg = float(v.capacity_kg) if v else 0
         shipments_out.append({
@@ -662,9 +727,12 @@ def get_order_dashboard(
             "capacity_kg": cap_kg,
             "status": sh.status,
             "status_label": SHIPMENT_STATUS_LABEL.get(sh.status, sh.status),
-            "brands": sorted(sh_brand_map.values(), key=lambda x: x["brand"]),
+            "brands": sorted(sh_brand_map.values(), key=lambda x: (x["category"] != "loaded", x["brand"])),
             "total_loaded_boxes": round(sum(sl.loaded_qty_box for sl in sh_lines), 1),
+            "total_boxes": round(sum(r["loaded_boxes"] + r["planned_boxes"] for r in sh_brand_map.values()), 1),
             "total_weight": round(total_weight, 1),
+            "loaded_weight": round(loaded_w, 1),
+            "planned_weight": round(planned_w, 1),
             "capacity_pct": round(total_weight / cap_kg * 100, 1) if cap_kg > 0 else 0,
             "freight": _freight_list(sh_freight, freight_classes),
             "notes": sh.notes or "",
@@ -672,38 +740,16 @@ def get_order_dashboard(
                          "driver_name": v.driver_name or "", "driver_phone": v.driver_phone or "", "is_active": bool(v.is_active)} if v else None),
         })
 
-    # ── Unloaded pool ──
-    unloaded_brands: dict[str, dict] = {}
+    # ── Машинд хуваарилаагүй (төлөвлөөгүй) брендүүдийн үлдэгдэл ──
+    unloaded_list = []
     pool_freight: dict[str, float] = {}
-    for l in active_lines:
-        if l.order_qty_box <= 0:
+    for b, rb in sorted(remain_by_brand.items()):
+        if b in plan_by_brand:
             continue
-        loaded = assigned_map.get(l.id, 0)
-        remaining = l.order_qty_box - loaded
-        if remaining <= 0.001:
-            continue
-        p = products.get(l.product_id)
-        if not p:
-            continue
-        b = (l.override_brand or "").strip() or p.brand or "Брэнд байхгүй"
-        if b not in unloaded_brands:
-            unloaded_brands[b] = {"brand": b, "total_remaining_boxes": 0, "total_weight": 0, "items": []}
-        w = remaining * float(p.pack_ratio or 1) * float(p.unit_weight or 0)
-        unloaded_brands[b]["total_remaining_boxes"] += remaining
-        unloaded_brands[b]["total_weight"] += w
-        fc = freight_of.get(p.item_code, "")
-        pool_freight[fc] = pool_freight.get(fc, 0.0) + w
-        unloaded_brands[b]["items"].append({
-            "item_code": p.item_code, "name": p.name,
-            "remaining_boxes": round(remaining, 1), "weight": round(w, 2),
-        })
-
-    unloaded_list = sorted(unloaded_brands.values(), key=lambda x: x["brand"])
-    for ub in unloaded_list:
-        ub["total_remaining_boxes"] = round(ub["total_remaining_boxes"], 1)
-        ub["total_weight"] = round(ub["total_weight"], 1)
-        ub["orderer"] = brand_orderer.get(ub["brand"], "")
-        ub["customer_code"] = brand_customer.get(ub["brand"])
+        for fc, w in rb["freight"].items():
+            pool_freight[fc] = pool_freight.get(fc, 0.0) + w
+        unloaded_list.append({"brand": b, "total_remaining_boxes": round(rb["boxes"], 1), "total_weight": round(rb["weight"], 1),
+                              "items": rb["items"], "orderer": brand_orderer.get(b, ""), "customer_code": brand_customer.get(b)})
 
     active_brands = [b for b in brands_list if b["brand_status"] != "cancelled" and b["total_order_boxes"] > 0]
 
@@ -3170,6 +3216,47 @@ def set_shipment_lines(
 class AssignBrandIn(BaseModel):
     brand: str
 
+
+def _assign_brand_lines(db: Session, order_id: int, sh: POShipment, brand: str) -> int:
+    """Брендийн ачигдаагүй үлдэгдлийг тухайн ачилтад POShipmentLine болгож нэмнэ (commit хийхгүй).
+    Үр дүнгийн бренд = override_brand, эс бол Product.brand. 22k мөрийг ORM-оор ачаалахгүй."""
+    loaded = dict(
+        db.query(POShipmentLine.po_line_id, func.sum(POShipmentLine.loaded_qty_box))
+        .join(POShipment, POShipment.id == POShipmentLine.shipment_id)
+        .filter(POShipment.purchase_order_id == order_id)
+        .group_by(POShipmentLine.po_line_id).all()
+    )
+    _ovr = func.coalesce(func.trim(PurchaseOrderLine.override_brand), "")
+    rows = (
+        db.query(PurchaseOrderLine)
+        .join(Product, Product.id == PurchaseOrderLine.product_id)
+        .filter(PurchaseOrderLine.purchase_order_id == order_id, PurchaseOrderLine.order_qty_box > 0,
+                (_ovr == brand.strip()) | ((_ovr == "") & (Product.brand == brand)))
+        .all()
+    )
+    existing = {sl.po_line_id: sl for sl in db.query(POShipmentLine).filter(POShipmentLine.shipment_id == sh.id).all()}
+    added = 0
+    for pl in rows:
+        remaining = pl.order_qty_box - float(loaded.get(pl.id) or 0)
+        if remaining <= 0:
+            continue
+        if pl.id in existing:
+            existing[pl.id].loaded_qty_box += remaining
+        else:
+            db.add(POShipmentLine(shipment_id=sh.id, po_line_id=pl.id, loaded_qty_box=remaining))
+        added += 1
+    return added
+
+
+def _set_brand_plan(db: Session, order_id: int, shipment_id: int, brand: str, by: str) -> None:
+    pb = db.query(POShipmentBrand).filter(POShipmentBrand.purchase_order_id == order_id, POShipmentBrand.brand == brand).first()
+    if pb is None:
+        db.add(POShipmentBrand(purchase_order_id=order_id, shipment_id=shipment_id, brand=brand, created_by=by))
+    else:
+        pb.shipment_id = shipment_id
+        pb.created_by = by
+        pb.created_at = datetime.utcnow()
+
 @router.post("/{order_id}/shipments/{shipment_id}/assign-brand")
 def assign_brand_to_shipment(
     order_id: int,
@@ -3196,44 +3283,72 @@ def assign_brand_to_shipment(
     if brand_bs and brand_bs.status != "loading":
         raise HTTPException(400, f"'{body.brand}' бренд 'loading' статуст байх ёстой")
 
-    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
-
-    # All shipment lines for this PO (to compute assigned qty)
-    all_ship_lines = (
-        db.query(POShipmentLine)
-        .join(POShipment, POShipment.id == POShipmentLine.shipment_id)
-        .filter(POShipment.purchase_order_id == order_id)
-        .all()
-    )
-    assigned_map: dict[int, float] = {}
-    for sl in all_ship_lines:
-        assigned_map[sl.po_line_id] = assigned_map.get(sl.po_line_id, 0) + sl.loaded_qty_box
-
-    existing_in_shipment = {sl.po_line_id: sl for sl in sh.lines}
-    added = 0
-
-    for pl in po.lines:
-        if pl.order_qty_box <= 0:
-            continue
-        p = db.query(Product).filter(Product.id == pl.product_id).first()
-        if not p or p.brand != body.brand:
-            continue
-        remaining = pl.order_qty_box - assigned_map.get(pl.id, 0)
-        if remaining <= 0:
-            continue
-        if pl.id in existing_in_shipment:
-            existing_in_shipment[pl.id].loaded_qty_box += remaining
-        else:
-            db.add(POShipmentLine(
-                shipment_id=shipment_id,
-                po_line_id=pl.id,
-                loaded_qty_box=remaining,
-            ))
-        assigned_map[pl.id] = assigned_map.get(pl.id, 0) + remaining
-        added += 1
-
+    added = _assign_brand_lines(db, order_id, sh, body.brand)
+    # Dashboard дээр ч энэ машинд хуваарилагдсан гэж харагдана
+    _set_brand_plan(db, order_id, sh.id, body.brand, (u.username or ""))
     db.commit()
     return {"ok": True, "added": added, "shipment": _serialize_shipment(sh, db)}
+
+
+# ── Брендийг машинд төлөвлөх (дурын статуст) ────────────────────────────────
+
+@router.post("/{order_id}/shipments/{shipment_id}/plan-brand")
+def plan_brand_to_shipment(
+    order_id: int,
+    shipment_id: int,
+    body: AssignBrandIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Брендийг машинд оноох. Бэлдэж/хянаж/илгээж байгаа брендийг төлөвлөгөө хэлбэрээр
+    («Ачигдаагүй»), ачигдаж байна статустай брендийг урьдын адил бодитоор ачна."""
+    brand = body.brand.strip()
+    sh = db.query(POShipment).filter(POShipment.id == shipment_id, POShipment.purchase_order_id == order_id).first()
+    if not sh:
+        raise HTTPException(404, "Ачилт олдсонгүй")
+    if sh.status != "loading":
+        raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' статустай (хөдлөөгүй) машинд хуваарилна")
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    bs = db.query(PurchaseOrderBrandStatus).filter(
+        PurchaseOrderBrandStatus.purchase_order_id == order_id, PurchaseOrderBrandStatus.brand == brand).first()
+    brand_status = bs.status if bs else (po.status if po else "")
+    if brand_status == "cancelled":
+        raise HTTPException(400, "Цуцлагдсан брендийг машинд хуваарилахгүй")
+    prev = db.query(POShipmentBrand).filter(POShipmentBrand.purchase_order_id == order_id, POShipmentBrand.brand == brand).first()
+    prev_sid = prev.shipment_id if prev else None
+    _set_brand_plan(db, order_id, shipment_id, brand, (u.username or ""))
+    added = 0
+    if brand_status == "loading":
+        added = _assign_brand_lines(db, order_id, sh, brand)
+    db.commit()
+    audit(db, request, u, action="po_shipment_plan_brand", entity_type="po_shipment", entity_id=shipment_id,
+          parent_type="purchase_order", parent_id=order_id,
+          before={"brand": brand, "shipment_id": prev_sid}, after={"brand": brand, "shipment_id": shipment_id, "loaded_lines": added},
+          autocommit=True)
+    return {"ok": True, "brand": brand, "shipment_id": shipment_id, "loaded_lines": added, "brand_status": brand_status}
+
+
+@router.delete("/{order_id}/shipments/{shipment_id}/plan-brand")
+def unplan_brand(
+    order_id: int,
+    shipment_id: int,
+    request: Request,
+    brand: str = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Төлөвлөгөөг цуцална (бодит ачилтын мөрүүдийг хөндөхгүй)."""
+    pb = db.query(POShipmentBrand).filter(POShipmentBrand.purchase_order_id == order_id,
+                                          POShipmentBrand.shipment_id == shipment_id,
+                                          POShipmentBrand.brand == brand.strip()).first()
+    if not pb:
+        raise HTTPException(404, "Төлөвлөгөө олдсонгүй")
+    db.delete(pb)
+    db.commit()
+    audit(db, request, u, action="po_shipment_unplan_brand", entity_type="po_shipment", entity_id=shipment_id,
+          parent_type="purchase_order", parent_id=order_id, before={"brand": brand, "shipment_id": shipment_id}, autocommit=True)
+    return {"ok": True}
 
 
 # ── Advance shipment status ──────────────────────────────────────────────────
@@ -3354,6 +3469,7 @@ def delete_shipment(
         raise HTTPException(404, "Ачилт олдсонгүй")
     if sh.status != "loading":
         raise HTTPException(400, "Зөвхөн 'Ачигдаж байна' статустай ачилтыг устгах боломжтой")
+    db.query(POShipmentBrand).filter(POShipmentBrand.shipment_id == sh.id).delete()
     db.delete(sh)
     db.commit()
     return {"ok": True}

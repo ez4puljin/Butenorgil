@@ -25,6 +25,7 @@ type Brand = {
   total_weight: number; estimated_cost: number;
   brand_status: string; brand_status_label: string; vehicle_names: string[];
   orderer: string; customer_code: string | null;
+  plan_shipment_id: number | null;   // машинд төлөвлөж хуваарилсан ачилт
   items: BrandItem[];
 };
 type Freight = { class: string; weight: number };
@@ -33,13 +34,17 @@ type ExtraBrand = {
   brand: string; total_boxes: number; total_weight: number;
   items: { name: string; item_code: string; qty_box: number; computed_weight: number }[];
 };
-type ShipmentBrand = { brand: string; loaded_boxes: number; received_boxes: number; weight: number; line_count: number };
+type ShipmentBrand = {
+  brand: string; loaded_boxes: number; received_boxes: number; weight: number; line_count: number;
+  planned_boxes: number; planned: boolean; category: "loaded" | "planned"; brand_status: string; brand_status_label: string;
+};
 type Shipment = {
   id: number; vehicle_id: number | null; vehicle_name: string | null;
   driver_name: string | null; capacity_kg: number;
   status: string; status_label: string;
   brands: ShipmentBrand[];
   total_loaded_boxes: number; total_weight: number; capacity_pct: number;
+  total_boxes: number; loaded_weight: number; planned_weight: number;
   freight: Freight[]; notes: string; vehicle: VehicleInfo | null;
 };
 type UnloadedBrand = {
@@ -161,8 +166,9 @@ export default function OrderDashboard() {
 
   const showFlash = (msg: string, ok = true) => { setFlash({ msg, ok }); setTimeout(() => setFlash(null), 3000); };
 
-  const load = async () => {
-    setLoading(true); setLoadError(null);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
+    setLoadError(null);
     try {
       const dashRes = await api.get(`/purchase-orders/${id}/dashboard`);
       setData(dashRes.data);
@@ -175,24 +181,24 @@ export default function OrderDashboard() {
 
   const addVehicleShipment = async (vehicleId: number) => {
     setAddingVehicle(true);
-    try { await api.post(`/purchase-orders/${id}/shipments`, { vehicle_id: vehicleId }); showFlash("Машин нэмэгдлээ"); await load(); }
+    try { await api.post(`/purchase-orders/${id}/shipments`, { vehicle_id: vehicleId }); showFlash("Машин нэмэгдлээ"); await load(true); }
     catch (e: any) { showFlash(e?.response?.data?.detail ?? "Алдаа", false); }
     finally { setAddingVehicle(false); }
   };
 
   const assignBrandToShipment = async (brand: string, shipmentId: number) => {
     setAssignBusy(brand);
-    try { await api.post(`/purchase-orders/${id}/shipments/${shipmentId}/assign-brand`, { brand }); showFlash(`${brand} → машинд хуваарилагдлаа`); await load(); }
+    try { await api.post(`/purchase-orders/${id}/shipments/${shipmentId}/assign-brand`, { brand }); showFlash(`${brand} → машинд ачигдлаа`); await load(true); }
     catch (e: any) { showFlash(e?.response?.data?.detail ?? "Алдаа", false); }
     finally { setAssignBusy(null); }
   };
 
   const deleteShipment = async (shipmentId: number) => {
-    if (!confirm("Хоосон машиныг устгах уу?")) return;
+    if (!confirm("Машиныг устгах уу?\nТөлөвлөж хуваарилсан брендүүд «Машинд хуваарилаагүй» руу буцна.")) return;
     try {
       await api.delete(`/purchase-orders/${id}/shipments/${shipmentId}`);
       showFlash("Машин устгагдлаа");
-      await load();
+      await load(true);
     } catch (e: any) {
       showFlash(e?.response?.data?.detail ?? "Устгахад алдаа", false);
     }
@@ -220,6 +226,23 @@ export default function OrderDashboard() {
       showFlash(orderer ? `${brand} → ${orderer}` : `${brand}: захиалагч хасагдлаа`);
     } catch (e: any) { showFlash(e?.response?.data?.detail ?? "Захиалагч хадгалахад алдаа", false); }
     finally { setOrdererBusy(null); }
+  };
+
+  /** Брендийг машинд хуваарилах (дурын статуст). sid=null → машинаас хасах. */
+  const planBrand = async (brand: string, sid: number | null, prevSid: number | null) => {
+    if (sid === prevSid) return;
+    setAssignBusy(brand);
+    try {
+      if (sid == null) {
+        if (prevSid != null) await api.delete(`/purchase-orders/${id}/shipments/${prevSid}/plan-brand`, { params: { brand } });
+        showFlash(`${brand}: машинаас хасагдлаа`);
+      } else {
+        const r = await api.post(`/purchase-orders/${id}/shipments/${sid}/plan-brand`, { brand });
+        showFlash(r.data?.loaded_lines ? `${brand} → машинд ачигдлаа` : `${brand} → машинд хуваарилагдлаа (ачигдаагүй)`);
+      }
+      await load(true);
+    } catch (e: any) { showFlash(e?.response?.data?.detail ?? "Хуваарилахад алдаа", false); }
+    finally { setAssignBusy(null); }
   };
 
   const openShipEdit = (sh: Shipment) => {
@@ -258,7 +281,7 @@ export default function OrderDashboard() {
       }
       showFlash("Машины мэдээлэл хадгалагдлаа");
       setShipEdit(null);
-      await load();
+      await load(true);
     } catch (e: any) { showFlash(e?.response?.data?.detail ?? "Хадгалахад алдаа", false); }
     finally { setShipSaving(false); }
   };
@@ -271,7 +294,7 @@ export default function OrderDashboard() {
     const oid = (e.data as any)?.order_id;
     if (oid == null || String(oid) === String(id)) {
       if (dashTimer.current) clearTimeout(dashTimer.current);
-      dashTimer.current = setTimeout(() => load(), 400);
+      dashTimer.current = setTimeout(() => load(true), 400);
     }
   });
 
@@ -383,28 +406,42 @@ export default function OrderDashboard() {
                       </div>
                     </div>
 
-                    {/* Assign to vehicle — loading brands with shipments */}
-                    {b.brand_status === "loading" && b.total_unloaded_boxes > 0 && loadingShipments.length > 0 && (
-                      <div className="px-4 pb-3">
-                        <select
-                          disabled={assignBusy === b.brand}
-                          defaultValue=""
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => {
-                            const sid = parseInt(e.target.value);
-                            if (sid) { assignBrandToShipment(b.brand, sid); e.target.value = ""; }
-                          }}
-                          className="w-full rounded-xl border border-orange-200 bg-orange-50/50 px-3 py-2 text-xs font-medium text-orange-700 outline-none focus:ring-2 focus:ring-orange-200 transition-all"
-                        >
-                          <option value="">
-                            {assignBusy === b.brand ? "Хуваарилж байна..." : `🚛 Машинд ачих — ${b.total_unloaded_boxes.toFixed(0)} хайрцаг`}
-                          </option>
-                          {loadingShipments.map((s) => (
-                            <option key={s.id} value={s.id}>{s.vehicle_name ?? `Ачилт #${s.id}`}</option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
+                    {/* Машинд хуваарилах — дурын статуст (бэлдэж байхад ч). Ачигдаж байна
+                        статустай бол сервер шууд бодитоор ачна. */}
+                    {b.brand_status !== "cancelled" && (canEdit ? loadingShipments.length > 0 || b.plan_shipment_id != null : b.plan_shipment_id != null) && (() => {
+                      const planned = shipments.find((x) => x.id === b.plan_shipment_id) ?? null;
+                      const plannedOpen = !!planned && planned.status === "loading";
+                      return (
+                        <div className="flex flex-wrap items-center gap-2 px-4 pb-3" onClick={(e) => e.stopPropagation()}>
+                          {canEdit && (loadingShipments.length > 0) ? (
+                            <select
+                              disabled={assignBusy === b.brand}
+                              value={b.plan_shipment_id ?? ""}
+                              onChange={(e) => planBrand(b.brand, e.target.value ? Number(e.target.value) : null, b.plan_shipment_id)}
+                              className={`min-w-0 flex-1 rounded-xl border px-3 py-2 text-xs font-medium outline-none focus:ring-2 transition-all ${b.plan_shipment_id != null ? "border-sky-200 bg-sky-50 text-sky-800 focus:ring-sky-200" : "border-orange-200 bg-orange-50/50 text-orange-700 focus:ring-orange-200"}`}
+                            >
+                              <option value="">{assignBusy === b.brand ? "Хуваарилж байна..." : b.plan_shipment_id != null ? "— Машинаас хасах" : `🚛 Машинд хуваарилах — ${b.total_unloaded_boxes.toFixed(0)} хайрцаг · ${fmtNum(Math.round(b.total_weight))} кг`}</option>
+                              {planned && !plannedOpen && <option value={planned.id} disabled>{planned.vehicle_name ?? `Ачилт #${planned.id}`} ({planned.status_label})</option>}
+                              {loadingShipments.map((x) => (
+                                <option key={x.id} value={x.id}>🚛 {x.vehicle_name ?? `Ачилт #${x.id}`} — {x.capacity_pct.toFixed(0)}% дүүрсэн</option>
+                              ))}
+                            </select>
+                          ) : planned ? (
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700"><Truck size={11} /> {planned.vehicle_name ?? `Ачилт #${planned.id}`}</span>
+                          ) : null}
+                          {canEdit && b.brand_status === "loading" && plannedOpen && b.total_unloaded_boxes > 0 && (
+                            <button
+                              disabled={assignBusy === b.brand}
+                              onClick={() => assignBrandToShipment(b.brand, b.plan_shipment_id!)}
+                              className="shrink-0 rounded-xl bg-orange-500 px-3 py-2 text-xs font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
+                              title="Ачигдаагүй үлдэгдлийг энэ машинд бодитоор ачна"
+                            >
+                              Ачих — {b.total_unloaded_boxes.toFixed(0)} хайрцаг
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* Vehicle names */}
                     {b.vehicle_names.length > 0 && (
@@ -488,7 +525,7 @@ export default function OrderDashboard() {
             </span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
-            <button onClick={load} disabled={loading} aria-label="Шинэчлэх" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-2.5 text-xs text-gray-600 hover:bg-gray-50 active:bg-gray-100 transition-colors">
+            <button onClick={() => load()} disabled={loading} aria-label="Шинэчлэх" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-2.5 text-xs text-gray-600 hover:bg-gray-50 active:bg-gray-100 transition-colors">
               <RefreshCw size={13} className={loading ? "animate-spin" : ""} /><span className="hidden sm:inline">Шинэчлэх</span>
             </button>
             <button onClick={() => navigate(`/order/${id}`)} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#0071E3] px-3 text-xs font-semibold text-white shadow-sm hover:bg-[#005BB5] active:bg-[#004aad] transition-colors">
@@ -682,37 +719,62 @@ export default function OrderDashboard() {
                         </div>
                       </div>
 
-                      {/* Capacity */}
-                      <div className="mb-2.5">
-                        <div className="flex justify-between text-[10px] mb-1">
-                          <span className="text-gray-400">{sh.total_weight.toFixed(0)} / {sh.capacity_kg.toFixed(0)} кг</span>
-                          <span className={`font-bold ${sh.capacity_pct > 95 ? "text-red-600" : sh.capacity_pct >= 70 ? "text-amber-600" : "text-emerald-600"}`}>
-                            {sh.capacity_pct.toFixed(0)}%
-                          </span>
-                        </div>
-                        <CapacityBar pct={sh.capacity_pct} />
-                      </div>
+                      {/* Дүүргэлт: ачигдсан (бүтэн) + ачигдаагүй/төлөвлөсөн (цайвар) */}
+                      {(() => {
+                        const cap = sh.capacity_kg || 0;
+                        const hue = sh.capacity_pct > 95 ? "bg-red-500" : sh.capacity_pct >= 70 ? "bg-amber-400" : "bg-emerald-500";
+                        const lp = cap > 0 ? Math.min(100, (sh.loaded_weight / cap) * 100) : 0;
+                        const pp = cap > 0 ? Math.min(100 - lp, (sh.planned_weight / cap) * 100) : 0;
+                        return (
+                          <div className="mb-2.5">
+                            <div className="flex justify-between text-[10px] mb-1">
+                              <span className="text-gray-500"><strong className="text-gray-800">{fmtNum(Math.round(sh.total_weight))}</strong> / {fmtNum(Math.round(cap))} кг</span>
+                              <span className={`font-bold ${sh.capacity_pct > 95 ? "text-red-600" : sh.capacity_pct >= 70 ? "text-amber-600" : "text-emerald-600"}`}>
+                                {sh.capacity_pct.toFixed(0)}%{sh.capacity_pct > 100 && " · даац хэтэрсэн"}
+                              </span>
+                            </div>
+                            <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-gray-100">
+                              <div className={`${hue} transition-all duration-500`} style={{ width: `${lp}%` }} />
+                              <div className={`${hue} opacity-35 transition-all duration-500`} style={{ width: `${pp}%` }} />
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-x-3 text-[10.5px] text-gray-500">
+                              <span className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-sm ${hue}`} />Ачигдсан <strong className="text-gray-700">{fmtNum(Math.round(sh.loaded_weight))} кг</strong></span>
+                              <span className="inline-flex items-center gap-1"><span className={`h-2 w-2 rounded-sm ${hue} opacity-35`} />Ачигдаагүй <strong className="text-gray-700">{fmtNum(Math.round(sh.planned_weight))} кг</strong></span>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Ачааны төрлөөр жингийн задаргаа */}
                       {renderFreight(sh.freight, sh.total_weight)}
                       {sh.notes && <div className="mb-2 text-[11px] italic text-gray-400">{sh.notes}</div>}
 
-                      {/* Brand chips */}
-                      {sh.brands.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {sh.brands.map((sb) => (
-                            <span key={sb.brand} className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-700">
-                              <Package size={9} /> {sb.brand} <span className="opacity-60">({sb.loaded_boxes.toFixed(0)})</span>
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                      {/* Брендүүд — статусаар: Ачигдсан (ачигдаж байна+) / Ачигдаагүй (өмнөх статус) */}
+                      {(["loaded", "planned"] as const).map((cat) => {
+                        const list = sh.brands.filter((sb) => sb.category === cat);
+                        if (!list.length) return null;
+                        return (
+                          <div key={cat} className="mt-1.5">
+                            <div className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${cat === "loaded" ? "text-blue-600" : "text-amber-600"}`}>
+                              {cat === "loaded" ? "Ачигдсан" : "Ачигдаагүй"} · {list.length}
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {list.map((sb) => (
+                                <span key={sb.brand} title={`${sb.brand_status_label || sb.brand_status} · ${fmtNum(Math.round(sb.weight))} кг`}
+                                  className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium ${cat === "loaded" ? "bg-blue-50 text-blue-700" : "border border-dashed border-amber-300 bg-amber-50/60 text-amber-800"}`}>
+                                  <Package size={9} /> {sb.brand} <span className="opacity-60">({(sb.loaded_boxes + sb.planned_boxes).toFixed(0)})</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
 
                       {/* Stats */}
                       <div className="mt-2.5 flex items-center gap-4 text-[11px]">
                         <span className="text-gray-400"><strong className="text-gray-700">{sh.brands.length}</strong> бренд</span>
-                        <span className="text-gray-400"><strong className="text-gray-700">{sh.total_loaded_boxes.toFixed(0)}</strong> хайрцаг</span>
-                        <span className="text-gray-400"><strong className="text-gray-700">{sh.total_weight.toFixed(0)}</strong> кг</span>
+                        <span className="text-gray-400"><strong className="text-gray-700">{sh.total_boxes.toFixed(0)}</strong> хайрцаг</span>
+                        <span className="text-gray-400"><strong className="text-gray-700">{fmtNum(Math.round(sh.total_weight))}</strong> кг</span>
                       </div>
                     </div>
 
@@ -722,12 +784,22 @@ export default function OrderDashboard() {
                         <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden">
                           <div className="border-t border-gray-100 bg-gray-50/70 px-4 py-2">
                             {sh.brands.map((sb) => (
-                              <div key={sb.brand} className="flex items-center justify-between py-1.5 border-b border-gray-100 last:border-0">
-                                <span className="text-xs font-semibold text-gray-700">{sb.brand}</span>
-                                <div className="flex items-center gap-4 text-xs text-gray-500">
-                                  <span>{sb.loaded_boxes.toFixed(0)} хайрцаг</span>
-                                  <span>{sb.weight.toFixed(0)} кг</span>
-                                  <span>{sb.line_count} бараа</span>
+                              <div key={sb.brand} className="flex items-center justify-between gap-2 py-1.5 border-b border-gray-100 last:border-0">
+                                <div className="min-w-0">
+                                  <div className="truncate text-xs font-semibold text-gray-700">{sb.brand}</div>
+                                  <div className={`text-[10px] ${sb.category === "loaded" ? "text-blue-600" : "text-amber-600"}`}>
+                                    {sb.category === "loaded" ? "Ачигдсан" : "Ачигдаагүй"} · {sb.brand_status_label || sb.brand_status}
+                                  </div>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-3 text-xs text-gray-500">
+                                  <span>{(sb.loaded_boxes + sb.planned_boxes).toFixed(0)} хайрцаг</span>
+                                  <span>{fmtNum(Math.round(sb.weight))} кг</span>
+                                  {canEdit && sb.planned && sh.status === "loading" && (
+                                    <button onClick={(e) => { e.stopPropagation(); planBrand(sb.brand, null, sh.id); }}
+                                      className="rounded-md p-1 text-gray-300 hover:bg-red-50 hover:text-red-500" title="Машинаас хасах (төлөвлөгөө)">
+                                      <X size={12} />
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             ))}
@@ -749,7 +821,7 @@ export default function OrderDashboard() {
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
                     <Package size={14} />
                   </div>
-                  <span className="text-sm font-semibold text-amber-800">Ачигдаагүй</span>
+                  <span className="text-sm font-semibold text-amber-800">Машинд хуваарилаагүй</span>
                 </div>
                 <div className="text-right">
                   <div className="text-xs font-bold text-amber-700">{unloaded_pool.total_remaining_boxes.toFixed(0)} хайрцаг</div>
