@@ -2527,6 +2527,13 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
     for ci, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
+    # "Огноо" (A) баганыг Эрхэтийн танидаг built-in Short Date болгоно — Бараа
+    # тулгаж авах (receivings)-ын нэгтгэсэн ERP экспорттой ижил засвар. Эс бөгөөс
+    # openpyxl-ийн формат Эрхэтийн импортод «огноо биш» гэж алдаа өгдөг.
+    from app.services.erkhet_xlsx import apply_date_format, finalize_erkhet_xlsx
+    if current_row > 2:
+        apply_date_format(ws, "A", 2, current_row - 1)
+
     # ── "Тайлбар" хуудас ──
     # Эрхэтийн импортлогч зөвхөн "Import" хуудсыг уншдаг тул энэ хуудас
     # импортод нөлөөлөхгүй. Гэхдээ нягтлан файлыг нээхэд ЯМАР ТООГООР
@@ -2568,7 +2575,9 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session)
 
     buf = io.BytesIO()
     wb.save(buf)
-    buf.seek(0)
+    # Эрхэт рүү ШУУД импортлогддог болгож эцэслэнэ (applyNumberFormat нөхөж,
+    # серверийн Excel-ээр Огноо баганыг Short Date болгож дахин хадгална)
+    buf = io.BytesIO(finalize_erkhet_xlsx(buf.getvalue()))
     import re
     from urllib.parse import quote
     date_str = po.order_date.strftime("%Y%m%d")
