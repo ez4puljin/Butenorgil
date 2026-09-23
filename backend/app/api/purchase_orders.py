@@ -442,8 +442,13 @@ def get_order_dashboard(
     shipment_status_map = {s.id: s.status for s in shipments}
 
     # ── Захиалагч (бренд → ажилтан) ба ачааны төрөл (Нэмэлт талбар: freight_class) ──
-    from app.api.brand_orderers import orderer_map, orderer_names, UNASSIGNED
-    brand_orderer = orderer_map(db)
+    # Захиалагч = харилцагчийн Нэмэлт талбар «Захиалагч» (бренд ↔ харилцагч брэнд кодоор)
+    from app.api.brand_orderers import brand_orderer_info, orderer_names, UNASSIGNED
+    _brands_here = {
+        (l.override_brand or "").strip() or (products[l.product_id].brand if l.product_id in products else "") or "Брэнд байхгүй"
+        for l in active_lines
+    }
+    brand_orderer, brand_customer = brand_orderer_info(db, _brands_here)
     freight_classes, freight_of = _freight_info(db, [p.item_code for p in products.values()])
 
     # ── Group lines by brand ──
@@ -584,6 +589,7 @@ def get_order_dashboard(
             "brand_status_label": STATUS_LABEL.get(persisted_bs.get(bd["brand"], _brand_status(bd)), ""),
             "vehicle_names": vehicle_names,
             "orderer": brand_orderer.get(bd["brand"], ""),
+            "customer_code": brand_customer.get(bd["brand"]),
             "items": bd["items"],
         })
 
@@ -685,6 +691,7 @@ def get_order_dashboard(
         ub["total_remaining_boxes"] = round(ub["total_remaining_boxes"], 1)
         ub["total_weight"] = round(ub["total_weight"], 1)
         ub["orderer"] = brand_orderer.get(ub["brand"], "")
+        ub["customer_code"] = brand_customer.get(ub["brand"])
 
     active_brands = [b for b in brands_list if b["brand_status"] != "cancelled" and b["total_order_boxes"] > 0]
 

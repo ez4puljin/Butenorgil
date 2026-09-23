@@ -1061,6 +1061,12 @@ def startup():
         ensure_admin(db)
         from app.services.custom_master import ensure_defaults as _ensure_custom_defaults
         _ensure_custom_defaults(db)
+        try:   # хуучин brand_orderers → Нэмэлт талбар «Захиалагч» (нэг удаа)
+            from app.api.brand_orderers import migrate_legacy_brand_orderers
+            print("[startup] brand orderers:", migrate_legacy_brand_orderers(db), flush=True)
+        except Exception as _e:
+            db.rollback()
+            print("[startup] brand orderers migrate failed:", _e, flush=True)
         _auto_refresh_stock(db)
     finally:
         db.close()

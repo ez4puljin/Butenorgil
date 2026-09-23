@@ -24,7 +24,7 @@ type Brand = {
   total_unloaded_boxes: number; total_received_boxes: number;
   total_weight: number; estimated_cost: number;
   brand_status: string; brand_status_label: string; vehicle_names: string[];
-  orderer: string;
+  orderer: string; customer_code: string | null;
   items: BrandItem[];
 };
 type Freight = { class: string; weight: number };
@@ -207,13 +207,15 @@ export default function OrderDashboard() {
     }
     setOrdererBusy(brand);
     try {
-      await api.put("/brand-orderers", { brand, orderer });
+      // Нэмэлт талбар → Харилцагч → «Захиалагч» шууд засагдана
+      const r = await api.put("/brand-orderers", { brand, orderer });
+      orderer = r.data?.orderer ?? orderer;
       // Бүтэн dashboard дахин татахгүй — зөвхөн захиалагчийг шууд солино
       setData((d) => d && ({
         ...d,
         brands: d.brands.map((b) => (b.brand === brand ? { ...b, orderer } : b)),
         unloaded_pool: { ...d.unloaded_pool, brands: d.unloaded_pool.brands.map((b) => (b.brand === brand ? { ...b, orderer } : b)) },
-        orderers: d.orderers.names.includes(orderer) || !orderer ? d.orderers : { ...d.orderers, names: [...d.orderers.names, orderer] },
+        orderers: { ...d.orderers, names: r.data?.names ?? d.orderers.names },
       }));
       showFlash(orderer ? `${brand} → ${orderer}` : `${brand}: захиалагч хасагдлаа`);
     } catch (e: any) { showFlash(e?.response?.data?.detail ?? "Захиалагч хадгалахад алдаа", false); }
@@ -342,10 +344,10 @@ export default function OrderDashboard() {
                           {canEdit ? (
                             <select
                               value={b.orderer || ""}
-                              disabled={ordererBusy === b.brand}
+                              disabled={ordererBusy === b.brand || !b.customer_code}
                               onClick={(e) => e.stopPropagation()}
                               onChange={(e) => setOrderer(b.brand, e.target.value)}
-                              title="Захиалагч"
+                              title={b.customer_code ? `Захиалагч — Нэмэлт талбар → Харилцагч ${b.customer_code}` : "Энэ брендэд тохирох харилцагч Нэмэлт талбарт олдсонгүй"}
                               className={`shrink-0 rounded-lg border px-1.5 py-0.5 text-[10px] font-semibold outline-none ${b.orderer ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-dashed border-gray-300 bg-white text-gray-400"}`}
                             >
                               <option value="">{b.orderer ? "— Хасах" : "Захиалагч…"}</option>
