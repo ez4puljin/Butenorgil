@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Layers, Camera, Search, Plus, Save, Trash2, Download, Check, AlertCircle, X, Loader2,
   Package, Ruler, Weight, ArrowUpFromLine, RefreshCw, Pencil, Boxes, Copy, CheckSquare, Square,
@@ -29,10 +29,11 @@ type Cfg = { item_code: string; template_id: number; template_name: string; box_
 type Form = { template_id: number; box_length_cm: string; box_width_cm: string; box_height_cm: string;
   boxes_per_layer: string; layers: string; pcs_per_box_override: string; unit_weight_kg_override: string; box_weight_kg_override: string; note: string };
 
-type Cand = Prod & { exact: boolean; same_pack: boolean; same_weight: boolean; similarity: number;
+type CfgCore = Pick<Cfg, "template_id" | "box_length_cm" | "box_width_cm" | "box_height_cm" | "boxes_per_layer" | "layers"
+  | "pcs_per_box_override" | "unit_weight_kg_override" | "box_weight_kg_override" | "note">;
+type Cand = Prod & { exact: boolean; same_pack: boolean; same_weight: boolean;
   size: string; same_size: boolean; match: boolean;
-  config: null | { template_name: string; box_length_cm: number; box_width_cm: number; box_height_cm: number;
-    boxes_per_layer: number; layers: number; same_as_source: boolean } };
+  config: null | (CfgCore & { template_name: string; same_as_source: boolean }) };
 type CopyRes = { copied: Cfg[]; skipped: { item_code: string; name?: string; reason: string }[] };
 
 const EMPTY_FORM: Form = { template_id: 0, box_length_cm: "", box_width_cm: "", box_height_cm: "",
@@ -44,7 +45,7 @@ const fmt = (v: number | null | undefined, d = 1) => (v == null || Number.isNaN(
 const isEnter = (e: { key: string; code?: string }) => e.key === "Enter" || e.key === "Return" || e.code === "Enter" || e.code === "NumpadEnter";
 const errMsg = (e: any, f: string) => (typeof e?.response?.data?.detail === "string" ? e.response.data.detail : f);
 
-const formFromCfg = (cfg: Cfg, withOverrides = true): Form => ({
+const formFromCfg = (cfg: CfgCore, withOverrides = true): Form => ({
   template_id: cfg.template_id, box_length_cm: String(cfg.box_length_cm || ""), box_width_cm: String(cfg.box_width_cm || ""),
   box_height_cm: String(cfg.box_height_cm || ""), boxes_per_layer: String(cfg.boxes_per_layer || ""), layers: String(cfg.layers || ""),
   pcs_per_box_override: withOverrides && cfg.pcs_per_box_override ? String(cfg.pcs_per_box_override) : "",
@@ -75,10 +76,34 @@ function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
     area_fill_pct: palletArea > 0 ? layerArea / palletArea * 100 : null, warnings: w };
 }
 
-/* ═══ Ижил хэмжээтэй өөр кодтой бараанд поддоны тохиргоог хуулах ═══
-   Загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийг хуулна. Ширхэг/хайрцаг, жин нь
-   бараа бүрийн мастер утгаар бодогдоно (эх барааны засварыг хуулахыг сонгоогүй бол). */
+/* ═══ Поддоны тохиргоог өөр кодтой бараанд хуулах ═══
+   1) Юуг хуулах — талбар бүрийг сонгоно (загвар, хайрцагны хэмжээ, үе, засварууд, тэмдэглэл).
+   2) Хаана хуулах — мастерын БҮХ барааны жагсаалтаас (хайлт, брэнд, ижил хэмжээтэй шүүлт). */
 const STALE_SERVER = "Сервер шинэчлэгдээгүй байна — «хуулах» боломж серверийг дахин асаасны дараа ажиллана.";
+
+type CopyField = "template" | "box_dims" | "boxes_per_layer" | "layers" | "pcs_per_box" | "unit_weight" | "box_weight" | "note";
+const REQUIRED_NEW: CopyField[] = ["template", "box_dims", "boxes_per_layer", "layers"];
+const FIELD_KEYS: Record<CopyField, (keyof Form)[]> = {
+  template: ["template_id"], box_dims: ["box_length_cm", "box_width_cm", "box_height_cm"], boxes_per_layer: ["boxes_per_layer"],
+  layers: ["layers"], pcs_per_box: ["pcs_per_box_override"], unit_weight: ["unit_weight_kg_override"],
+  box_weight: ["box_weight_kg_override"], note: ["note"],
+};
+const FIELD_META: { key: CopyField; label: string; value: (c: Cfg) => string }[] = [
+  { key: "template", label: "Поддоны загвар", value: (c) => c.template_name || "—" },
+  { key: "box_dims", label: "Хайрцагны хэмжээ", value: (c) => `${fmt(c.box_length_cm)}×${fmt(c.box_width_cm)}×${fmt(c.box_height_cm)} см` },
+  { key: "boxes_per_layer", label: "Нэг үеийн хайрцаг", value: (c) => `${c.boxes_per_layer} ш` },
+  { key: "layers", label: "Үеийн тоо", value: (c) => `${c.layers} үе` },
+  { key: "pcs_per_box", label: "Ширхэг/хайрцаг", value: (c) => (c.pcs_per_box_override ? `${fmt(c.pcs_per_box_override, 0)} ш` : "мастераас") },
+  { key: "unit_weight", label: "Хувийн жин", value: (c) => (c.unit_weight_kg_override ? `${fmt(c.unit_weight_kg_override, 3)} кг` : "мастераас") },
+  { key: "box_weight", label: "Хайрцагны жин", value: (c) => (c.box_weight_kg_override ? `${fmt(c.box_weight_kg_override, 2)} кг` : "бодолтоор") },
+  { key: "note", label: "Тэмдэглэл", value: (c) => c.note || "хоосон" },
+];
+const LAYOUT_ONLY: Record<CopyField, boolean> = { template: true, box_dims: true, boxes_per_layer: true, layers: true,
+  pcs_per_box: false, unit_weight: false, box_weight: false, note: false };
+const ALL_FIELDS: Record<CopyField, boolean> = { template: true, box_dims: true, boxes_per_layer: true, layers: true,
+  pcs_per_box: true, unit_weight: true, box_weight: true, note: true };
+type Scope = "all" | "brand" | "match";
+const PAGE = 100;
 
 /* Цонхны доторх алдаа бүх хуудсыг цагаан болгохгүй — зөвхөн энэ цонхонд мэдэгдэнэ */
 class CopyBoundary extends Component<{ onClose: () => void; children: ReactNode }, { err: Error | null }> {
@@ -103,80 +128,118 @@ class CopyBoundary extends Component<{ onClose: () => void; children: ReactNode 
 function CopyModal({ src, cfg, tpls, onClose, onDone }: {
   src: Prod; cfg: Cfg; tpls: Tpl[]; onClose: () => void; onDone: () => void;
 }) {
+  const [fields, setFields] = useState<Record<CopyField, boolean>>(LAYOUT_ONLY);
+  // Утсан дээр талбарын сонголт 240px эзэлдэг — анхдагчаар нэг мөрөөр хураагдсан
+  const [fieldsOpen, setFieldsOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 640);
   const [q, setQ] = useState("");
+  const [scope, setScope] = useState<Scope>("all");
+  const [onlyNew, setOnlyNew] = useState(false);
   const [items, setItems] = useState<Cand[]>([]);
-  const [searched, setSearched] = useState("");
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Record<string, Cand>>({});
-  const [withOv, setWithOv] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
   const [scan, setScan] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
   const [res, setRes] = useState<CopyRes | null>(null);
-  const tpl = tpls.find((t) => t.id === cfg.template_id);
-  const hasOv = cfg.pcs_per_box_override > 0 || cfg.unit_weight_kg_override > 0 || cfg.box_weight_kg_override > 0;
-  const srcForm = useMemo(() => formFromCfg(cfg, withOv), [cfg, withOv]);
+  const reqId = useRef(0);
+  const timer = useRef<number | undefined>(undefined);
+  const srcForm = useMemo(() => formFromCfg(cfg), [cfg]);
+  const chosen = FIELD_META.filter((f) => fields[f.key]).map((f) => f.key);
+  const fullNew = REQUIRED_NEW.every((k) => fields[k]);
 
-  const search = useCallback(async (text: string) => {
+  const load = useCallback(async (text: string, offset: number, autoPick = false) => {
+    const id = ++reqId.current;
     setLoading(true); setErr("");
     try {
-      const r = await api.get("/pallets/copy-candidates", { params: { source: src.item_code, q: text.trim() } });
+      const r = await api.get("/pallets/copy-candidates", { params: {
+        source: src.item_code, q: text.trim(), scope, unconfigured: onlyNew || undefined, offset, limit: PAGE } });
+      if (id !== reqId.current) return;                       // хуучирсан хариу
       // Хуучин сервер (endpoint-гүй) index.html буцаадаг — массив биш бол унагахгүй, мэдэгдэнэ
-      if (!Array.isArray(r.data?.items)) { setItems([]); setErr(STALE_SERVER); return; }
+      if (!Array.isArray(r.data?.items)) { setItems([]); setTotal(0); setErr(STALE_SERVER); return; }
       const list: Cand[] = r.data.items;
-      setItems(list); setSearched(text.trim());
-      const hit = list.find((c) => c.exact);   // баркод/код яг таарвал шууд сонгоно
+      setItems((prev) => (offset > 0 ? [...prev, ...list] : list));
+      setTotal(Number(r.data.total) || 0);
+      const hit = autoPick ? list.find((c) => c.exact) : undefined;   // баркод/код яг таарвал шууд сонгоно
       if (hit) setSel((s) => ({ ...s, [hit.item_code]: hit }));
-    } catch (e: any) { setErr(errMsg(e, "Хайлт амжилтгүй")); }
-    finally { setLoading(false); }
-  }, [src.item_code]);
-  useEffect(() => { search(""); }, [search]);
+    } catch (e: any) { if (id === reqId.current) setErr(errMsg(e, "Жагсаалт ачаалж чадсангүй")); }
+    finally { if (id === reqId.current) setLoading(false); }
+  }, [src.item_code, scope, onlyNew]);
+  // Хүрээ/шүүлт солигдоход одоогийн хайлтаар дахин ачаална
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(q, 0); }, [load]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const onType = (v: string) => { setQ(v); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => load(v, 0), 300); };
+  const searchNow = (v: string) => { window.clearTimeout(timer.current); load(v, 0, true); };
 
   const toggle = (c: Cand) => setSel((s) => { const x = { ...s }; if (x[c.item_code]) delete x[c.item_code]; else x[c.item_code] = c; return x; });
   const picked = Object.values(sel);
-  const withCfg = picked.filter((c) => c.config && !c.config.same_as_source).length;
-  const sameAll = items.filter((c) => c.match && !c.config);
-  const allOn = items.length > 0 && items.every((c) => sel[c.item_code]);
+  const selectAll = async () => {
+    setNote("");
+    let list = items;
+    if (items.length < total) {
+      try {
+        const r = await api.get("/pallets/copy-candidates", { params: {
+          source: src.item_code, q: q.trim(), scope, unconfigured: onlyNew || undefined, offset: 0, limit: 300 } });
+        if (Array.isArray(r.data?.items)) list = r.data.items;
+      } catch { /* ачаалсан хэсгийг л сонгоно */ }
+      if (total > list.length) setNote(`Нэг удаад 300 хүртэл — эхний ${list.length}-г сонгосон`);
+    }
+    setSel((s) => { const x = { ...s }; list.forEach((c) => { x[c.item_code] = c; }); return x; });
+  };
+
+  // Бараа бүрд юу болохыг урьдчилан бодно (сервер дээрхтэй ижил дүрэм)
+  const plan = (c: Cand): { skip: string } | { k: Calc } => {
+    if (c.config && !overwrite) return { skip: "тохиргоотой — солихыг сонгоогүй" };
+    if (!c.config && !fullNew) return { skip: "тохиргоогүй — загвар, хэмжээ, үе хэрэгтэй" };
+    const f: Form = c.config ? formFromCfg(c.config) : { ...EMPTY_FORM };
+    chosen.forEach((k) => FIELD_KEYS[k].forEach((key) => { (f as any)[key] = srcForm[key]; }));
+    return { k: calcLocal(f, tpls.find((t) => t.id === f.template_id), c) };
+  };
+  const plans = picked.map((c) => ({ c, p: plan(c) }));
+  const willCopy = plans.filter((x) => "k" in x.p).length;
+  const withCfg = picked.filter((c) => c.config).length;
+  const noCfgSkipped = !fullNew ? picked.filter((c) => !c.config).length : 0;
 
   const submit = async () => {
     setBusy(true); setErr("");
     try {
       const r = await api.post(`/pallets/products/${encodeURIComponent(src.item_code)}/copy`,
-        { targets: picked.map((c) => c.item_code), include_overrides: withOv, overwrite });
+        { targets: picked.map((c) => c.item_code), fields: chosen, overwrite });
       if (!Array.isArray(r.data?.copied)) { setErr(STALE_SERVER); return; }
       setRes({ copied: r.data.copied, skipped: Array.isArray(r.data.skipped) ? r.data.skipped : [] }); onDone();
     } catch (e: any) { setErr(errMsg(e, "Хуулж чадсангүй")); }
     finally { setBusy(false); }
   };
 
-  const badge = (c: Cand) => (
+  const badges = (c: Cand) => (
     <>
-      {c.size && <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${c.same_size ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>{c.same_size ? `ижил ${c.size}` : c.size}</span>}
-      <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${c.same_pack ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-        {c.same_pack ? "ижил " : ""}{fmt(c.pack_ratio, 0)} ш/хайрцаг
-      </span>
-      {!c.same_weight && <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">{fmt(c.unit_weight, 3)} кг/ш</span>}
+      {c.brand && <span className="max-w-[160px] truncate text-gray-400">{c.brand}</span>}
+      {c.size && <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${c.same_size ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>{c.size}</span>}
+      <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${c.same_pack ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>{fmt(c.pack_ratio, 0)} ш/хайрцаг</span>
       {c.config && (c.config.same_as_source
         ? <span className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500">ижил тохиргоотой</span>
-        : <span title="Хуулбал дарж бичигдэнэ" className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
+        : <span className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
             тохиргоотой: {c.config.template_name} · {fmt(c.config.box_length_cm)}×{fmt(c.config.box_width_cm)}×{fmt(c.config.box_height_cm)} · {c.config.boxes_per_layer}×{c.config.layers}
           </span>)}
     </>
   );
+  const scopeBtn = (k: Scope, label: string) => (
+    <button key={k} onClick={() => setScope(k)}
+      className={`rounded-lg px-2.5 py-1 text-[12px] font-semibold ${scope === k ? "bg-violet-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{label}</button>
+  );
 
   return (
     <div className="fixed inset-0 z-[55] flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={onClose}>
-      {scan && <BarcodeScanner onDetected={(c) => { setScan(false); setQ(c); search(c); }} onClose={() => setScan(false)} />}
-      <div className="flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+      {scan && <BarcodeScanner onDetected={(c) => { setScan(false); setQ(c); searchNow(c); }} onClose={() => setScan(false)} />}
+      <div className="flex max-h-[96vh] w-full max-w-3xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-3">
           <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-violet-600 text-white"><Copy size={16} /></div>
           <div className="min-w-0 flex-1">
-            <div className="text-[15px] font-bold text-gray-900">Ижил хэмжээтэй бараанд хуулах</div>
-            <div className="truncate text-[12px] text-gray-600"><span className="font-mono font-semibold">{src.item_code}</span> · {src.name}</div>
-            <div className="mt-0.5 text-[11.5px] text-gray-500">
-              {cfg.template_name || tpl?.name} · хайрцаг {fmt(cfg.box_length_cm)}×{fmt(cfg.box_width_cm)}×{fmt(cfg.box_height_cm)} см · {cfg.boxes_per_layer} × {cfg.layers} үе = <b>{cfg.boxes_per_layer * cfg.layers} хайрцаг</b>
-            </div>
+            <div className="text-[15px] font-bold text-gray-900">Поддоны тохиргоо хуулах</div>
+            <div className="truncate text-[12px] text-gray-600">Эх бараа: <span className="font-mono font-semibold">{src.item_code}</span> · {src.name}</div>
           </div>
           <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100"><X size={16} /></button>
         </div>
@@ -184,6 +247,7 @@ function CopyModal({ src, cfg, tpls, onClose, onDone }: {
         {res ? (
           <div className="flex-1 overflow-y-auto px-4 py-4">
             <div className="flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2.5 text-[14px] font-bold text-emerald-800"><Check size={16} />{res.copied.length} бараанд хуулсан</div>
+            <div className="mt-1 text-[11.5px] text-gray-500">Хуулсан: {FIELD_META.filter((f) => chosen.includes(f.key)).map((f) => f.label).join(", ")}</div>
             {res.copied.length > 0 && (
               <div className="mt-2 divide-y divide-gray-50 rounded-xl border border-gray-100">
                 {res.copied.map((c) => (
@@ -206,96 +270,134 @@ function CopyModal({ src, cfg, tpls, onClose, onDone }: {
           </div>
         ) : (
           <>
-            <div className="flex gap-2 px-4 pt-3">
-              <div className="relative flex-1">
-                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (isEnter(e)) search(q); }}
-                  placeholder="Баркод, код эсвэл нэрээр хайх…" inputMode="search"
-                  className="w-full rounded-xl border border-gray-200 py-2.5 pl-8 pr-3 text-[14px] outline-none focus:border-violet-400" />
+            {/* 1. Юуг хуулах */}
+            <div className="border-b border-gray-100 px-4 py-2.5">
+              <div className={`flex items-center gap-2 ${fieldsOpen ? "mb-1.5" : ""}`}>
+                <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-gray-500">1. Юуг хуулах</span>
+                {fieldsOpen ? (
+                  <>
+                    <span className="flex-1" />
+                    <button onClick={() => setFields(LAYOUT_ONLY)} className="text-[11.5px] font-semibold text-violet-600 hover:underline">Хэмжээ, өрөлт</button>
+                    <button onClick={() => setFields(ALL_FIELDS)} className="text-[11.5px] font-semibold text-violet-600 hover:underline">Бүгд</button>
+                  </>
+                ) : (
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-gray-700">
+                    {chosen.length ? FIELD_META.filter((f) => fields[f.key]).map((f) => f.label).join(", ") : <span className="text-rose-600">сонгоогүй</span>}
+                  </span>
+                )}
+                <button onClick={() => setFieldsOpen((v) => !v)} className="shrink-0 rounded-lg bg-gray-100 px-2 py-0.5 text-[11.5px] font-semibold text-gray-600 hover:bg-gray-200">
+                  {fieldsOpen ? "Хураах" : "Өөрчлөх"}
+                </button>
               </div>
-              <button onClick={() => search(q)} disabled={loading} className="rounded-xl bg-gray-900 px-3.5 text-[13px] font-semibold text-white disabled:opacity-40">
-                {loading ? <Loader2 size={15} className="animate-spin" /> : "Хайх"}
-              </button>
-              <button onClick={() => setScan(true)} title="Баркод уншуулах" className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-[13px] font-semibold text-white"><Camera size={15} /></button>
+              {fieldsOpen && <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                {FIELD_META.map((f) => {
+                  const on = fields[f.key];
+                  return (
+                    <button key={f.key} onClick={() => setFields((s) => ({ ...s, [f.key]: !s[f.key] }))}
+                      className={`flex items-start gap-1.5 rounded-lg border px-2 py-1.5 text-left ${on ? "border-violet-300 bg-violet-50" : "border-gray-200 bg-white hover:bg-gray-50"}`}>
+                      <span className={`mt-px shrink-0 ${on ? "text-violet-600" : "text-gray-300"}`}>{on ? <CheckSquare size={14} /> : <Square size={14} />}</span>
+                      <span className="min-w-0">
+                        <span className={`block text-[11.5px] font-semibold leading-tight ${on ? "text-violet-900" : "text-gray-600"}`}>{f.label}</span>
+                        <span className="block truncate text-[10.5px] text-gray-500">{f.value(cfg)}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>}
+              {fieldsOpen && !fullNew && <p className="mt-1.5 text-[11px] text-amber-700">Поддоны тохиргоогүй бараанд шинээр үүсгэхэд загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийн тоо заавал — эдгээрийг сонгоогүй бол зөвхөн тохиргоотой бараа шинэчлэгдэнэ.</p>}
             </div>
-            <div className="flex flex-wrap items-center gap-2 px-4 pb-1 pt-2 text-[11.5px] text-gray-500">
-              <span className="font-semibold text-gray-700">{searched ? `«${searched}» хайлт · ${items.length}` : `${src.brand || "Брэнд"}-ийн бусад бараа · ${items.length}`}</span>
-              {searched && <button onClick={() => { setQ(""); search(""); }} className="text-violet-600 underline">брэндийн санал руу буцах</button>}
-              <span className="flex-1" />
-              {sameAll.length > 0 && (
-                <button onClick={() => setSel((s) => { const x = { ...s }; sameAll.forEach((c) => { x[c.item_code] = c; }); return x; })}
-                  className="rounded-lg bg-emerald-50 px-2 py-1 font-semibold text-emerald-700 hover:bg-emerald-100">Ижил хэмжээтэй {sameAll.length}-г сонгох</button>
-              )}
-              {items.length > 0 && (
-                <button onClick={() => setSel((s) => { const x = { ...s }; items.forEach((c) => { if (allOn) delete x[c.item_code]; else x[c.item_code] = c; }); return x; })}
-                  className="rounded-lg bg-gray-100 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-200">{allOn ? "Бүгдийг болих" : "Бүгдийг сонгох"}</button>
-              )}
-            </div>
-            <div className="min-h-[120px] flex-1 overflow-y-auto px-4 pb-2">
-              {items.length === 0 && !loading && (
-                <div className="rounded-xl border border-dashed border-gray-200 p-6 text-center text-[12.5px] text-gray-400">
-                  {searched ? "Бараа олдсонгүй" : "Брэндийн бусад бараа алга — баркод уншуулах эсвэл код/нэрээр хайна уу"}
+
+            {/* 2. Хаана хуулах — бүх бараа */}
+            <div className="px-4 pt-2.5">
+              <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-gray-500">2. Аль бараанд хуулах</div>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input value={q} onChange={(e) => onType(e.target.value)} onKeyDown={(e) => { if (isEnter(e)) searchNow(q); }}
+                    placeholder="Бүх бараанаас: код, нэр, баркод…" inputMode="search"
+                    className="w-full rounded-xl border border-gray-200 py-2.5 pl-8 pr-8 text-[14px] outline-none focus:border-violet-400" />
+                  {q && <button onClick={() => { setQ(""); searchNow(""); }} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:text-gray-700"><X size={14} /></button>}
                 </div>
+                <button onClick={() => setScan(true)} title="Баркод уншуулах" className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-[13px] font-semibold text-white"><Camera size={15} /></button>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {scopeBtn("all", "Бүх бараа")}
+                {scopeBtn("brand", "Ижил брэнд")}
+                {scopeBtn("match", "Ижил хэмжээтэй")}
+                <label className="ml-1 inline-flex items-center gap-1 text-[12px] text-gray-600">
+                  <input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />Тохиргоогүйг л
+                </label>
+                <span className="flex-1" />
+                <span className="text-[11.5px] text-gray-500">{loading ? <Loader2 size={12} className="inline animate-spin" /> : `${total.toLocaleString("mn-MN")} бараа`}</span>
+                {total > 0 && <button onClick={selectAll} className="rounded-lg bg-gray-100 px-2 py-1 text-[11.5px] font-semibold text-gray-600 hover:bg-gray-200">Бүгдийг сонгох</button>}
+              </div>
+            </div>
+            <div className="min-h-[120px] flex-1 overflow-y-auto px-4 pb-2 pt-1">
+              {items.length === 0 && !loading && !err && (
+                <div className="rounded-xl border border-dashed border-gray-200 p-6 text-center text-[12.5px] text-gray-400">Бараа олдсонгүй</div>
               )}
               <div className="divide-y divide-gray-50">
                 {items.map((c) => {
                   const on = !!sel[c.item_code];
                   return (
-                    <button key={c.item_code} onClick={() => toggle(c)} className={`flex w-full items-start gap-2.5 px-1 py-2 text-left ${on ? "bg-violet-50/60" : "hover:bg-gray-50"}`}>
+                    <button key={c.item_code} onClick={() => toggle(c)} className={`flex w-full items-start gap-2.5 px-1 py-1.5 text-left ${on ? "bg-violet-50/60" : "hover:bg-gray-50"}`}>
                       <span className={`mt-0.5 shrink-0 ${on ? "text-violet-600" : "text-gray-300"}`}>{on ? <CheckSquare size={17} /> : <Square size={17} />}</span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[13px] font-semibold text-gray-800">{c.name}</span>
                         <span className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-gray-500">
-                          <span className="font-mono">{c.item_code}</span>{badge(c)}
+                          <span className="font-mono">{c.item_code}</span>{badges(c)}
                         </span>
                       </span>
                     </button>
                   );
                 })}
               </div>
+              {items.length < total && (
+                <button onClick={() => load(q, items.length)} disabled={loading}
+                  className="mt-2 w-full rounded-xl border border-gray-200 py-2 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                  {loading ? "Ачаалж байна…" : `Цааш харах (${items.length.toLocaleString("mn-MN")} / ${total.toLocaleString("mn-MN")})`}
+                </button>
+              )}
             </div>
 
             {picked.length > 0 && (
-              <div className="max-h-[26vh] overflow-y-auto border-t border-gray-100 bg-gray-50/70 px-4 py-2">
-                <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-gray-500">Сонгосон {picked.length} — хуулсны дараах дүн</div>
-                {picked.map((c) => {
-                  const k = calcLocal(srcForm, tpl, c);
-                  return (
-                    <div key={c.item_code} className="flex items-center gap-2 py-1 text-[12px]">
-                      <span className="font-mono text-gray-500">{c.item_code}</span>
-                      <span className="min-w-0 flex-1 truncate text-gray-800">{c.name}</span>
-                      <span className="shrink-0 tabular-nums text-gray-600">{k.boxes_per_pallet} х · {fmt(k.pcs_per_pallet, 0)} ш · {fmt(k.pallet_weight_kg, 0)} кг</span>
-                      {k.warnings.length > 0 && <span title={k.warnings.join(" · ")} className="text-rose-600"><AlertCircle size={13} /></span>}
-                      <button onClick={() => toggle(c)} className="rounded p-0.5 text-gray-400 hover:text-rose-600"><X size={13} /></button>
-                    </div>
-                  );
-                })}
+              <div className="max-h-[24vh] shrink-0 overflow-y-auto border-t border-gray-100 bg-gray-50/70 px-4 py-2">
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Сонгосон {picked.length} — хуулсны дараах дүн</span>
+                  <span className="flex-1" />
+                  <button onClick={() => { setSel({}); setNote(""); }} className="text-[11.5px] font-semibold text-rose-600 hover:underline">Цэвэрлэх</button>
+                </div>
+                {plans.map(({ c, p }) => (
+                  <div key={c.item_code} className="flex items-center gap-2 py-0.5 text-[12px]">
+                    <span className="font-mono text-gray-500">{c.item_code}</span>
+                    <span className="min-w-0 flex-1 truncate text-gray-800">{c.name}</span>
+                    {"k" in p ? (
+                      <>
+                        <span className="shrink-0 tabular-nums text-gray-600">{p.k.boxes_per_pallet} х · {fmt(p.k.pcs_per_pallet, 0)} ш · {fmt(p.k.pallet_weight_kg, 0)} кг</span>
+                        {p.k.warnings.length > 0 && <span title={p.k.warnings.join(" · ")} className="text-rose-600"><AlertCircle size={13} /></span>}
+                      </>
+                    ) : <span className="shrink-0 text-[11px] text-amber-700">алгасна: {p.skip}</span>}
+                    <button onClick={() => toggle(c)} className="rounded p-0.5 text-gray-400 hover:text-rose-600"><X size={13} /></button>
+                  </div>
+                ))}
               </div>
             )}
 
-            <div className="border-t border-gray-100 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-2.5">
-              {hasOv && (
-                <label className="flex items-start gap-2 py-1 text-[12.5px] text-gray-700">
-                  <input type="checkbox" checked={withOv} onChange={(e) => setWithOv(e.target.checked)} className="mt-0.5" />
-                  <span>Ширхэг/хайрцаг, жингийн засварыг мөн хуулах
-                    <span className="block text-[11px] text-gray-400">
-                      Эх бараанд: {cfg.pcs_per_box_override ? `${fmt(cfg.pcs_per_box_override, 0)} ш/хайрцаг ` : ""}{cfg.unit_weight_kg_override ? `${fmt(cfg.unit_weight_kg_override, 3)} кг/ш ` : ""}{cfg.box_weight_kg_override ? `хайрцаг ${fmt(cfg.box_weight_kg_override, 2)} кг` : ""} — сонгоогүй бол бараа бүр өөрийн мастер утгаар бодогдоно
-                    </span>
-                  </span>
-                </label>
-              )}
+            <div className="border-t border-gray-100 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-2">
               {withCfg > 0 && (
                 <label className="flex items-start gap-2 py-1 text-[12.5px] text-gray-700">
                   <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} className="mt-0.5" />
-                  <span>Тохиргоотой {withCfg} барааг дарж бичих<span className="block text-[11px] text-gray-400">Сонгоогүй бол тэдгээрийг алгасна</span></span>
+                  <span>Тохиргоотой {withCfg} барааны сонгосон утгуудыг солих<span className="block text-[11px] text-gray-400">Сонгоогүй талбарууд нь хэвээр үлдэнэ; тэмдэглэгээгүй бол алгасна</span></span>
                 </label>
               )}
-              {!hasOv && <p className="py-1 text-[11px] text-gray-400">Загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийг хуулна. Ширхэг/хайрцаг, жин нь бараа бүрийн мастер утгаар бодогдоно.</p>}
+              {noCfgSkipped > 0 && <p className="py-0.5 text-[11px] text-amber-700">Тохиргоогүй {noCfgSkipped} бараа алгасагдана (загвар, хэмжээ, үеийг сонгоогүй)</p>}
+              {note && <p className="py-0.5 text-[11px] text-gray-500">{note}</p>}
+              {picked.length > 300 && <p className="py-0.5 text-[11px] text-rose-600">Нэг удаад 300 хүртэл бараа хуулна — сонголтоо цөөлнө үү</p>}
               {err && <div className="my-1 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">{err}</div>}
-              <button onClick={submit} disabled={busy || picked.length === 0}
-                className="mt-1.5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 py-2.5 text-[14px] font-bold text-white disabled:opacity-40">
+              <button onClick={submit} disabled={busy || willCopy === 0 || chosen.length === 0 || picked.length > 300}
+                className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 py-2.5 text-[14px] font-bold text-white disabled:opacity-40">
                 {busy ? <Loader2 size={15} className="animate-spin" /> : <Copy size={15} />}
-                {picked.length ? `${picked.length} бараанд хуулах` : "Бараа сонгоно уу"}
+                {chosen.length === 0 ? "Юуг хуулахаа сонгоно уу" : picked.length === 0 ? "Бараа сонгоно уу" : `${willCopy} бараанд хуулах (${chosen.length} талбар)`}
               </button>
             </div>
           </>
@@ -533,7 +635,7 @@ export default function PalletsPage() {
                 {canEdit && existing && (
                   <button onClick={() => setCopyOpen(true)} disabled={dirty} title={dirty ? "Өөрчлөлтөө эхлээд хадгална уу" : ""}
                     className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 py-2 text-[13px] font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50">
-                    <Copy size={14} />Ижил хэмжээтэй өөр бараанд хуулах
+                    <Copy size={14} />Өөр бараанд хуулах
                   </button>
                 )}
                 {canEdit && existing && dirty && <p className="mt-1 text-center text-[10.5px] text-amber-600">Хадгалаагүй өөрчлөлт байна — хуулахаас өмнө хадгална уу</p>}
@@ -628,7 +730,7 @@ export default function PalletsPage() {
                         <td className={`px-3 py-1.5 text-right tabular-nums ${c.calc.area_fill_pct != null && c.calc.area_fill_pct > 100 ? "text-rose-600" : "text-gray-500"}`}>{c.calc.area_fill_pct == null ? "—" : `${fmt(c.calc.area_fill_pct, 0)}%`}</td>
                         <td className="px-2 py-1.5">{c.calc.warnings.length > 0 && <span title={c.calc.warnings.join("\n")} className="text-rose-600"><AlertCircle size={14} /></span>}</td>
                         <td className="px-2 py-1.5 text-right"><button onClick={() => lookup(c.item_code)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-800"><Pencil size={13} /></button></td>
-                        <td className="px-1 py-1.5 text-right">{canEdit && <button onClick={() => openCopy(c.item_code)} title="Ижил хэмжээтэй өөр бараанд хуулах" className="rounded-lg p-1.5 text-violet-400 hover:bg-violet-50 hover:text-violet-700"><Copy size={13} /></button>}</td>
+                        <td className="px-1 py-1.5 text-right">{canEdit && <button onClick={() => openCopy(c.item_code)} title="Өөр бараанд хуулах" className="rounded-lg p-1.5 text-violet-400 hover:bg-violet-50 hover:text-violet-700"><Copy size={13} /></button>}</td>
                       </tr>
                     ))}
                   </tbody>
