@@ -1123,6 +1123,12 @@ async def _dashboard_warm_loop():
             await asyncio.to_thread(warm_tag_location_caches)
         except Exception as e:
             print(f"[tagloc] warm алдаа: {e}")
+        # Поддон хураалтын ажлын жагсаалт (мастер tag + сарын борлуулалт + барааны индекс)
+        try:
+            from app.api.pallets import warm_worklist_caches
+            await asyncio.to_thread(warm_worklist_caches)
+        except Exception as e:
+            print(f"[pallets] warm алдаа: {e}")
         await asyncio.sleep(60)  # 60с тутамд snapshot-уудыг шинэ байлгана
 
 

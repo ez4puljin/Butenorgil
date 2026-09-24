@@ -4,13 +4,14 @@
   POST   /pallets/templates                 — шинэ загвар
   PUT    /pallets/templates/{id}            — засах
   DELETE /pallets/templates/{id}            — устгах (ашиглагдаж байвал 400)
-  GET    /pallets/lookup?q=                 — баркод/код → бараа + одоогийн тохиргоо + дүн
+  GET    /pallets/lookup?q=&tag=            — баркод/код → бараа + одоогийн тохиргоо + дүн + сарын борлуулалт
+  GET    /pallets/worklist?tag=&status=&q=  — tag-ийн бүх бараа борлуулалтын эрэмбээр, оруулсан/оруулаагүй
   GET    /pallets/products?q=&template_id=  — тохиргоотой бараануудын жагсаалт (дүнтэй)
   PUT    /pallets/products/{item_code}      — тохиргоо хадгалах (upsert)
   DELETE /pallets/products/{item_code}
   GET    /pallets/copy-candidates?source=&q=&scope=all|brand|match — хуулах бараа (бүх бараа, хуудаслалттай)
   POST   /pallets/products/{item_code}/copy — сонгосон талбаруудыг өөр бараанд хуулах
-  GET    /pallets/export                    — Excel
+  GET    /pallets/export?tag=&status=       — Excel (tag-гүй бол тохиргоотой бүх бараа)
 
 Дүнгийн томьёо (calc):
   boxes_per_pallet = boxes_per_layer × layers
@@ -37,7 +38,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import or_, text
+from sqlalchemy import and_, or_, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, require_role
@@ -48,6 +49,8 @@ from app.models.user import User
 
 router = APIRouter(prefix="/pallets", tags=["pallets"])
 EDIT_ROLES = ("admin", "supervisor", "manager", "warehouse_clerk")
+DEFAULT_TAG = "Архи Ус ундаа пиво"        # архины агуулах
+SALES_MONTHS = (1, 2, 3, 6, 7, 8)         # поддон тооцох сарын дундаж (4, 5-р сар ороогүй)
 
 
 def _iso(d):
@@ -181,17 +184,22 @@ def delete_template(tid: int, request: Request, db: Session = Depends(get_db),
 # ── Бараа ────────────────────────────────────────────────────────────────────
 
 @router.get("/lookup")
-def lookup(q: str = Query(..., min_length=1, max_length=80), db: Session = Depends(get_db),
-           u: User = Depends(get_current_user)):
-    """Баркод / код → бараа (мастер) + одоогийн поддоны тохиргоо (байвал)."""
+def lookup(q: str = Query(..., min_length=1, max_length=80), tag: str = Query(DEFAULT_TAG, max_length=120),
+           db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    """Баркод / код → бараа (мастер) + одоогийн поддоны тохиргоо (байвал) + сарын борлуулалт."""
     from app.services.hall_count import resolve_product
     p = resolve_product(db, q)
     if not p or not p.item_code:
         return {"query": q, "found": False, "product": None, "config": None}
     cfg = db.query(ProductPallet).filter(ProductPallet.item_code == p.item_code).first()
     tpl = db.query(PalletTemplate).filter(PalletTemplate.id == cfg.template_id).first() if cfg else None
+    try:
+        sales = _product_sales(db, p.item_code, tag.strip())
+    except Exception as e:                                        # борлуулалтгүй ч тохиргоо оруулж болно
+        print(f"[pallets] sales алдаа: {e}")
+        sales = None
     return {"query": q, "found": True, "product": _product_dict(p),
-            "config": _cfg_dict(cfg, tpl, p) if cfg else None}
+            "config": _cfg_dict(cfg, tpl, p) if cfg else None, "sales": sales}
 
 
 @router.get("/products")
@@ -508,47 +516,190 @@ def copy_product(item_code: str, body: CopyIn, request: Request, db: Session = D
             "copied": [_cfg_dict(c, tpls.get(c.template_id), p) for c, p in copied], "skipped": skipped}
 
 
+# ── Ажлын жагсаалт: байршлын tag-ийн бүх бараа борлуулалтын эрэмбээр ──────────────
+
+_SALES: dict = {"key": None, "slots": [], "map": {}}
+_SALES_LOCK = threading.Lock()
+
+
+def _sales(db: Session, months: tuple = SALES_MONTHS) -> tuple[list[tuple[int, int]], dict]:
+    """(slots, {code: {(year, month): qty}}) — сар бүрийн ХАМГИЙН СҮҮЛИЙН (дататай) жилийг авна.
+    qty = агуулах + заалны борлуулалт (ширхэг). Сарын борлуулалт шинэчлэгдэхэд кэш шинэчлэгдэнэ."""
+    from app.models.product_monthly_sales import ProductMonthlySales as PMS
+    sig = tuple(db.execute(text("SELECT count(*), max(updated_at) FROM product_monthly_sales")).one())
+    key = (sig, tuple(months))
+    if _SALES["key"] == key:
+        return _SALES["slots"], _SALES["map"]
+    with _SALES_LOCK:
+        if _SALES["key"] == key:
+            return _SALES["slots"], _SALES["map"]
+        avail = db.query(PMS.year, PMS.month).distinct().all()
+        slots = sorted((max(y for y, mm in avail if mm == m), m) for m in months if any(mm == m for _, mm in avail))
+        out: dict = {}
+        if slots:
+            cond = or_(*[and_(PMS.year == y, PMS.month == m) for y, m in slots])
+            for code, y, m, w, s in db.query(PMS.item_code, PMS.year, PMS.month, PMS.qty_warehouse, PMS.qty_showroom).filter(cond):
+                out.setdefault(code, {})[(y, m)] = float(w or 0) + float(s or 0)
+        _SALES.update(key=key, slots=slots, map=out)
+        return slots, out
+
+
+def _master_tag_map() -> dict[str, list[str]]:
+    from app.api.tag_location_check import _get_master_tags
+    return _get_master_tags()
+
+
+def _worklist_rows(db: Session, tag: str, status: str = "all", q: str = "", template_id: Optional[int] = None):
+    """Tag-ийн бүх бараа (мастер), сарын дундаж борлуулалтаар буурах эрэмбэтэй.
+    → (rows, counts, slots). rank нь шүүлтээс өмнөх (tag доторх) эрэмбэ."""
+    mt = _master_tag_map()
+    codes = [c for c, tags in mt.items() if not tag or tag in tags]
+    idx = {r.item_code: r for r in _product_index(db)}
+    slots, sales = _sales(db)
+    cfgs = {c.item_code: c for c in db.query(ProductPallet).all()}
+    tpls = {t.id: t for t in db.query(PalletTemplate).all()}
+    base = []
+    for code in codes:
+        per = sales.get(code, {})
+        avg = sum(per.get(s, 0.0) for s in slots) / len(slots) if slots else 0.0
+        base.append((code, avg, per))
+    base.sort(key=lambda x: (-x[1], x[0]))
+    done = sum(1 for c, _, _ in base if c in cfgs)
+    counts = {"total": len(base), "done": done, "todo": len(base) - done}
+    toks = q.strip().lower().split()
+    rows = []
+    for rank, (code, avg, per) in enumerate(base, 1):
+        c = cfgs.get(code)
+        if (status == "done" and not c) or (status == "todo" and c):
+            continue
+        if template_id and (not c or c.template_id != template_id):
+            continue
+        r = idx.get(code)
+        if toks and not all(t in (r.hay if r else code.lower()) for t in toks):
+            continue
+        cfg = None
+        if c:
+            tpl = tpls.get(c.template_id)
+            k = calc(c, tpl, r)
+            ppp = k["pcs_per_pallet"]
+            cfg = {"template_id": c.template_id, "template_name": tpl.name if tpl else "",
+                   "box_length_cm": c.box_length_cm, "box_width_cm": c.box_width_cm, "box_height_cm": c.box_height_cm,
+                   "boxes_per_layer": c.boxes_per_layer, "layers": c.layers, "note": c.note or "",
+                   "updated_by": c.updated_by or "", "updated_at": _iso(c.updated_at), "calc": k,
+                   "pallets_per_month": round(avg / ppp, 2) if ppp > 0 else None}
+        rows.append({
+            "rank": rank, "item_code": code, "name": r.name if r else "", "brand": r.brand if r else "",
+            "barcode": r.barcode if r else "", "pack_ratio": r.pack_ratio if r else 0.0,
+            "unit_weight": r.unit_weight if r else 0.0, "tags": mt.get(code, []),
+            "avg_monthly": round(avg, 1), "months": [round(per.get(s, 0.0), 1) for s in slots],
+            "configured": c is not None, "config": cfg,
+        })
+    return rows, counts, slots
+
+
+def warm_worklist_caches() -> None:
+    """main-ийн warm loop-оос (60с тутам) — анхны нээлт мастер/борлуулалт parse хүлээхгүй."""
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        _product_index(db)
+        _sales(db)
+        _master_tag_map()
+    finally:
+        db.close()
+
+
+def _slot_list(slots) -> list[dict]:
+    return [{"year": y, "month": m} for y, m in slots]
+
+
+@router.get("/worklist")
+def worklist(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Query("all", pattern="^(all|todo|done)$"),
+             q: str = Query("", max_length=80), offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=2000),
+             db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    """Поддон мэдээлэл оруулах ажлын жагсаалт — tag-ийн бүх бараа борлуулалтын эрэмбээр,
+    оруулсан/оруулаагүйгээр. tag="" бол мастерын бүх бараа."""
+    rows, counts, slots = _worklist_rows(db, tag.strip(), status, q)
+    from collections import Counter
+    tc = Counter(t for tags in _master_tag_map().values() for t in tags)
+    return {"tag": tag.strip(), "tags": [{"name": k, "count": v} for k, v in tc.most_common()],
+            "months": _slot_list(slots), "counts": counts, "total": len(rows), "offset": offset,
+            "items": rows[offset:offset + limit]}
+
+
+def _product_sales(db: Session, code: str, tag: str) -> dict:
+    """Нэг барааны сарын борлуулалт + tag доторх борлуулалтын эрэмбэ (поддон оруулах цонхонд)."""
+    slots, sales = _sales(db)
+    per = sales.get(code, {})
+    avg = sum(per.get(s, 0.0) for s in slots) / len(slots) if slots else 0.0
+    tags = _master_tag_map().get(code, [])
+    use = tag if tag in tags else (DEFAULT_TAG if DEFAULT_TAG in tags else (tags[0] if tags else ""))
+    rank = total = None
+    if use:
+        rows, counts, _ = _worklist_rows(db, use)
+        total = counts["total"]
+        rank = next((r["rank"] for r in rows if r["item_code"] == code), None)
+    return {"months": [{"year": y, "month": m, "qty": round(per.get((y, m), 0.0), 1)} for y, m in slots],
+            "avg_monthly": round(avg, 1), "tag": use, "tags": tags, "rank": rank, "rank_total": total}
+
+
 # ── Excel ────────────────────────────────────────────────────────────────────
 
 @router.get("/export")
-def export_xlsx(template_id: Optional[int] = None, db: Session = Depends(get_db),
-                u: User = Depends(get_current_user)):
+def export_xlsx(template_id: Optional[int] = None, tag: Optional[str] = Query(None, max_length=120),
+                status: str = Query("all", pattern="^(all|todo|done)$"),
+                db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    """tag өгвөл тухайн tag-ийн бүх бараа (оруулсан/оруулаагүй) борлуулалтын эрэмбээр;
+    өгөхгүй бол мастерын тохиргоотой бүх бараа."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
-    data = list_products(q="", template_id=template_id, db=db, u=u)["items"]
+    if tag is None:
+        data, _, slots = _worklist_rows(db, "", "done", template_id=template_id)
+    else:
+        data, _, slots = _worklist_rows(db, tag.strip(), status, template_id=template_id)
     wb = Workbook()
     ws = wb.active
     ws.title = "Поддон хураалт"
-    cols = ["Код", "Нэр", "Бренд", "Байршил tag", "Поддон загвар", "Поддон урт (см)", "Поддон өргөн (см)",
-            "Поддон өндөр (см)", "Хайрцаг урт (см)", "Хайрцаг өргөн (см)", "Хайрцаг өндөр (см)",
-            "Нэг үед (хайрцаг)", "Үе", "Нийт хайрцаг", "Ширхэг/хайрцаг", "Нийт ширхэг",
-            "Хувийн жин (кг/ш)", "Хайрцагны жин (кг)", "Поддоны бараа жин (кг)", "Өрөлтийн өндөр (см)", "Шалнаас дээд хайрцаг (см)",
-            "Талбайн дүүргэлт %", "Анхааруулга", "Тэмдэглэл", "Шинэчилсэн", "Хэн"]
-    widths = [10, 40, 18, 18, 18, 10, 10, 10, 10, 10, 10, 10, 6, 10, 10, 10, 12, 12, 14, 12, 14, 10, 40, 30, 16, 12]
+    mcols = [f"{y}-{m:02d} борлуулалт" for y, m in slots]
+    cols = (["Эрэмбэ", "Код", "Нэр", "Бренд", "Байршил tag", "Поддон мэдээлэл", "Сарын дундаж борлуулалт (ш)"] + mcols
+            + ["Сард поддон", "Поддон загвар", "Поддон урт (см)", "Поддон өргөн (см)", "Поддон өндөр (см)",
+               "Хайрцаг урт (см)", "Хайрцаг өргөн (см)", "Хайрцаг өндөр (см)", "Нэг үед (хайрцаг)", "Үе", "Нийт хайрцаг",
+               "Ширхэг/хайрцаг", "Нийт ширхэг", "Хувийн жин (кг/ш)", "Хайрцагны жин (кг)", "Поддоны бараа жин (кг)",
+               "Өрөлтийн өндөр (см)", "Шалнаас дээд хайрцаг (см)", "Талбайн дүүргэлт %", "Анхааруулга", "Тэмдэглэл",
+               "Шинэчилсэн", "Хэн"])
+    widths = ([7, 10, 40, 18, 18, 12, 12] + [11] * len(mcols)
+              + [9, 18, 10, 10, 10, 10, 10, 10, 10, 6, 10, 10, 10, 12, 12, 14, 12, 14, 10, 40, 30, 16, 12])
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     hf, hfont = PatternFill("solid", fgColor="1F4E78"), Font(color="FFFFFF", bold=True)
+    ok_fill, todo_fill = PatternFill("solid", fgColor="E2EFDA"), PatternFill("solid", fgColor="FFF2CC")
     for ci, h in enumerate(cols, 1):
         c = ws.cell(1, ci, h); c.fill = hf; c.font = hfont; c.border = border
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     for ci, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.row_dimensions[1].height = 42
-    from app.scripts.no_movement_report import _master_tags
-    tags = _master_tags()
+    status_col = 6
     for ri, d in enumerate(data, 2):
-        p, k = d["product"], d["calc"]
-        vals = [d["item_code"], p.get("name", ""), p.get("brand", ""), tags.get(d["item_code"], p.get("warehouse_name", "")),
-                d["template_name"], k["pallet_length_cm"], k["pallet_width_cm"], k["total_height_cm"] - k["stack_height_cm"],
-                d["box_length_cm"], d["box_width_cm"], d["box_height_cm"], d["boxes_per_layer"], d["layers"],
-                k["boxes_per_pallet"], k["pcs_per_box"], k["pcs_per_pallet"], k["unit_weight_kg"], k["box_weight_kg"], k["pallet_weight_kg"],
-                k["stack_height_cm"], k["total_height_cm"], k["area_fill_pct"], "; ".join(k["warnings"]), d["note"],
-                (d["updated_at"] or "")[:16].replace("T", " "), d["updated_by"]]
-        for ci, v in enumerate(vals, 1):
+        g = d["config"]
+        head = [d["rank"], d["item_code"], d["name"], d["brand"], ", ".join(d["tags"]),
+                "Оруулсан" if g else "Оруулаагүй", d["avg_monthly"]] + d["months"]
+        if g:
+            k = g["calc"]
+            rest = [g["pallets_per_month"], g["template_name"], k["pallet_length_cm"], k["pallet_width_cm"],
+                    k["total_height_cm"] - k["stack_height_cm"], g["box_length_cm"], g["box_width_cm"], g["box_height_cm"],
+                    g["boxes_per_layer"], g["layers"], k["boxes_per_pallet"], k["pcs_per_box"], k["pcs_per_pallet"],
+                    k["unit_weight_kg"], k["box_weight_kg"], k["pallet_weight_kg"], k["stack_height_cm"], k["total_height_cm"],
+                    k["area_fill_pct"], "; ".join(k["warnings"]), g["note"], (g["updated_at"] or "")[:16].replace("T", " "),
+                    g["updated_by"]]
+        else:
+            rest = [None] * 23
+        for ci, v in enumerate(head + rest, 1):
             ws.cell(ri, ci, v).border = border
-    ws.freeze_panes = "C2"
+        ws.cell(ri, status_col).fill = ok_fill if g else todo_fill
+    ws.freeze_panes = "D2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{max(len(data) + 1, 2)}"
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
@@ -567,7 +718,7 @@ def export_xlsx(template_id: Optional[int] = None, db: Session = Depends(get_db)
         ws2.column_dimensions[get_column_letter(ci)].width = w
 
     buf = io.BytesIO(); wb.save(buf)
-    fname = f"{datetime.now():%Y%m%d}_poddon_huraalt.xlsx"
+    fname = f"{datetime.now():%Y%m%d}_poddon_huraalt{'_' + re.sub(r'[^0-9A-Za-zА-Яа-яӨөҮүЁё]+', '_', tag.strip()) if tag else ''}.xlsx"
     return Response(content=buf.getvalue(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f"attachment; filename={fname}; filename*=UTF-8''{quote(fname)}"})
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})

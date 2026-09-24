@@ -1,7 +1,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Layers, Camera, Search, Plus, Save, Trash2, Download, Check, AlertCircle, X, Loader2,
-  Package, Ruler, Weight, ArrowUpFromLine, RefreshCw, Pencil, Boxes, Copy, CheckSquare, Square,
+  Package, Ruler, Weight, ArrowUpFromLine, RefreshCw, Pencil, Boxes, Copy, CheckSquare, Square, TrendingUp, ChevronRight,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -35,6 +35,24 @@ type Cand = Prod & { exact: boolean; same_pack: boolean; same_weight: boolean;
   size: string; same_size: boolean; match: boolean;
   config: null | (CfgCore & { template_name: string; same_as_source: boolean }) };
 type CopyRes = { copied: Cfg[]; skipped: { item_code: string; name?: string; reason: string }[] };
+type YM = { year: number; month: number };
+type ProdSales = { months: (YM & { qty: number })[]; avg_monthly: number; tag: string; tags: string[]; rank: number | null; rank_total: number | null };
+type WCfg = { template_id: number; template_name: string; box_length_cm: number; box_width_cm: number; box_height_cm: number;
+  boxes_per_layer: number; layers: number; note: string; updated_by: string; updated_at: string | null; calc: Calc; pallets_per_month: number | null };
+type WRow = { rank: number; item_code: string; name: string; brand: string; barcode: string; pack_ratio: number; unit_weight: number;
+  tags: string[]; avg_monthly: number; months: number[]; configured: boolean; config: WCfg | null };
+type WList = { tag: string; tags: { name: string; count: number }[]; months: YM[]; counts: { total: number; done: number; todo: number };
+  total: number; items: WRow[] };
+
+// Архины агуулах — поддон мэдээллийг борлуулалт ихээс нь эхлэн оруулна
+const DEFAULT_TAG = "Архи Ус ундаа пиво";
+const TAG_KEY = "pallets:worklist_tag";
+const PAGE_W = 200;
+const monthsLabel = (ms: YM[]) => {
+  if (!ms.length) return "—";
+  const years = Array.from(new Set(ms.map((m) => m.year)));
+  return years.length === 1 ? `${years[0]} оны ${ms.map((m) => m.month).join(", ")}-р` : ms.map((m) => `${m.year}/${m.month}`).join(", ");
+};
 
 const EMPTY_FORM: Form = { template_id: 0, box_length_cm: "", box_width_cm: "", box_height_cm: "",
   boxes_per_layer: "", layers: "", pcs_per_box_override: "", unit_weight_kg_override: "", box_weight_kg_override: "", note: "" };
@@ -443,16 +461,22 @@ export default function PalletsPage() {
   const [notFound, setNotFound] = useState("");
   const [form, setForm] = useState<Form>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  const [sales, setSales] = useState<ProdSales | null>(null);
   const tpl = useMemo(() => tpls.find((t) => t.id === form.template_id), [tpls, form.template_id]);
   const live = useMemo(() => calcLocal(form, tpl, prod), [form, tpl, prod]);
 
+  // lookup нь жагсаалтын state-ээс хамааралгүй байхаар ref-ээр дамжуулна (жагсаалт доор тодорхойлогдоно)
+  const tagRef = useRef(DEFAULT_TAG);
+  const findNextRef = useRef<(code: string) => void>(() => {});
   const lookup = useCallback(async (code: string): Promise<boolean> => {
     const c = code.trim(); if (!c) return false;
     setBusy(true); setNotFound("");
     try {
-      const r = await api.get("/pallets/lookup", { params: { q: c } });
-      if (!r.data.found) { setProd(null); setExisting(null); setNotFound(c); return false; }
+      const r = await api.get("/pallets/lookup", { params: { q: c, tag: tagRef.current } });
+      if (!r.data.found) { setProd(null); setExisting(null); setSales(null); setNotFound(c); return false; }
       setProd(r.data.product);
+      setSales(r.data.sales && Array.isArray(r.data.sales.months) ? r.data.sales : null);
+      findNextRef.current(r.data.product.item_code);
       const cfg: Cfg | null = r.data.config;
       setExisting(cfg);
       setForm(cfg ? formFromCfg(cfg) : { ...EMPTY_FORM, template_id: tpls[0]?.id ?? 0 });
@@ -475,7 +499,7 @@ export default function PalletsPage() {
         box_height_cm: n(form.box_height_cm), boxes_per_layer: Math.floor(n(form.boxes_per_layer)), layers: Math.floor(n(form.layers)),
         pcs_per_box_override: n(form.pcs_per_box_override), unit_weight_kg_override: n(form.unit_weight_kg_override), box_weight_kg_override: n(form.box_weight_kg_override), note: form.note,
       });
-      setExisting(r.data); flash("ok", `${prod.item_code} хадгалагдлаа`); loadList();
+      setExisting(r.data); flash("ok", `${prod.item_code} хадгалагдлаа`); loadList(); findNext(prod.item_code);
     } catch (e: any) { flash("err", errMsg(e, "Хадгалж чадсангүй")); }
     finally { setSaving(false); }
   };
@@ -485,22 +509,27 @@ export default function PalletsPage() {
     catch (e: any) { flash("err", errMsg(e, "Устгаж чадсангүй")); }
   };
 
-  // ── Жагсаалт ──
-  const [list, setList] = useState<Cfg[]>([]);
-  const [listQ, setListQ] = useState("");
-  const [listTpl, setListTpl] = useState<number>(0);
+  // ── Жагсаалт (ажлын): tag-ийн бүх бараа борлуулалтын эрэмбээр, оруулсан/оруулаагүй ──
+  const [wTag, setWTag] = useState<string>(() => { try { return localStorage.getItem(TAG_KEY) ?? DEFAULT_TAG; } catch { return DEFAULT_TAG; } });
+  const [wStatus, setWStatus] = useState<"all" | "todo" | "done">("all");
+  const [wQ, setWQ] = useState("");
+  const [wLimit, setWLimit] = useState(PAGE_W);
+  const [wl, setWl] = useState<WList | null>(null);
   const [listLoading, setListLoading] = useState(false);
   const loadList = useCallback(async () => {
     setListLoading(true);
-    try { const r = await api.get("/pallets/products", { params: { q: listQ, template_id: listTpl || undefined } }); setList(r.data.items); }
-    catch { /* */ } finally { setListLoading(false); }
-  }, [listQ, listTpl]);
-  useEffect(() => { loadList(); }, [loadList]);
+    try {
+      const r = await api.get("/pallets/worklist", { params: { tag: wTag, status: wStatus, q: wQ, limit: wLimit } });
+      if (Array.isArray(r.data?.items)) setWl(r.data);
+    } catch { /* */ } finally { setListLoading(false); }
+  }, [wTag, wStatus, wQ, wLimit]);
+  useEffect(() => { const t = setTimeout(loadList, 250); return () => clearTimeout(t); }, [loadList]);
+  useEffect(() => { try { localStorage.setItem(TAG_KEY, wTag); } catch { /* private mode */ } }, [wTag]);
   const [dl, setDl] = useState(false);
   const exportXlsx = async () => {
     setDl(true);
     try {
-      const r = await api.get("/pallets/export", { params: { template_id: listTpl || undefined }, responseType: "blob" });
+      const r = await api.get("/pallets/export", { params: { tag: wTag, status: wStatus }, responseType: "blob" });
       const cd: string = r.headers?.["content-disposition"] || "";
       const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
       const url = URL.createObjectURL(new Blob([r.data]));
@@ -508,6 +537,17 @@ export default function PalletsPage() {
       document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (e: any) { flash("err", errMsg(e, "Татахад алдаа")); } finally { setDl(false); }
   };
+  tagRef.current = wTag;
+  // Дараагийн оруулаагүй бараа (борлуулалт ихээс) — нэг нэгээр хурдан оруулахад
+  const [nextTodo, setNextTodo] = useState<WRow | null>(null);
+  const findNext = useCallback(async (current: string) => {
+    try {
+      const r = await api.get("/pallets/worklist", { params: { tag: wTag, status: "todo", limit: 3 } });
+      const items: WRow[] = Array.isArray(r.data?.items) ? r.data.items : [];
+      setNextTodo(items.find((x) => x.item_code !== current) ?? null);
+    } catch { setNextTodo(null); }
+  }, [wTag]);
+  findNextRef.current = findNext;
 
   // Render-функц (компонент БИШ): компонент болговол render бүрд шинэ төрөл үүсч
   // input дахин mount болж, нэг тоо бичих бүрд фокус/гар алга болдог.
@@ -548,7 +588,7 @@ export default function PalletsPage() {
           <p className="truncate text-[11px] text-gray-500">Барааг поддонд хэрхэн өрөх — хайрцгийн хэмжээ, үе, нийт өндөр, жин</p>
         </div>
         <div className="flex rounded-xl bg-gray-100 p-0.5">
-          {([["product", "Бараа"], ["list", `Жагсаалт${list.length ? ` (${list.length})` : ""}`], ["templates", `Загвар (${tpls.length})`]] as const).map(([k, l]) => (
+          {([["product", "Бараа"], ["list", `Жагсаалт${wl ? ` (${wl.counts.done}/${wl.counts.total})` : ""}`], ["templates", `Загвар (${tpls.length})`]] as const).map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)} className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold ${tab === k ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>{l}</button>
           ))}
         </div>
@@ -600,6 +640,14 @@ export default function PalletsPage() {
                   </div>
                   {existing && <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200">Тохиргоотой</span>}
                 </div>
+                {sales && (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-emerald-50 px-3 py-2 text-[12px] text-emerald-900">
+                    <TrendingUp size={14} className="shrink-0 text-emerald-600" />
+                    <span>Сарын дундаж <b>{fmt(sales.avg_monthly, 0)} ш</b></span>
+                    <span>→ <b className="text-[14px]">{live.pcs_per_pallet > 0 ? fmt(sales.avg_monthly / live.pcs_per_pallet, 1) : "—"}</b> поддон/сар</span>
+                    {sales.rank != null && <span className="ml-auto text-[11px] text-emerald-700">#{sales.rank} / {sales.rank_total} · {sales.tag}</span>}
+                  </div>
+                )}
 
                 <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
                   <label className="col-span-2 block text-[11px] text-gray-500 sm:col-span-3">Поддоны загвар
@@ -640,12 +688,43 @@ export default function PalletsPage() {
                 )}
                 {canEdit && existing && dirty && <p className="mt-1 text-center text-[10.5px] text-amber-600">Хадгалаагүй өөрчлөлт байна — хуулахаас өмнө хадгална уу</p>}
                 {existing && <p className="mt-2 text-[10.5px] text-gray-400">Сүүлд: {existing.updated_by} · {(existing.updated_at || "").slice(0, 16).replace("T", " ")}</p>}
+                {canEdit && nextTodo && nextTodo.item_code !== prod.item_code && (
+                  <button onClick={() => lookup(nextTodo.item_code)} disabled={dirty}
+                    title={dirty ? "Өөрчлөлтөө эхлээд хадгална уу" : "Борлуулалт ихээс — дараагийн поддон мэдээлэл оруулаагүй бараа"}
+                    className="mt-2 flex w-full items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-left text-[12.5px] text-amber-900 hover:bg-amber-100 disabled:opacity-50">
+                    <span className="shrink-0 text-[11px] font-semibold text-amber-700">Дараагийн оруулаагүй</span>
+                    <span className="min-w-0 flex-1 truncate font-semibold">#{nextTodo.rank} {nextTodo.name}</span>
+                    <ChevronRight size={15} className="shrink-0" />
+                  </button>
+                )}
               </div>
             )}
           </div>
 
           {/* Дүн */}
           <div className="flex flex-col gap-2">
+            {prod && sales && (
+              <div className="rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-[12px] font-bold text-emerald-800"><TrendingUp size={14} />Борлуулалт → поддон</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {Stat("Сарын дундаж", fmt(sales.avg_monthly, 0), "ш", "text-emerald-700")}
+                  {Stat("Сард поддон", live.pcs_per_pallet > 0 ? fmt(sales.avg_monthly / live.pcs_per_pallet, 1) : "—", "поддон", "text-emerald-700")}
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-1.5">
+                  {sales.months.map((m) => (
+                    <div key={`${m.year}-${m.month}`} className="rounded-lg bg-white/80 px-2 py-1.5 text-center">
+                      <div className="text-[10px] font-semibold text-gray-400">{m.year}/{String(m.month).padStart(2, "0")}</div>
+                      <div className="text-[12px] font-bold tabular-nums text-gray-800">{fmt(m.qty, 0)} ш</div>
+                      <div className="text-[11px] tabular-nums text-emerald-700">{live.pcs_per_pallet > 0 ? `${fmt(m.qty / live.pcs_per_pallet, 1)} поддон` : "—"}</div>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-2 text-[10.5px] text-emerald-800/70">
+                  {monthsLabel(sales.months)} сарын дундаж (агуулах + заал). Сард поддон = сарын дундаж ÷ {live.pcs_per_pallet > 0 ? `${fmt(live.pcs_per_pallet, 0)} ш/поддон` : "1 поддоны ширхэг"}
+                  {live.pcs_per_box > 0 && <> · ≈ {fmt(sales.avg_monthly / live.pcs_per_box, 0)} хайрцаг/сар</>}
+                </p>
+              </div>
+            )}
             <div className="rounded-2xl bg-gradient-to-br from-amber-50 to-orange-50 p-3">
               <div className="mb-2 flex items-center gap-1.5 text-[12px] font-bold text-amber-800"><Boxes size={14} />1 поддон дээр</div>
               <div className="grid grid-cols-2 gap-2">
@@ -676,66 +755,144 @@ export default function PalletsPage() {
         </div>
       )}
 
-      {/* ── Жагсаалт ── */}
+      {/* ── Жагсаалт: tag-ийн бүх бараа борлуулалтын эрэмбээр ── */}
       {tab === "list" && (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 shadow-sm">
-            <div className="relative min-w-[200px] flex-1">
-              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input value={listQ} onChange={(e) => setListQ(e.target.value)} placeholder="Код эсвэл нэрээр…" className="w-full rounded-xl border border-gray-200 py-2 pl-8 pr-3 text-[13px] outline-none focus:border-gray-400" />
+          <div className="flex flex-col gap-2.5 rounded-2xl bg-white p-3 shadow-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <select value={wTag} onChange={(e) => { setWTag(e.target.value); setWLimit(PAGE_W); }}
+                className="min-w-0 max-w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-[12.5px] font-semibold text-gray-800 outline-none sm:max-w-[260px]">
+                {!(wl?.tags ?? []).some((t) => t.name === wTag) && wTag && <option value={wTag}>{wTag}</option>}
+                {(wl?.tags ?? []).map((t) => <option key={t.name} value={t.name}>{t.name} ({t.count})</option>)}
+                <option value="">Бүх бараа (мастер)</option>
+              </select>
+              <div className="relative min-w-[160px] flex-1">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input value={wQ} onChange={(e) => { setWQ(e.target.value); setWLimit(PAGE_W); }} placeholder="Код, нэр, баркод…"
+                  className="w-full rounded-xl border border-gray-200 py-2 pl-8 pr-3 text-[13px] outline-none focus:border-gray-400" />
+              </div>
+              <button onClick={loadList} title="Шинэчлэх" className="rounded-xl border border-gray-200 p-2 text-gray-500"><RefreshCw size={14} className={listLoading ? "animate-spin" : ""} /></button>
+              <button onClick={exportXlsx} disabled={dl || !wl?.total} className="inline-flex items-center gap-1.5 rounded-xl bg-gray-900 px-3.5 py-2 text-[12.5px] font-semibold text-white disabled:opacity-40">
+                {dl ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}Excel
+              </button>
             </div>
-            <select value={listTpl} onChange={(e) => setListTpl(Number(e.target.value))} className="rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-[12.5px] outline-none">
-              <option value={0}>Бүх загвар</option>{tpls.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-            <button onClick={loadList} className="rounded-xl border border-gray-200 p-2 text-gray-500"><RefreshCw size={14} className={listLoading ? "animate-spin" : ""} /></button>
-            <button onClick={exportXlsx} disabled={dl || list.length === 0} className="inline-flex items-center gap-1.5 rounded-xl bg-gray-900 px-3.5 py-2 text-[12.5px] font-semibold text-white disabled:opacity-40">
-              {dl ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}Excel
-            </button>
+            {wl && (
+              <>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {([["all", "Бүгд", wl.counts.total, "bg-gray-900 text-white"], ["todo", "Оруулаагүй", wl.counts.todo, "bg-amber-500 text-white"],
+                    ["done", "Оруулсан", wl.counts.done, "bg-emerald-600 text-white"]] as const).map(([k, l, c, on]) => (
+                    <button key={k} onClick={() => { setWStatus(k); setWLimit(PAGE_W); }}
+                      className={`rounded-lg px-2.5 py-1 text-[12px] font-semibold ${wStatus === k ? on : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+                      {l} <span className="tabular-nums opacity-80">{c.toLocaleString("mn-MN")}</span>
+                    </button>
+                  ))}
+                  <div className="ml-auto flex min-w-[180px] flex-1 items-center gap-2 sm:max-w-[320px]">
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100">
+                      <div className="h-full rounded-full bg-emerald-500" style={{ width: `${wl.counts.total ? (wl.counts.done / wl.counts.total) * 100 : 0}%` }} />
+                    </div>
+                    <span className="shrink-0 text-[11.5px] font-semibold tabular-nums text-emerald-700">
+                      {wl.counts.total ? Math.round((wl.counts.done / wl.counts.total) * 1000) / 10 : 0}% оруулсан
+                    </span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-500">
+                  Эрэмбэ: {monthsLabel(wl.months)} сарын дундаж борлуулалт (агуулах + заал, ширхэг) — ихээс бага руу
+                </p>
+              </>
+            )}
           </div>
-          {list.length === 0 ? <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-8 text-center text-[13px] text-gray-400">Тохиргоотой бараа алга</div> : (
+
+          {!wl ? (
+            <div className="rounded-2xl bg-white p-8 text-center text-[13px] text-gray-400"><Loader2 size={18} className="mx-auto animate-spin" /></div>
+          ) : wl.items.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-8 text-center text-[13px] text-gray-400">
+              {wStatus === "todo" && wl.counts.total > 0 && !wQ ? "Бүх барааны поддон мэдээлэл оруулсан 🎉" : "Бараа олдсонгүй"}
+            </div>
+          ) : (
             <>
               <div className="flex flex-col gap-1.5 lg:hidden">
-                {list.map((c) => (
-                  <div key={c.item_code} className="flex items-stretch rounded-xl border border-gray-100 bg-white">
-                  <button onClick={() => lookup(c.item_code)} className="min-w-0 flex-1 px-3 py-2 text-left">
-                    <div className="truncate text-[13px] font-semibold text-gray-800">{c.product.name}</div>
-                    <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-gray-500">
-                      <span className="font-mono">{c.item_code}</span><span>{c.template_name}</span>
-                      <span>{c.boxes_per_layer}×{c.layers} = <b>{c.calc.boxes_per_pallet} х</b></span>
-                      <span><b>{fmt(c.calc.pcs_per_pallet, 0)} ш</b></span><span>{fmt(c.calc.total_height_cm, 0)} см</span><span>{fmt(c.calc.pallet_weight_kg, 0)} кг</span>
-                      {c.calc.warnings.length > 0 && <span className="text-rose-600">⚠ {c.calc.warnings.length}</span>}
-                    </div>
-                  </button>
-                  {canEdit && <button onClick={() => openCopy(c.item_code)} title="Өөр бараанд хуулах" className="shrink-0 border-l border-gray-100 px-3 text-violet-500"><Copy size={15} /></button>}
+                {wl.items.map((c) => (
+                  <div key={c.item_code} className={`flex items-stretch overflow-hidden rounded-xl border bg-white ${c.configured ? "border-emerald-200" : "border-gray-100"}`}>
+                    <div className={`w-1 shrink-0 ${c.configured ? "bg-emerald-500" : "bg-amber-400"}`} />
+                    <button onClick={() => lookup(c.item_code)} className={`min-w-0 flex-1 px-3 py-2 text-left ${c.configured ? "bg-emerald-50/40" : ""}`}>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="shrink-0 text-[11px] font-bold tabular-nums text-gray-400">#{c.rank}</span>
+                        <span className="truncate text-[13px] font-semibold text-gray-800">{c.name || c.item_code}</span>
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-500">
+                        <span className="font-mono">{c.item_code}</span>
+                        <span><b className="text-gray-700">{fmt(c.avg_monthly, 0)}</b> ш/сар</span>
+                        {c.config ? (
+                          <>
+                            <span className="font-semibold text-emerald-700">✓ {c.config.pallets_per_month == null ? "—" : fmt(c.config.pallets_per_month, 1)} поддон/сар</span>
+                            <span>{c.config.boxes_per_layer}×{c.config.layers} = {c.config.calc.boxes_per_pallet} х · {fmt(c.config.calc.pcs_per_pallet, 0)} ш</span>
+                          </>
+                        ) : <span className="rounded-full bg-amber-50 px-1.5 font-semibold text-amber-700">Оруулаагүй</span>}
+                      </div>
+                    </button>
+                    {canEdit && c.configured && <button onClick={() => openCopy(c.item_code)} title="Өөр бараанд хуулах" className="shrink-0 border-l border-gray-100 px-3 text-violet-500"><Copy size={15} /></button>}
                   </div>
                 ))}
               </div>
               <div className="hidden overflow-x-auto rounded-2xl border border-gray-100 bg-white lg:block">
-                <table className="w-full min-w-[900px] text-[12.5px]">
+                <table className="w-full min-w-[960px] text-[12.5px]">
                   <thead className="bg-gray-50 text-[11px] uppercase tracking-wider text-gray-500"><tr>
-                    {["Код", "Нэр", "Загвар", "Хайрцаг (У×Ө×Ө см)", "Үед × Үе", "Хайрцаг", "Ширхэг", "Жин кг", "Өндөр см", "Дүүргэлт", "", "", ""].map((h, i) => <th key={i} className={`px-3 py-2 ${i >= 5 && i <= 9 ? "text-right" : "text-left"}`}>{h}</th>)}
+                    <th className="px-3 py-2 text-right">#</th>
+                    <th className="px-3 py-2 text-left">Код</th>
+                    <th className="px-3 py-2 text-left">Нэр</th>
+                    <th className="px-3 py-2 text-right">Сарын дундаж</th>
+                    <th className="px-3 py-2 text-left">Поддон мэдээлэл</th>
+                    <th className="px-3 py-2 text-right">1 поддон</th>
+                    <th className="px-3 py-2 text-right">Сард поддон</th>
+                    <th className="px-3 py-2" />
                   </tr></thead>
                   <tbody>
-                    {list.map((c) => (
-                      <tr key={c.item_code} className="border-t border-gray-50 hover:bg-gray-50/60">
+                    {wl.items.map((c) => (
+                      <tr key={c.item_code} className={`border-t border-gray-50 ${c.configured ? "bg-emerald-50/50 hover:bg-emerald-50" : "hover:bg-gray-50/60"}`}>
+                        <td className="px-3 py-1.5 text-right font-bold tabular-nums text-gray-400">{c.rank}</td>
                         <td className="px-3 py-1.5 font-mono text-gray-500">{c.item_code}</td>
-                        <td className="max-w-[300px] truncate px-3 py-1.5 font-medium text-gray-800">{c.product.name}</td>
-                        <td className="px-3 py-1.5 text-gray-600">{c.template_name}</td>
-                        <td className="px-3 py-1.5 tabular-nums text-gray-600">{fmt(c.box_length_cm, 1)}×{fmt(c.box_width_cm, 1)}×{fmt(c.box_height_cm, 1)}</td>
-                        <td className="px-3 py-1.5 tabular-nums text-gray-600">{c.boxes_per_layer} × {c.layers}</td>
-                        <td className="px-3 py-1.5 text-right font-bold tabular-nums text-amber-700">{c.calc.boxes_per_pallet}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">{fmt(c.calc.pcs_per_pallet, 0)}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">{fmt(c.calc.pallet_weight_kg, 1)}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-sky-700">{fmt(c.calc.total_height_cm, 1)}</td>
-                        <td className={`px-3 py-1.5 text-right tabular-nums ${c.calc.area_fill_pct != null && c.calc.area_fill_pct > 100 ? "text-rose-600" : "text-gray-500"}`}>{c.calc.area_fill_pct == null ? "—" : `${fmt(c.calc.area_fill_pct, 0)}%`}</td>
-                        <td className="px-2 py-1.5">{c.calc.warnings.length > 0 && <span title={c.calc.warnings.join("\n")} className="text-rose-600"><AlertCircle size={14} /></span>}</td>
-                        <td className="px-2 py-1.5 text-right"><button onClick={() => lookup(c.item_code)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-800"><Pencil size={13} /></button></td>
-                        <td className="px-1 py-1.5 text-right">{canEdit && <button onClick={() => openCopy(c.item_code)} title="Өөр бараанд хуулах" className="rounded-lg p-1.5 text-violet-400 hover:bg-violet-50 hover:text-violet-700"><Copy size={13} /></button>}</td>
+                        <td className="max-w-[340px] px-3 py-1.5">
+                          <button onClick={() => lookup(c.item_code)} className="block max-w-full truncate text-left font-medium text-gray-800 hover:underline">{c.name || c.item_code}</button>
+                          {c.brand && <div className="truncate text-[10.5px] text-gray-400">{c.brand}</div>}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums" title={wl.months.map((m, i) => `${m.month}-р сар: ${fmt(c.months[i] ?? 0, 0)} ш`).join("\n")}>
+                          <b className="text-gray-800">{fmt(c.avg_monthly, 0)}</b> <span className="text-gray-400">ш</span>
+                        </td>
+                        <td className="px-3 py-1.5">
+                          {c.config ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                              <Check size={11} />{c.config.template_name} · {c.config.boxes_per_layer}×{c.config.layers}
+                              {c.config.calc.warnings.length > 0 && <span title={c.config.calc.warnings.join("\n")} className="text-rose-600"><AlertCircle size={11} /></span>}
+                            </span>
+                          ) : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">Оруулаагүй</span>}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-gray-600">
+                          {c.config ? <>{c.config.calc.boxes_per_pallet} х · {fmt(c.config.calc.pcs_per_pallet, 0)} ш</> : "—"}
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-bold tabular-nums text-emerald-700">
+                          {c.config?.pallets_per_month == null ? <span className="font-normal text-gray-300">—</span> : fmt(c.config.pallets_per_month, 1)}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                          {c.configured ? (
+                            <>
+                              <button onClick={() => lookup(c.item_code)} title="Засах" className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-800"><Pencil size={13} /></button>
+                              {canEdit && <button onClick={() => openCopy(c.item_code)} title="Өөр бараанд хуулах" className="rounded-lg p-1.5 text-violet-400 hover:bg-violet-50 hover:text-violet-700"><Copy size={13} /></button>}
+                            </>
+                          ) : canEdit && (
+                            <button onClick={() => lookup(c.item_code)} className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[11.5px] font-semibold text-white hover:bg-emerald-700">Оруулах</button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {wl.items.length < wl.total && (
+                <button onClick={() => setWLimit((l) => l + PAGE_W)} disabled={listLoading}
+                  className="rounded-xl border border-gray-200 bg-white py-2 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                  {listLoading ? "Ачаалж байна…" : `Цааш харах (${wl.items.length.toLocaleString("mn-MN")} / ${wl.total.toLocaleString("mn-MN")})`}
+                </button>
+              )}
             </>
           )}
         </div>
