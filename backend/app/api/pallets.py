@@ -8,6 +8,8 @@
   GET    /pallets/products?q=&template_id=  — тохиргоотой бараануудын жагсаалт (дүнтэй)
   PUT    /pallets/products/{item_code}      — тохиргоо хадгалах (upsert)
   DELETE /pallets/products/{item_code}
+  GET    /pallets/copy-candidates?source=&q= — хуулах бараа (брэндийн бусад / хайлт)
+  POST   /pallets/products/{item_code}/copy — ижил хэмжээтэй өөр бараанд хуулах
   GET    /pallets/export                    — Excel
 
 Дүнгийн томьёо (calc):
@@ -268,6 +270,152 @@ def delete_product(item_code: str, request: Request, db: Session = Depends(get_d
         audit(db, request, u, action="product_pallet_delete", entity_type="product_pallet",
               extra={"item_code": item_code}, autocommit=True)
     return {"ok": True}
+
+
+# ── Хуулах: ижил хэмжээтэй өөр кодтой бараанд ──────────────────────────────────
+
+def _same(a: float, b: float) -> bool:
+    a, b = float(a or 0), float(b or 0)
+    return abs(a - b) <= max(abs(a), abs(b)) * 0.01 + 1e-9
+
+
+_SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(мл|ml|литр|л|l|гр|gr|г|g|кг|kg)(?![a-zа-яөү])", re.I)
+_SIZE_MUL = {"мл": 1, "ml": 1, "литр": 1000, "л": 1000, "l": 1000, "гр": 1, "gr": 1, "г": 1, "g": 1, "кг": 1000, "kg": 1000}
+
+
+def _pack_size(name: str) -> tuple[str, float, str] | None:
+    """Нэрнээс савлагааны хэмжээ: «Coca-Cola 1.5л» → ('ml', 1500, '1.5л'). Сүүлчийн таарцыг авна."""
+    ms = list(_SIZE_RE.finditer(name or ""))
+    if not ms:
+        return None
+    m = ms[-1]
+    unit = m.group(2).lower()
+    kind = "ml" if unit in ("мл", "ml", "литр", "л", "l") else "g"
+    return kind, round(float(m.group(1).replace(",", ".")) * _SIZE_MUL[unit], 3), m.group(0).replace(" ", "")
+
+
+def _layout(cfg: ProductPallet) -> tuple:
+    return (cfg.template_id, cfg.box_length_cm, cfg.box_width_cm, cfg.box_height_cm, cfg.boxes_per_layer, cfg.layers)
+
+
+@router.get("/copy-candidates")
+def copy_candidates(source: str = Query(..., min_length=1, max_length=64), q: str = Query("", max_length=80),
+                    db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    """Хуулах бараа санал болгох: q хоосон бол эх барааны брэндийн бусад бараа
+    (ш/хайрцаг, жин ижил нь эхэнд), q байвал код/баркод/нэрээр хайна."""
+    from difflib import SequenceMatcher
+    from app.services.hall_count import resolve_product
+    src = db.query(Product).filter(Product.item_code == source.strip()).first()
+    if not src:
+        raise HTTPException(404, "Эх бараа олдсонгүй.")
+    src_cfg = db.query(ProductPallet).filter(ProductPallet.item_code == src.item_code).first()
+    ql = q.strip()
+    prods: list[Product] = []
+    exact = ""
+    if ql:
+        hit = resolve_product(db, ql)
+        if hit and hit.item_code and hit.id:
+            prods.append(hit); exact = hit.item_code
+        like = f"%{ql}%"
+        prods += db.query(Product).filter(or_(Product.item_code.like(like), Product.name.ilike(like))).limit(60).all()
+    elif src.brand_code or src.brand:
+        col, val = (Product.brand_code, src.brand_code) if src.brand_code else (Product.brand, src.brand)
+        prods = db.query(Product).filter(col == val).limit(400).all()
+    seen, uniq = {src.item_code}, []
+    for p in prods:
+        if p.item_code and p.item_code not in seen:
+            seen.add(p.item_code); uniq.append(p)
+    codes = [p.item_code for p in uniq]
+    cfgs = {}
+    for i in range(0, len(codes), 900):
+        for c in db.query(ProductPallet).filter(ProductPallet.item_code.in_(codes[i:i + 900])).all():
+            cfgs[c.item_code] = c
+    tpls = {t.id: t for t in db.query(PalletTemplate).all()}
+    sname = (src.name or "").lower()
+    ssize = _pack_size(src.name)
+    out = []
+    for p in uniq:
+        c = cfgs.get(p.item_code)
+        same_pack, same_weight = _same(p.pack_ratio, src.pack_ratio), _same(p.unit_weight, src.unit_weight)
+        psize = _pack_size(p.name)
+        same_size = bool(ssize and psize and ssize[:2] == psize[:2])
+        # Санал болгох: нэрэн дэх савлагааны хэмжээ + ш/хайрцаг ижил (нэрэнд хэмжээгүй бол ш/хайрцаг + жин)
+        match = (same_size and same_pack) if ssize else (same_pack and same_weight)
+        sim = SequenceMatcher(None, sname, (p.name or "").lower()).ratio()
+        out.append({
+            **_product_dict(p), "exact": p.item_code == exact, "same_pack": same_pack, "same_weight": same_weight,
+            "size": psize[2] if psize else "", "same_size": same_size, "match": match,
+            "score": round(sim + 0.6 * same_size + 0.25 * same_pack + 0.15 * same_weight - 0.5 * (c is not None), 3),
+            "similarity": round(sim, 3),
+            "config": ({"template_name": tpls[c.template_id].name if c.template_id in tpls else "",
+                        "box_length_cm": c.box_length_cm, "box_width_cm": c.box_width_cm, "box_height_cm": c.box_height_cm,
+                        "boxes_per_layer": c.boxes_per_layer, "layers": c.layers,
+                        "same_as_source": bool(src_cfg) and _layout(c) == _layout(src_cfg)} if c else None),
+        })
+    if not ql:
+        out.sort(key=lambda x: -x["score"])
+        out = out[:120]
+    return {"source": {**_product_dict(src), "size": ssize[2] if ssize else ""}, "total": len(out), "items": out}
+
+
+class CopyIn(BaseModel):
+    targets: list[str]
+    include_overrides: bool = False   # ш/хайрцаг, хувийн жин, хайрцагны жингийн засварыг мөн хуулах
+    overwrite: bool = False           # тохиргоотой барааг дарж бичих
+
+
+@router.post("/products/{item_code}/copy")
+def copy_product(item_code: str, body: CopyIn, request: Request, db: Session = Depends(get_db),
+                 u: User = Depends(require_role(*EDIT_ROLES))):
+    """Эх барааны поддоны загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийг бусад бараанд хуулна.
+    Жин/ширхгийн засварыг include_overrides үед л хуулна — үгүй бол бараа бүр өөрийн мастер утгаар бодогдоно."""
+    src_code = re.sub(r"\s+", "", item_code.strip())
+    src = db.query(ProductPallet).filter(ProductPallet.item_code == src_code).first()
+    if not src:
+        raise HTTPException(404, "Эх барааны поддоны тохиргоо хадгалагдаагүй байна — эхлээд хадгална уу.")
+    targets = []
+    for t in body.targets:
+        c = re.sub(r"\s+", "", str(t or ""))
+        if c and c != src_code and c not in targets:
+            targets.append(c)
+    if not targets:
+        raise HTTPException(400, "Хуулах бараа сонгоно уу.")
+    if len(targets) > 300:
+        raise HTTPException(400, "Нэг удаад 300 хүртэл бараа хуулна.")
+    prods = {p.item_code: p for p in db.query(Product).filter(Product.item_code.in_(targets)).all()}
+    have = {c.item_code: c for c in db.query(ProductPallet).filter(ProductPallet.item_code.in_(targets)).all()}
+    tpl = db.query(PalletTemplate).filter(PalletTemplate.id == src.template_id).first()
+    who = str(getattr(u, "nickname", "") or getattr(u, "username", "") or "")
+    now = datetime.utcnow()
+    copied, skipped = [], []
+    for code in targets:
+        p = prods.get(code)
+        if not p:
+            skipped.append({"item_code": code, "reason": "Мастерт олдсонгүй"}); continue
+        cfg = have.get(code)
+        if cfg and not body.overwrite:
+            skipped.append({"item_code": code, "name": p.name or "", "reason": "Тохиргоотой (дарж бичихийг сонгоогүй)"}); continue
+        if not cfg:
+            cfg = ProductPallet(item_code=code, pcs_per_box_override=0.0, unit_weight_kg_override=0.0,
+                                box_weight_kg_override=0.0, note="")
+            db.add(cfg)
+        cfg.template_id = src.template_id
+        cfg.box_length_cm, cfg.box_width_cm, cfg.box_height_cm = src.box_length_cm, src.box_width_cm, src.box_height_cm
+        cfg.boxes_per_layer, cfg.layers = src.boxes_per_layer, src.layers
+        if body.include_overrides:
+            cfg.pcs_per_box_override = src.pcs_per_box_override
+            cfg.unit_weight_kg_override = src.unit_weight_kg_override
+            cfg.box_weight_kg_override = src.box_weight_kg_override
+        if not (cfg.note or "").strip():
+            cfg.note = f"{src_code}-аас хуулсан"
+        cfg.updated_by, cfg.updated_at = who, now
+        copied.append((cfg, p))
+    db.commit()
+    if copied:
+        audit(db, request, u, action="product_pallet_copy", entity_type="product_pallet", entity_id=src.id,
+              extra={"source": src_code, "targets": [c.item_code for c, _ in copied], "skipped": skipped,
+                     "include_overrides": body.include_overrides, "overwrite": body.overwrite}, autocommit=True)
+    return {"source": src_code, "copied": [_cfg_dict(c, tpl, p) for c, p in copied], "skipped": skipped}
 
 
 # ── Excel ────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Layers, Camera, Search, Plus, Save, Trash2, Download, Check, AlertCircle, X, Loader2,
-  Package, Ruler, Weight, ArrowUpFromLine, RefreshCw, Pencil, Boxes,
+  Package, Ruler, Weight, ArrowUpFromLine, RefreshCw, Pencil, Boxes, Copy, CheckSquare, Square,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -29,6 +29,12 @@ type Cfg = { item_code: string; template_id: number; template_name: string; box_
 type Form = { template_id: number; box_length_cm: string; box_width_cm: string; box_height_cm: string;
   boxes_per_layer: string; layers: string; pcs_per_box_override: string; unit_weight_kg_override: string; box_weight_kg_override: string; note: string };
 
+type Cand = Prod & { exact: boolean; same_pack: boolean; same_weight: boolean; similarity: number;
+  size: string; same_size: boolean; match: boolean;
+  config: null | { template_name: string; box_length_cm: number; box_width_cm: number; box_height_cm: number;
+    boxes_per_layer: number; layers: number; same_as_source: boolean } };
+type CopyRes = { copied: Cfg[]; skipped: { item_code: string; name?: string; reason: string }[] };
+
 const EMPTY_FORM: Form = { template_id: 0, box_length_cm: "", box_width_cm: "", box_height_cm: "",
   boxes_per_layer: "", layers: "", pcs_per_box_override: "", unit_weight_kg_override: "", box_weight_kg_override: "", note: "" };
 const EDIT_ROLES = ["admin", "supervisor", "manager", "warehouse_clerk"];
@@ -37,6 +43,14 @@ const n = (s: string | number) => { const v = parseFloat(String(s).replace(",", 
 const fmt = (v: number | null | undefined, d = 1) => (v == null || Number.isNaN(v) ? "—" : (Number.isInteger(v) ? v : +v.toFixed(d)).toLocaleString("mn-MN"));
 const isEnter = (e: { key: string; code?: string }) => e.key === "Enter" || e.key === "Return" || e.code === "Enter" || e.code === "NumpadEnter";
 const errMsg = (e: any, f: string) => (typeof e?.response?.data?.detail === "string" ? e.response.data.detail : f);
+
+const formFromCfg = (cfg: Cfg, withOverrides = true): Form => ({
+  template_id: cfg.template_id, box_length_cm: String(cfg.box_length_cm || ""), box_width_cm: String(cfg.box_width_cm || ""),
+  box_height_cm: String(cfg.box_height_cm || ""), boxes_per_layer: String(cfg.boxes_per_layer || ""), layers: String(cfg.layers || ""),
+  pcs_per_box_override: withOverrides && cfg.pcs_per_box_override ? String(cfg.pcs_per_box_override) : "",
+  unit_weight_kg_override: withOverrides && cfg.unit_weight_kg_override ? String(cfg.unit_weight_kg_override) : "",
+  box_weight_kg_override: withOverrides && cfg.box_weight_kg_override ? String(cfg.box_weight_kg_override) : "", note: cfg.note || "",
+});
 
 /* Frontend дээр бодох (backend calc-тай ижил томьёо) — оруулж байх үед шууд харуулна */
 function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
@@ -59,6 +73,211 @@ function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
     pallet_weight_kg: weight, total_height_cm: th, stack_height_cm: stack, pallet_length_cm: tpl?.length_cm ?? 0,
     pallet_width_cm: tpl?.width_cm ?? 0, layer_area_cm2: layerArea, pallet_area_cm2: palletArea,
     area_fill_pct: palletArea > 0 ? layerArea / palletArea * 100 : null, warnings: w };
+}
+
+/* ═══ Ижил хэмжээтэй өөр кодтой бараанд поддоны тохиргоог хуулах ═══
+   Загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийг хуулна. Ширхэг/хайрцаг, жин нь
+   бараа бүрийн мастер утгаар бодогдоно (эх барааны засварыг хуулахыг сонгоогүй бол). */
+function CopyModal({ src, cfg, tpls, onClose, onDone }: {
+  src: Prod; cfg: Cfg; tpls: Tpl[]; onClose: () => void; onDone: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<Cand[]>([]);
+  const [searched, setSearched] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [sel, setSel] = useState<Record<string, Cand>>({});
+  const [withOv, setWithOv] = useState(false);
+  const [overwrite, setOverwrite] = useState(false);
+  const [scan, setScan] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [res, setRes] = useState<CopyRes | null>(null);
+  const tpl = tpls.find((t) => t.id === cfg.template_id);
+  const hasOv = cfg.pcs_per_box_override > 0 || cfg.unit_weight_kg_override > 0 || cfg.box_weight_kg_override > 0;
+  const srcForm = useMemo(() => formFromCfg(cfg, withOv), [cfg, withOv]);
+
+  const search = useCallback(async (text: string) => {
+    setLoading(true); setErr("");
+    try {
+      const r = await api.get("/pallets/copy-candidates", { params: { source: src.item_code, q: text.trim() } });
+      const list: Cand[] = r.data.items;
+      setItems(list); setSearched(text.trim());
+      const hit = list.find((c) => c.exact);   // баркод/код яг таарвал шууд сонгоно
+      if (hit) setSel((s) => ({ ...s, [hit.item_code]: hit }));
+    } catch (e: any) { setErr(errMsg(e, "Хайлт амжилтгүй")); }
+    finally { setLoading(false); }
+  }, [src.item_code]);
+  useEffect(() => { search(""); }, [search]);
+
+  const toggle = (c: Cand) => setSel((s) => { const x = { ...s }; if (x[c.item_code]) delete x[c.item_code]; else x[c.item_code] = c; return x; });
+  const picked = Object.values(sel);
+  const withCfg = picked.filter((c) => c.config && !c.config.same_as_source).length;
+  const sameAll = items.filter((c) => c.match && !c.config);
+  const allOn = items.length > 0 && items.every((c) => sel[c.item_code]);
+
+  const submit = async () => {
+    setBusy(true); setErr("");
+    try {
+      const r = await api.post(`/pallets/products/${encodeURIComponent(src.item_code)}/copy`,
+        { targets: picked.map((c) => c.item_code), include_overrides: withOv, overwrite });
+      setRes(r.data); onDone();
+    } catch (e: any) { setErr(errMsg(e, "Хуулж чадсангүй")); }
+    finally { setBusy(false); }
+  };
+
+  const badge = (c: Cand) => (
+    <>
+      {c.size && <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${c.same_size ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>{c.same_size ? `ижил ${c.size}` : c.size}</span>}
+      <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${c.same_pack ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+        {c.same_pack ? "ижил " : ""}{fmt(c.pack_ratio, 0)} ш/хайрцаг
+      </span>
+      {!c.same_weight && <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">{fmt(c.unit_weight, 3)} кг/ш</span>}
+      {c.config && (c.config.same_as_source
+        ? <span className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500">ижил тохиргоотой</span>
+        : <span title="Хуулбал дарж бичигдэнэ" className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
+            тохиргоотой: {c.config.template_name} · {fmt(c.config.box_length_cm)}×{fmt(c.config.box_width_cm)}×{fmt(c.config.box_height_cm)} · {c.config.boxes_per_layer}×{c.config.layers}
+          </span>)}
+    </>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[55] flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={onClose}>
+      {scan && <BarcodeScanner onDetected={(c) => { setScan(false); setQ(c); search(c); }} onClose={() => setScan(false)} />}
+      <div className="flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-3">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-violet-600 text-white"><Copy size={16} /></div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[15px] font-bold text-gray-900">Ижил хэмжээтэй бараанд хуулах</div>
+            <div className="truncate text-[12px] text-gray-600"><span className="font-mono font-semibold">{src.item_code}</span> · {src.name}</div>
+            <div className="mt-0.5 text-[11.5px] text-gray-500">
+              {cfg.template_name || tpl?.name} · хайрцаг {fmt(cfg.box_length_cm)}×{fmt(cfg.box_width_cm)}×{fmt(cfg.box_height_cm)} см · {cfg.boxes_per_layer} × {cfg.layers} үе = <b>{cfg.boxes_per_layer * cfg.layers} хайрцаг</b>
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100"><X size={16} /></button>
+        </div>
+
+        {res ? (
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            <div className="flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2.5 text-[14px] font-bold text-emerald-800"><Check size={16} />{res.copied.length} бараанд хуулсан</div>
+            {res.copied.length > 0 && (
+              <div className="mt-2 divide-y divide-gray-50 rounded-xl border border-gray-100">
+                {res.copied.map((c) => (
+                  <div key={c.item_code} className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
+                    <span className="font-mono text-gray-500">{c.item_code}</span>
+                    <span className="min-w-0 flex-1 truncate text-gray-800">{c.product.name}</span>
+                    <span className="shrink-0 tabular-nums text-gray-500">{c.calc.boxes_per_pallet} х · {fmt(c.calc.pcs_per_pallet, 0)} ш · {fmt(c.calc.pallet_weight_kg, 0)} кг</span>
+                    {c.calc.warnings.length > 0 && <span title={c.calc.warnings.join(" · ")} className="text-rose-600"><AlertCircle size={13} /></span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {res.skipped.length > 0 && (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+                <div className="mb-1 font-semibold">Алгассан {res.skipped.length}:</div>
+                {res.skipped.map((x) => <div key={x.item_code}>• <span className="font-mono">{x.item_code}</span> {x.name} — {x.reason}</div>)}
+              </div>
+            )}
+            <button onClick={onClose} className="mt-4 w-full rounded-xl bg-gray-900 py-2.5 text-[14px] font-bold text-white">Хаах</button>
+          </div>
+        ) : (
+          <>
+            <div className="flex gap-2 px-4 pt-3">
+              <div className="relative flex-1">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (isEnter(e)) search(q); }}
+                  placeholder="Баркод, код эсвэл нэрээр хайх…" inputMode="search"
+                  className="w-full rounded-xl border border-gray-200 py-2.5 pl-8 pr-3 text-[14px] outline-none focus:border-violet-400" />
+              </div>
+              <button onClick={() => search(q)} disabled={loading} className="rounded-xl bg-gray-900 px-3.5 text-[13px] font-semibold text-white disabled:opacity-40">
+                {loading ? <Loader2 size={15} className="animate-spin" /> : "Хайх"}
+              </button>
+              <button onClick={() => setScan(true)} title="Баркод уншуулах" className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-[13px] font-semibold text-white"><Camera size={15} /></button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 px-4 pb-1 pt-2 text-[11.5px] text-gray-500">
+              <span className="font-semibold text-gray-700">{searched ? `«${searched}» хайлт · ${items.length}` : `${src.brand || "Брэнд"}-ийн бусад бараа · ${items.length}`}</span>
+              {searched && <button onClick={() => { setQ(""); search(""); }} className="text-violet-600 underline">брэндийн санал руу буцах</button>}
+              <span className="flex-1" />
+              {sameAll.length > 0 && (
+                <button onClick={() => setSel((s) => { const x = { ...s }; sameAll.forEach((c) => { x[c.item_code] = c; }); return x; })}
+                  className="rounded-lg bg-emerald-50 px-2 py-1 font-semibold text-emerald-700 hover:bg-emerald-100">Ижил хэмжээтэй {sameAll.length}-г сонгох</button>
+              )}
+              {items.length > 0 && (
+                <button onClick={() => setSel((s) => { const x = { ...s }; items.forEach((c) => { if (allOn) delete x[c.item_code]; else x[c.item_code] = c; }); return x; })}
+                  className="rounded-lg bg-gray-100 px-2 py-1 font-semibold text-gray-600 hover:bg-gray-200">{allOn ? "Бүгдийг болих" : "Бүгдийг сонгох"}</button>
+              )}
+            </div>
+            <div className="min-h-[120px] flex-1 overflow-y-auto px-4 pb-2">
+              {items.length === 0 && !loading && (
+                <div className="rounded-xl border border-dashed border-gray-200 p-6 text-center text-[12.5px] text-gray-400">
+                  {searched ? "Бараа олдсонгүй" : "Брэндийн бусад бараа алга — баркод уншуулах эсвэл код/нэрээр хайна уу"}
+                </div>
+              )}
+              <div className="divide-y divide-gray-50">
+                {items.map((c) => {
+                  const on = !!sel[c.item_code];
+                  return (
+                    <button key={c.item_code} onClick={() => toggle(c)} className={`flex w-full items-start gap-2.5 px-1 py-2 text-left ${on ? "bg-violet-50/60" : "hover:bg-gray-50"}`}>
+                      <span className={`mt-0.5 shrink-0 ${on ? "text-violet-600" : "text-gray-300"}`}>{on ? <CheckSquare size={17} /> : <Square size={17} />}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-semibold text-gray-800">{c.name}</span>
+                        <span className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-gray-500">
+                          <span className="font-mono">{c.item_code}</span>{badge(c)}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {picked.length > 0 && (
+              <div className="max-h-[26vh] overflow-y-auto border-t border-gray-100 bg-gray-50/70 px-4 py-2">
+                <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-gray-500">Сонгосон {picked.length} — хуулсны дараах дүн</div>
+                {picked.map((c) => {
+                  const k = calcLocal(srcForm, tpl, c);
+                  return (
+                    <div key={c.item_code} className="flex items-center gap-2 py-1 text-[12px]">
+                      <span className="font-mono text-gray-500">{c.item_code}</span>
+                      <span className="min-w-0 flex-1 truncate text-gray-800">{c.name}</span>
+                      <span className="shrink-0 tabular-nums text-gray-600">{k.boxes_per_pallet} х · {fmt(k.pcs_per_pallet, 0)} ш · {fmt(k.pallet_weight_kg, 0)} кг</span>
+                      {k.warnings.length > 0 && <span title={k.warnings.join(" · ")} className="text-rose-600"><AlertCircle size={13} /></span>}
+                      <button onClick={() => toggle(c)} className="rounded p-0.5 text-gray-400 hover:text-rose-600"><X size={13} /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="border-t border-gray-100 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-2.5">
+              {hasOv && (
+                <label className="flex items-start gap-2 py-1 text-[12.5px] text-gray-700">
+                  <input type="checkbox" checked={withOv} onChange={(e) => setWithOv(e.target.checked)} className="mt-0.5" />
+                  <span>Ширхэг/хайрцаг, жингийн засварыг мөн хуулах
+                    <span className="block text-[11px] text-gray-400">
+                      Эх бараанд: {cfg.pcs_per_box_override ? `${fmt(cfg.pcs_per_box_override, 0)} ш/хайрцаг ` : ""}{cfg.unit_weight_kg_override ? `${fmt(cfg.unit_weight_kg_override, 3)} кг/ш ` : ""}{cfg.box_weight_kg_override ? `хайрцаг ${fmt(cfg.box_weight_kg_override, 2)} кг` : ""} — сонгоогүй бол бараа бүр өөрийн мастер утгаар бодогдоно
+                    </span>
+                  </span>
+                </label>
+              )}
+              {withCfg > 0 && (
+                <label className="flex items-start gap-2 py-1 text-[12.5px] text-gray-700">
+                  <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} className="mt-0.5" />
+                  <span>Тохиргоотой {withCfg} барааг дарж бичих<span className="block text-[11px] text-gray-400">Сонгоогүй бол тэдгээрийг алгасна</span></span>
+                </label>
+              )}
+              {!hasOv && <p className="py-1 text-[11px] text-gray-400">Загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийг хуулна. Ширхэг/хайрцаг, жин нь бараа бүрийн мастер утгаар бодогдоно.</p>}
+              {err && <div className="my-1 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">{err}</div>}
+              <button onClick={submit} disabled={busy || picked.length === 0}
+                className="mt-1.5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 py-2.5 text-[14px] font-bold text-white disabled:opacity-40">
+                {busy ? <Loader2 size={15} className="animate-spin" /> : <Copy size={15} />}
+                {picked.length ? `${picked.length} бараанд хуулах` : "Бараа сонгоно уу"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function PalletsPage() {
@@ -100,26 +319,25 @@ export default function PalletsPage() {
   const tpl = useMemo(() => tpls.find((t) => t.id === form.template_id), [tpls, form.template_id]);
   const live = useMemo(() => calcLocal(form, tpl, prod), [form, tpl, prod]);
 
-  const lookup = useCallback(async (code: string) => {
-    const c = code.trim(); if (!c) return;
+  const lookup = useCallback(async (code: string): Promise<boolean> => {
+    const c = code.trim(); if (!c) return false;
     setBusy(true); setNotFound("");
     try {
       const r = await api.get("/pallets/lookup", { params: { q: c } });
-      if (!r.data.found) { setProd(null); setExisting(null); setNotFound(c); return; }
+      if (!r.data.found) { setProd(null); setExisting(null); setNotFound(c); return false; }
       setProd(r.data.product);
       const cfg: Cfg | null = r.data.config;
       setExisting(cfg);
-      setForm(cfg ? {
-        template_id: cfg.template_id, box_length_cm: String(cfg.box_length_cm || ""), box_width_cm: String(cfg.box_width_cm || ""),
-        box_height_cm: String(cfg.box_height_cm || ""), boxes_per_layer: String(cfg.boxes_per_layer || ""), layers: String(cfg.layers || ""),
-        pcs_per_box_override: cfg.pcs_per_box_override ? String(cfg.pcs_per_box_override) : "",
-        unit_weight_kg_override: cfg.unit_weight_kg_override ? String(cfg.unit_weight_kg_override) : "",
-        box_weight_kg_override: cfg.box_weight_kg_override ? String(cfg.box_weight_kg_override) : "", note: cfg.note || "",
-      } : { ...EMPTY_FORM, template_id: tpls[0]?.id ?? 0 });
+      setForm(cfg ? formFromCfg(cfg) : { ...EMPTY_FORM, template_id: tpls[0]?.id ?? 0 });
       setTab("product");
-    } catch (e: any) { flash("err", errMsg(e, "Хайлт амжилтгүй")); }
+      return true;
+    } catch (e: any) { flash("err", errMsg(e, "Хайлт амжилтгүй")); return false; }
     finally { setBusy(false); }
   }, [tpls, flash]);
+  // Хуулах — зөвхөн ХАДГАЛСАН тохиргоог хуулна (засаад хадгалаагүй бол эхлээд хадгална)
+  const [copyOpen, setCopyOpen] = useState(false);
+  const dirty = useMemo(() => !!existing && JSON.stringify(formFromCfg(existing)) !== JSON.stringify(form), [existing, form]);
+  const openCopy = async (code: string) => { if (await lookup(code)) setCopyOpen(true); };
 
   const save = async () => {
     if (!prod) return;
@@ -190,6 +408,9 @@ export default function PalletsPage() {
         </div>
       )}
       {scan && <BarcodeScanner onDetected={(c) => { setScan(false); lookup(c); }} onClose={() => setScan(false)} />}
+      {copyOpen && prod && existing && (
+        <CopyModal src={prod} cfg={existing} tpls={tpls} onClose={() => setCopyOpen(false)} onDone={() => { loadList(); loadTpls(); }} />
+      )}
 
       <div className="flex items-center gap-3 rounded-2xl bg-white px-4 py-3 shadow-sm">
         <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-sm"><Layers size={16} /></div>
@@ -282,6 +503,13 @@ export default function PalletsPage() {
                     {existing && <button onClick={remove} className="rounded-xl border border-gray-200 px-3 text-rose-600"><Trash2 size={15} /></button>}
                   </div>
                 )}
+                {canEdit && existing && (
+                  <button onClick={() => setCopyOpen(true)} disabled={dirty} title={dirty ? "Өөрчлөлтөө эхлээд хадгална уу" : ""}
+                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 py-2 text-[13px] font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50">
+                    <Copy size={14} />Ижил хэмжээтэй өөр бараанд хуулах
+                  </button>
+                )}
+                {canEdit && existing && dirty && <p className="mt-1 text-center text-[10.5px] text-amber-600">Хадгалаагүй өөрчлөлт байна — хуулахаас өмнө хадгална уу</p>}
                 {existing && <p className="mt-2 text-[10.5px] text-gray-400">Сүүлд: {existing.updated_by} · {(existing.updated_at || "").slice(0, 16).replace("T", " ")}</p>}
               </div>
             )}
@@ -339,7 +567,8 @@ export default function PalletsPage() {
             <>
               <div className="flex flex-col gap-1.5 lg:hidden">
                 {list.map((c) => (
-                  <button key={c.item_code} onClick={() => lookup(c.item_code)} className="rounded-xl border border-gray-100 bg-white px-3 py-2 text-left">
+                  <div key={c.item_code} className="flex items-stretch rounded-xl border border-gray-100 bg-white">
+                  <button onClick={() => lookup(c.item_code)} className="min-w-0 flex-1 px-3 py-2 text-left">
                     <div className="truncate text-[13px] font-semibold text-gray-800">{c.product.name}</div>
                     <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-gray-500">
                       <span className="font-mono">{c.item_code}</span><span>{c.template_name}</span>
@@ -348,12 +577,14 @@ export default function PalletsPage() {
                       {c.calc.warnings.length > 0 && <span className="text-rose-600">⚠ {c.calc.warnings.length}</span>}
                     </div>
                   </button>
+                  {canEdit && <button onClick={() => openCopy(c.item_code)} title="Өөр бараанд хуулах" className="shrink-0 border-l border-gray-100 px-3 text-violet-500"><Copy size={15} /></button>}
+                  </div>
                 ))}
               </div>
               <div className="hidden overflow-x-auto rounded-2xl border border-gray-100 bg-white lg:block">
                 <table className="w-full min-w-[900px] text-[12.5px]">
                   <thead className="bg-gray-50 text-[11px] uppercase tracking-wider text-gray-500"><tr>
-                    {["Код", "Нэр", "Загвар", "Хайрцаг (У×Ө×Ө см)", "Үед × Үе", "Хайрцаг", "Ширхэг", "Жин кг", "Өндөр см", "Дүүргэлт", "", ""].map((h, i) => <th key={i} className={`px-3 py-2 ${i >= 5 && i <= 9 ? "text-right" : "text-left"}`}>{h}</th>)}
+                    {["Код", "Нэр", "Загвар", "Хайрцаг (У×Ө×Ө см)", "Үед × Үе", "Хайрцаг", "Ширхэг", "Жин кг", "Өндөр см", "Дүүргэлт", "", "", ""].map((h, i) => <th key={i} className={`px-3 py-2 ${i >= 5 && i <= 9 ? "text-right" : "text-left"}`}>{h}</th>)}
                   </tr></thead>
                   <tbody>
                     {list.map((c) => (
@@ -370,6 +601,7 @@ export default function PalletsPage() {
                         <td className={`px-3 py-1.5 text-right tabular-nums ${c.calc.area_fill_pct != null && c.calc.area_fill_pct > 100 ? "text-rose-600" : "text-gray-500"}`}>{c.calc.area_fill_pct == null ? "—" : `${fmt(c.calc.area_fill_pct, 0)}%`}</td>
                         <td className="px-2 py-1.5">{c.calc.warnings.length > 0 && <span title={c.calc.warnings.join("\n")} className="text-rose-600"><AlertCircle size={14} /></span>}</td>
                         <td className="px-2 py-1.5 text-right"><button onClick={() => lookup(c.item_code)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-800"><Pencil size={13} /></button></td>
+                        <td className="px-1 py-1.5 text-right">{canEdit && <button onClick={() => openCopy(c.item_code)} title="Ижил хэмжээтэй өөр бараанд хуулах" className="rounded-lg p-1.5 text-violet-400 hover:bg-violet-50 hover:text-violet-700"><Copy size={13} /></button>}</td>
                       </tr>
                     ))}
                   </tbody>
