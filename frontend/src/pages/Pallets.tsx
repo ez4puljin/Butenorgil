@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Layers, Camera, Search, Plus, Save, Trash2, Download, Check, AlertCircle, X, Loader2,
   Package, Ruler, Weight, ArrowUpFromLine, RefreshCw, Pencil, Boxes, Copy, CheckSquare, Square,
@@ -78,6 +78,28 @@ function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
 /* ═══ Ижил хэмжээтэй өөр кодтой бараанд поддоны тохиргоог хуулах ═══
    Загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийг хуулна. Ширхэг/хайрцаг, жин нь
    бараа бүрийн мастер утгаар бодогдоно (эх барааны засварыг хуулахыг сонгоогүй бол). */
+const STALE_SERVER = "Сервер шинэчлэгдээгүй байна — «хуулах» боломж серверийг дахин асаасны дараа ажиллана.";
+
+/* Цонхны доторх алдаа бүх хуудсыг цагаан болгохгүй — зөвхөн энэ цонхонд мэдэгдэнэ */
+class CopyBoundary extends Component<{ onClose: () => void; children: ReactNode }, { err: Error | null }> {
+  state = { err: null as Error | null };
+  static getDerivedStateFromError(err: Error) { return { err }; }
+  componentDidCatch(err: Error) { console.error("CopyModal error:", err); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/40 p-4" onClick={this.props.onClose}>
+        <div className="w-full max-w-sm rounded-2xl bg-white p-5 text-center shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <AlertCircle size={28} className="mx-auto text-rose-500" />
+          <p className="mt-2 text-[14px] font-bold text-gray-800">Хуулах цонхонд алдаа гарлаа</p>
+          <p className="mt-1 text-[12px] text-gray-500">{this.state.err.message}</p>
+          <button onClick={this.props.onClose} className="mt-4 w-full rounded-xl bg-gray-900 py-2.5 text-[14px] font-bold text-white">Хаах</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 function CopyModal({ src, cfg, tpls, onClose, onDone }: {
   src: Prod; cfg: Cfg; tpls: Tpl[]; onClose: () => void; onDone: () => void;
 }) {
@@ -100,6 +122,8 @@ function CopyModal({ src, cfg, tpls, onClose, onDone }: {
     setLoading(true); setErr("");
     try {
       const r = await api.get("/pallets/copy-candidates", { params: { source: src.item_code, q: text.trim() } });
+      // Хуучин сервер (endpoint-гүй) index.html буцаадаг — массив биш бол унагахгүй, мэдэгдэнэ
+      if (!Array.isArray(r.data?.items)) { setItems([]); setErr(STALE_SERVER); return; }
       const list: Cand[] = r.data.items;
       setItems(list); setSearched(text.trim());
       const hit = list.find((c) => c.exact);   // баркод/код яг таарвал шууд сонгоно
@@ -120,7 +144,8 @@ function CopyModal({ src, cfg, tpls, onClose, onDone }: {
     try {
       const r = await api.post(`/pallets/products/${encodeURIComponent(src.item_code)}/copy`,
         { targets: picked.map((c) => c.item_code), include_overrides: withOv, overwrite });
-      setRes(r.data); onDone();
+      if (!Array.isArray(r.data?.copied)) { setErr(STALE_SERVER); return; }
+      setRes({ copied: r.data.copied, skipped: Array.isArray(r.data.skipped) ? r.data.skipped : [] }); onDone();
     } catch (e: any) { setErr(errMsg(e, "Хуулж чадсангүй")); }
     finally { setBusy(false); }
   };
@@ -409,7 +434,9 @@ export default function PalletsPage() {
       )}
       {scan && <BarcodeScanner onDetected={(c) => { setScan(false); lookup(c); }} onClose={() => setScan(false)} />}
       {copyOpen && prod && existing && (
-        <CopyModal src={prod} cfg={existing} tpls={tpls} onClose={() => setCopyOpen(false)} onDone={() => { loadList(); loadTpls(); }} />
+        <CopyBoundary onClose={() => setCopyOpen(false)}>
+          <CopyModal src={prod} cfg={existing} tpls={tpls} onClose={() => setCopyOpen(false)} onDone={() => { loadList(); loadTpls(); }} />
+        </CopyBoundary>
       )}
 
       <div className="flex items-center gap-3 rounded-2xl bg-white px-4 py-3 shadow-sm">
