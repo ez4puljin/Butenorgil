@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Card } from "../components/ui/Card";
 import { api } from "../lib/api";
 import {
   Download, FileSpreadsheet, CheckCircle2, AlertCircle, MapPinned, Printer,
-  FileDown, Settings2, ChevronDown, ChevronRight, RefreshCw, Save,
+  FileDown, Settings2, ChevronDown, ChevronRight, RefreshCw, Save, PackageCheck, Share2, ImageIcon,
 } from "lucide-react";
 
 // ── Тайлангийн тодорхойлолт ───────────────────────────────────────────────────
@@ -54,6 +54,212 @@ const REPORT_CARDS: ReportCard[] = [
     requiredTypes: [3],
   },
 ];
+
+// ── Агуулахад буусан барааны жагсаалт (PDF, утсанд зориулсан) ─────────────────
+
+type ArrivalPreview = {
+  date_from: string; date_to: string; locations: string[];
+  available_locations: { code: string; name: string; rows: number }[];
+  count: number; categories: { name: string; count: number }[];
+  no_image_url: number; not_in_master: number; no_price: number;
+  images: { total: number; ready: number; failed: number; pending: number };
+  data_until: string | null; order_phone: string; order_contact: string;
+};
+const ARRIVAL_LOCS = ["01", "02", "11", "12"];
+const ARRIVAL_LOC_NAMES: Record<string, string> = {
+  "01": "Бөөний агуулах", "02": "Ус ундаа архи пиво", "11": "Жижиглэн барааны агуулах", "12": "Гэрээт компаний агуулах",
+};
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const shiftDays = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d; };
+const blobDetail = async (e: any, fallback: string) => {
+  try { const t = await e?.response?.data?.text?.(); return JSON.parse(t ?? "").detail ?? fallback; }
+  catch { return typeof e?.response?.data?.detail === "string" ? e.response.data.detail : fallback; }
+};
+
+function ArrivalListPdf() {
+  const [dateFrom, setDateFrom] = useState(ymd(shiftDays(-6)));
+  const [dateTo, setDateTo] = useState(ymd(new Date()));
+  const [locs, setLocs] = useState<string[]>(ARRIVAL_LOCS);
+  const [pv, setPv] = useState<ArrivalPreview | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [showCats, setShowCats] = useState(false);
+
+  const params = { date_from: dateFrom, date_to: dateTo, locations: locs.join(",") };
+  const load = useCallback(async (silent = false) => {
+    if (!dateFrom || !dateTo || locs.length === 0) { setPv(null); return; }
+    if (!silent) { setLoading(true); setErr(""); }
+    try {
+      const r = await api.get("/reports/arrivals", { params: { date_from: dateFrom, date_to: dateTo, locations: locs.join(",") } });
+      if (typeof r.data?.count === "number") setPv(r.data);
+    } catch (e: any) {
+      if (!silent) { setErr(e?.response?.data?.detail ?? "Мэдээлэл ачаалахад алдаа гарлаа."); setPv(null); }
+    } finally { if (!silent) setLoading(false); }
+  }, [dateFrom, dateTo, locs]);
+  const polls = useRef(0);
+  useEffect(() => { setFile(null); polls.current = 0; const t = setTimeout(() => load(), 350); return () => clearTimeout(t); }, [load]);
+  // Зураг бэлдэж дуустал 2.5 сек тутам төлөвийг шинэчилнэ (дээд тал нь ~5 минут)
+  useEffect(() => {
+    if (!pv || pv.images.pending === 0 || polls.current >= 120) return;
+    const t = setTimeout(() => { polls.current += 1; load(true); }, 2500);
+    return () => clearTimeout(t);
+  }, [pv, load]);
+
+  const preset = (k: "today" | "week" | "month" | "prev") => {
+    const now = new Date();
+    if (k === "today") { setDateFrom(ymd(now)); setDateTo(ymd(now)); }
+    if (k === "week") { setDateFrom(ymd(shiftDays(-6))); setDateTo(ymd(now)); }
+    if (k === "month") { setDateFrom(ymd(new Date(now.getFullYear(), now.getMonth(), 1))); setDateTo(ymd(now)); }
+    if (k === "prev") {
+      setDateFrom(ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)));
+      setDateTo(ymd(new Date(now.getFullYear(), now.getMonth(), 0)));
+    }
+  };
+  const toggleLoc = (c: string) => setLocs((l) => (l.includes(c) ? l.filter((x) => x !== c) : [...l, c].sort()));
+
+  const download = async () => {
+    setBusy(true); setErr("");
+    try {
+      const r = await api.get("/reports/arrivals/pdf", { params, responseType: "blob", timeout: 240000 });
+      const name = `Агуулахад_буусан_бараа_${dateFrom}_${dateTo}.pdf`;
+      const f = new File([r.data], name, { type: "application/pdf" });
+      setFile(f);
+      const url = URL.createObjectURL(f);
+      const a = document.createElement("a");
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      load(true);
+    } catch (e: any) {
+      setErr(await blobDetail(e, "PDF гаргахад алдаа гарлаа."));
+    } finally { setBusy(false); }
+  };
+  const canShare = !!file && typeof navigator !== "undefined" && !!navigator.canShare && navigator.canShare({ files: [file] });
+  const share = async () => {
+    if (!file) return;
+    try { await navigator.share({ files: [file], title: "Агуулахад буусан барааны жагсаалт" }); } catch { /* цуцалсан */ }
+  };
+
+  // 4 үндсэн агуулах үргэлж харагдана (тухайн хугацаанд орлогогүй ч), бусад байршил дататай үед нэмэгдэнэ
+  const locOptions = [
+    ...ARRIVAL_LOCS.map((c) => ({ code: c, name: ARRIVAL_LOC_NAMES[c] })),
+    ...(pv?.available_locations ?? []).filter((l) => l.code && l.code !== "14" && !ARRIVAL_LOCS.includes(l.code)),
+    ...locs.filter((c) => !ARRIVAL_LOCS.includes(c) && !(pv?.available_locations ?? []).some((l) => l.code === c)).map((c) => ({ code: c, name: "" })),
+  ].sort((a, b) => a.code.localeCompare(b.code));
+  const img = pv?.images;
+  const imgPct = img && img.total ? Math.round(((img.ready + img.failed) / img.total) * 100) : 100;
+  const stale = pv?.data_until && pv.data_until < dateTo;
+
+  return (
+    <div className="mt-6">
+      <div className="rounded-apple bg-gradient-to-r from-emerald-700 to-green-600 p-4 text-white shadow-sm sm:p-5">
+        <div className="flex items-center gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/20"><PackageCheck size={22} /></div>
+          <div className="min-w-0 flex-1">
+            <div className="text-base font-bold sm:text-lg">Агуулахад буусан барааны жагсаалт</div>
+            <div className="text-[12px] text-white/80 sm:text-[13px]">
+              Сонгосон хугацаанд агуулахад орлого авсан бараа — ангиллаар, зураг, нэгж үнэтэй PDF (утсаар үзэхэд зориулсан)
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-end gap-2.5">
+          <div>
+            <label className="block text-[11px] font-semibold text-white/70">Эхлэх огноо</label>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+              className="mt-1 rounded-lg border-0 bg-white/95 px-3 py-2 text-sm text-gray-800 outline-none" />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-white/70">Дуусах огноо</label>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+              className="mt-1 rounded-lg border-0 bg-white/95 px-3 py-2 text-sm text-gray-800 outline-none" />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {([["today", "Өнөөдөр"], ["week", "7 хоног"], ["month", "Энэ сар"], ["prev", "Өмнөх сар"]] as const).map(([k, l]) => (
+              <button key={k} onClick={() => preset(k)} className="rounded-lg bg-white/15 px-2.5 py-2 text-[12px] font-semibold hover:bg-white/25">{l}</button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          {locOptions.map((l) => {
+            const on = locs.includes(l.code);
+            return (
+              <button key={l.code} onClick={() => toggleLoc(l.code)}
+                className={`rounded-full px-2.5 py-1 text-[11.5px] font-semibold ring-1 ring-inset ${on ? "bg-white text-emerald-800 ring-white" : "bg-transparent text-white/75 ring-white/40 hover:bg-white/10"}`}>
+                {on ? "✓ " : ""}{l.code} {l.name}
+              </button>
+            );
+          })}
+        </div>
+        {err && <div className="mt-2 rounded-lg bg-red-500/30 px-3 py-1.5 text-[12px] font-medium">{err}</div>}
+      </div>
+
+      <div className="mt-3 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+        {loading && !pv ? (
+          <div className="flex items-center gap-2 text-[13px] text-gray-400"><RefreshCw size={14} className="animate-spin" /> Тооцоолж байна…</div>
+        ) : !pv ? (
+          <div className="text-[13px] text-gray-400">{locs.length === 0 ? "Байршил сонгоно уу." : "Огноо сонгоно уу."}</div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <div>
+                <div className="text-[22px] font-black tabular-nums text-gray-900">{pv.count.toLocaleString("mn-MN")} <span className="text-[13px] font-semibold text-gray-400">бараа</span></div>
+                <div className="text-[12px] text-gray-500">{pv.categories.length} ангилал · {pv.date_from.split("-").join(".")} – {pv.date_to.split("-").join(".")}</div>
+              </div>
+              {img && img.total > 0 && (
+                <div className="min-w-[200px] flex-1">
+                  <div className="flex items-center gap-1.5 text-[12px] text-gray-600">
+                    <ImageIcon size={13} className="text-emerald-600" />
+                    Зураг: <b className="tabular-nums">{img.ready.toLocaleString("mn-MN")}</b> / {img.total.toLocaleString("mn-MN")} бэлэн
+                    {img.pending > 0 && <span className="text-amber-600">· бэлдэж байна…</span>}
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                    <div className={`h-full rounded-full ${img.pending > 0 ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${imgPct}%` }} />
+                  </div>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button onClick={download} disabled={busy || pv.count === 0}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2.5 text-[13px] font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50">
+                  {busy ? <RefreshCw size={15} className="animate-spin" /> : <FileDown size={15} />}
+                  {busy ? "PDF бэлдэж байна…" : "PDF татах"}
+                </button>
+                {canShare && (
+                  <button onClick={share} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-[13px] font-semibold text-emerald-700 hover:bg-emerald-100">
+                    <Share2 size={15} /> Хуваалцах
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="mt-2.5 space-y-1 text-[11.5px]">
+              {pv.count === 0 && <div className="text-gray-500">Сонгосон хугацаанд эдгээр байршилд орлого авсан бараа алга.</div>}
+              {stale && <div className="text-amber-700">⚠ Орлогын файл {pv.data_until!.split("-").join(".")} хүртэлх өгөгдөлтэй — Файл оруулалт → Орлогын файлаас шинэчилнэ үү.</div>}
+              {pv.no_image_url > 0 && <div className="text-gray-500">{pv.no_image_url.toLocaleString("mn-MN")} бараанд мастерт зургийн URL байхгүй — «зураггүй» гэж гарна.</div>}
+              {img && img.failed > 0 && <div className="text-gray-500">{img.failed} барааны зураг нээгдэхгүй (файл алга / HEIC).</div>}
+              {pv.not_in_master > 0 && <div className="text-gray-500">{pv.not_in_master} бараа мастерт бүртгэлгүй — «Бусад» ангилалд үнэгүй гарна.</div>}
+              <div className="text-gray-400">PDF-д: лого, гарчиг, огноо, захиалгын утас {pv.order_phone} ({pv.order_contact}) — утсан дээр дарахад залгана.</div>
+            </div>
+            {pv.categories.length > 0 && (
+              <div className="mt-2.5">
+                <button onClick={() => setShowCats((v) => !v)} className="inline-flex items-center gap-1 text-[12px] font-semibold text-emerald-700">
+                  {showCats ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Ангиллууд
+                </button>
+                {showCats && (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {pv.categories.map((c) => (
+                      <span key={c.name} className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{c.name} <b className="text-gray-800">{c.count}</b></span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ── Tag vs Байршил зөрүүтэй орлого шалгагч ───────────────────────────────────
 
@@ -477,6 +683,9 @@ export default function Reports() {
       <div className="mt-1 text-sm text-gray-500 print:hidden">
         Тайлан боловсруулж эксэл файлаар экспорт хийх
       </div>
+
+      {/* ── Агуулахад буусан барааны жагсаалт (PDF) ─────────────────────────── */}
+      <ArrivalListPdf />
 
       {/* ── Tag vs Байршил зөрүүтэй орлого шалгагч ──────────────────────────── */}
       <TagLocationChecker />
