@@ -811,7 +811,8 @@ def sales_export(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Qu
     борлуулалт хайрцгаар ба × нэгж үнэ, поддон хэмжээ (хайрцаг/поддон). Тохиргооны
     брендүүдийн бараанд борлуулалт хэдэн поддон болохыг бичнэ; поддон мэдээлэлгүй бол
     «Поддон мэдээлэл байхгүй».
-    Нэгж үнэ = барааны мастерын сүүлийн орлогын үнэ (last_purchase_price).
+    Нэгж үнэ = ЗАРАХ үнэ — локал POS-ийн unitPrice (лангууны үнэ), кодоор эсвэл
+    баркодоор тулгана. POS-д олдоогүй бараанд үнэ хоосон үлдэнэ.
     """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -828,15 +829,19 @@ def sales_export(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Qu
     cfgs = {c.item_code: c for c in db.query(ProductPallet).all()}
     tpls = {t.id: t for t in db.query(PalletTemplate).all()}
     idx = {r.item_code: r for r in _product_index(db)}
-    prices: dict[str, float] = {}
-    for code, price in db.execute(text("SELECT item_code, last_purchase_price FROM products")).all():
-        if code and float(price or 0) > 0 and code not in prices:
-            prices[code] = float(price)
+    from app.services.pos_price import price_map
+    pos_by_code, pos_by_barcode, price_error = price_map()
+
+    def sell_price(code: str, r) -> float:
+        hit = pos_by_code.get((code or "").strip().lower())
+        if hit is None and r is not None and r.barcode:
+            hit = pos_by_barcode.get(r.barcode.strip().lower())
+        return float(hit or 0.0)
 
     avg_label = ", ".join(str(m) for _y, m in avg_slots) or ", ".join(map(str, avg_months))
     single_label = f"{single_slots[0][0]} оны {single}-р сар" if single_slots else f"{single}-р сар"
     no_pallet = "Поддон мэдээлэл байхгүй"
-    cols = ["Код", "Нэр", "Бренд", "Хайрцаг дахь ширхэг", "Нэгж үнэ",
+    cols = ["Код", "Нэр", "Бренд", "Хайрцаг дахь ширхэг", "Нэгж үнэ (зарах)",
             f"Сарын дундаж ({avg_label}-р сар), хайрцаг", f"Сарын дундаж ({avg_label}-р сар) × нэгж үнэ",
             f"{single_label}, хайрцаг", f"{single_label} × нэгж үнэ",
             "Поддон хэмжээ (хайрцаг/поддон)", "Сарын дундаж, поддон", f"{single_label}, поддон"]
@@ -864,7 +869,7 @@ def sales_export(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Qu
         cfg = cfgs.get(code)
         r = idx.get(code)
         pcs_box = (cfg.pcs_per_box_override if cfg and cfg.pcs_per_box_override > 0 else (r.pack_ratio if r else 0.0)) or 0.0
-        price = prices.get(code, 0.0)
+        price = sell_price(code, r)
         avg_pcs = sum(d["months"]) / len(d["months"]) if d["months"] else 0.0
         single_pcs = sum(single_sales.get(code, {}).get(s_, 0.0) for s_ in single_slots)
         avg_box = _round_unit(avg_pcs / pcs_box) if pcs_box > 0 else None
@@ -925,7 +930,9 @@ def sales_export(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Qu
         ("Сарын дундаж", f"{avg_label}-р сарын борлуулалтын дундаж (агуулах + заал) — сар бүрийн хамгийн сүүлийн жилийн дата"),
         ("Тусгай сар", single_label),
         ("Хайрцаг", "Ширхэгийг хайрцаг дахь ширхэгт хувааж нэгжийн орноор тоймлосон (0.5 → дээш)"),
-        ("Нэгж үнэ", "Барааны мастерын сүүлийн орлогын үнэ; дүн = борлуулалт (ширхэг) × нэгж үнэ"),
+        ("Нэгж үнэ", "Зарах үнэ — локал POS-ийн лангууны үнэ (кодоор, үгүй бол баркодоор тулгасан); "
+                     "дүн = борлуулалт (ширхэг) × нэгж үнэ. POS-д олдоогүй бараанд үнэ хоосон"
+                     + (f". АНХААР: POS-оос үнэ татаж чадсангүй — {price_error}" if price_error else "")),
         ("Поддон хэмжээ", "Нэг поддонд багтах хайрцаг (нэг үед × үе)"),
         ("Поддоноор тооцох брендүүд", ", ".join(brand_names) or "—"),
         ("Бүрдүүлсэн", f"{datetime.now():%Y-%m-%d %H:%M} · {getattr(u, 'username', '')}"),
@@ -942,4 +949,7 @@ def sales_export(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Qu
     fname = f"{datetime.now():%Y%m%d}_borluulalt_poddon{'_' + safe_tag if tag.strip() else ''}.xlsx"
     return Response(content=buf.getvalue(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}",
+                             # POS-оос үнэ татаж чадаагүй бол хуудас хэрэглэгчид анхааруулна.
+                             "X-Price-Warning": quote(price_error) if price_error else "",
+                             "Access-Control-Expose-Headers": "Content-Disposition, X-Price-Warning"})

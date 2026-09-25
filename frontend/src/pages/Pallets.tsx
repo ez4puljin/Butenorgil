@@ -628,6 +628,9 @@ export default function PalletsPage() {
       const url = URL.createObjectURL(new Blob([r.data]));
       const a = document.createElement("a"); a.href = url; a.download = m ? decodeURIComponent(m[1]) : "borluulalt_poddon.xlsx";
       document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 2000);
+      // Зарах үнэ локал POS-оос ирдэг — POS холбогдоогүй бол үнийн баганууд хоосон гарна.
+      const warn: string = r.headers?.["x-price-warning"] || "";
+      if (warn) flash("err", `Excel татагдлаа, гэхдээ POS-оос зарах үнэ татаж чадсангүй: ${decodeURIComponent(warn)}`);
     } catch (e: any) { flash("err", errMsg(e, "Татахад алдаа")); } finally { setDlSales(false); }
   };
   const [salesSettings, setSalesSettings] = useState<SalesSettings | null>(null);

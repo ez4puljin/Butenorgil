@@ -20,6 +20,9 @@ POS-оос шууд асуувал хамаагүй энгийн бөгөөд н
 """
 from __future__ import annotations
 
+import threading
+import time
+
 import requests
 
 from app.core.config import settings
@@ -127,3 +130,68 @@ def lookup(q: str) -> dict:
 
 def enabled() -> bool:
     return bool(local_urls())
+
+
+# ── Бүх барааны зарах үнэ (тайлан, Excel-д) ────────────────────────────────────
+# Нэг нэгээр нь хайвал ~20 мянган бараанд хэт удаан — POS бүрээс хуудаслан бүгдийг
+# нэг дор татаж, 10 минут кэшилнэ. Эхний POS-д байгаа үнэ давуу.
+_PRICE_Q = ("query($p:Int,$pp:Int){ poscProducts(page:$p, perPage:$pp){ code unitPrice barcodes } }")
+_PRICES: dict = {"at": 0.0, "by_code": {}, "by_barcode": {}, "error": ""}
+_PRICES_LOCK = threading.Lock()
+PRICE_TTL = 600
+PRICE_PAGE = 1000
+
+
+def _all_products(url: str) -> list[dict]:
+    out: list[dict] = []
+    for page in range(1, 200):
+        r = requests.post(url, json={"query": _PRICE_Q, "variables": {"p": page, "pp": PRICE_PAGE}},
+                          timeout=TIMEOUT, headers={"Content-Type": "application/json"})
+        j = r.json()
+        if j.get("errors"):
+            raise PriceError(str(j["errors"][0].get("message"))[:120])
+        rows = (j.get("data") or {}).get("poscProducts") or []
+        out.extend(rows)
+        if len(rows) < PRICE_PAGE:
+            break
+    return out
+
+
+def price_map(force: bool = False) -> tuple[dict[str, float], dict[str, float], str]:
+    """(код → зарах үнэ, баркод → зарах үнэ, алдаа) — локал POS-уудаас.
+
+    POS-ийн бараа Эрхэттэй синк хийгддэг тул POS-ийн ``code`` = мастерын item_code.
+    Хэд хэдэн POS байвал эхнийхийн үнэ давуу (дараагийнхаас зөвхөн дутууг нөхнө)."""
+    if not force and _PRICES["at"] and time.monotonic() - _PRICES["at"] < PRICE_TTL:
+        return _PRICES["by_code"], _PRICES["by_barcode"], _PRICES["error"]
+    with _PRICES_LOCK:
+        if not force and _PRICES["at"] and time.monotonic() - _PRICES["at"] < PRICE_TTL:
+            return _PRICES["by_code"], _PRICES["by_barcode"], _PRICES["error"]
+        by_code: dict[str, float] = {}
+        by_barcode: dict[str, float] = {}
+        errors: list[str] = []
+        urls = local_urls()
+        if not urls:
+            errors.append("Локал POS хаяг тохируулаагүй (POS_LOCAL_URLS)")
+        for url in urls:
+            host = url.split("//")[-1].split("/")[0]
+            try:
+                rows = _all_products(url)
+            except Exception as e:  # noqa: BLE001 — нэг POS унтарсан ч нөгөөгөөс авна
+                errors.append(f"{host}: {str(e)[:80]}")
+                continue
+            for p in rows:
+                price = p.get("unitPrice")
+                if price is None:
+                    continue
+                code = _norm(p.get("code"))
+                if code and code not in by_code:
+                    by_code[code] = float(price)
+                for b in p.get("barcodes") or []:
+                    nb = _norm(b)
+                    if nb and nb not in by_barcode:
+                        by_barcode[nb] = float(price)
+        err = "; ".join(errors) if errors and not by_code else ""
+        # Бүх POS унтарсан бол кэшлэхгүй — дараагийн хүсэлт дахин оролдоно.
+        _PRICES.update(at=time.monotonic() if by_code else 0.0, by_code=by_code, by_barcode=by_barcode, error=err)
+        return by_code, by_barcode, err
