@@ -38,7 +38,7 @@ from app.models.movement_file import MovementFile  # noqa: F401 – registers ta
 from app.models.income_file import IncomeFile  # noqa: F401 – registers table
 from app.models.balance_file import BalanceFile  # noqa: F401 – registers table
 from app.models.hall_count import HallCountSession, HallCountItem, HallCountScan  # noqa: F401 – registers tables
-from app.models.pallet import PalletTemplate, ProductPallet  # noqa: F401 – registers tables
+from app.models.pallet import PalletSalesSettings, PalletTemplate, ProductPallet  # noqa: F401 – registers tables
 from app.models.custom_master import CustomField, CustomRecord  # noqa: F401 – registers tables
 from app.models.brand_orderer import BrandOrderer  # noqa: F401 – registers tables
 from app.models.new_product import NewProduct  # noqa: F401 – registers tables

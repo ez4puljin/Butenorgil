@@ -51,3 +51,21 @@ class ProductPallet(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint("item_code", name="uq_product_pallet_item"),)
+
+
+class PalletSalesSettings(Base):
+    """Поддон хуудасны борлуулалтын тохиргоо — singleton (id=1).
+
+      avg_months    — сарын дунджид орох сарууд ("1,2,3,6,8"): цонхны эрэмбэ,
+                      сард поддон, борлуулалтын Excel-ийн дундаж.
+      single_month  — Excel-д тусад нь харуулах сар (жишээ: 7).
+      pallet_brands — Excel-д борлуулалтыг поддоноор тооцох брендүүд («;»-ээр).
+    """
+    __tablename__ = "pallet_sales_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    avg_months: Mapped[str] = mapped_column(String(60), default="1,2,3,6,8")
+    single_month: Mapped[int] = mapped_column(Integer, default=7)
+    pallet_brands: Mapped[str] = mapped_column(String(500), default="Апу;Тотал ус ундаа;Тотал архи")
+    updated_by: Mapped[str] = mapped_column(String(120), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

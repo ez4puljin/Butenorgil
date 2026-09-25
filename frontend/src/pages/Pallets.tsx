@@ -2,6 +2,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState, type Reac
 import {
   Layers, Camera, Search, Plus, Save, Trash2, Download, Check, AlertCircle, X, Loader2,
   Package, Ruler, Weight, ArrowUpFromLine, RefreshCw, Pencil, Boxes, Copy, CheckSquare, Square, TrendingUp, ChevronRight,
+  Settings2, FileSpreadsheet,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -425,6 +426,85 @@ function CopyModal({ src, cfg, tpls, onClose, onDone }: {
   );
 }
 
+// ── Борлуулалтын тохиргоо: сарын дундажийн сарууд, тусгай сар, поддоноор тооцох брендүүд ──
+type SalesSettings = { avg_months: number[]; single_month: number; pallet_brands: string[]; updated_by: string; updated_at: string | null };
+
+function SalesSettingsModal({ initial, canEdit, onClose, onSaved }: {
+  initial: SalesSettings; canEdit: boolean; onClose: () => void; onSaved: (s: SalesSettings) => void;
+}) {
+  const [months, setMonths] = useState<number[]>(initial.avg_months);
+  const [single, setSingle] = useState<number>(initial.single_month);
+  const [brands, setBrands] = useState<string>(initial.pallet_brands.join("\n"));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const toggle = (m: number) => setMonths((cur) => (cur.includes(m) ? cur.filter((x) => x !== m) : [...cur, m].sort((a, b) => a - b)));
+  const save = async () => {
+    if (!months.length) { setErr("Дор хаяж нэг сар сонгоно уу"); return; }
+    setBusy(true); setErr("");
+    try {
+      const r = await api.put("/pallets/sales-settings", {
+        avg_months: months, single_month: single,
+        pallet_brands: brands.split(/[\n;]/).map((b) => b.trim()).filter(Boolean),
+      });
+      onSaved(r.data);
+    } catch (e: any) { setErr(errMsg(e, "Хадгалахад алдаа")); } finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-[55] flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={onClose}>
+      <div className="flex max-h-[96vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-3">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gray-900 text-white"><Settings2 size={16} /></div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[15px] font-bold text-gray-900">Борлуулалтын тохиргоо</div>
+            <div className="text-[12px] text-gray-600">Цонхны эрэмбэ, «сард поддон», борлуулалтын Excel эдгээрийг ашиглана</div>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100"><X size={16} /></button>
+        </div>
+        <div className="flex flex-col gap-4 overflow-y-auto px-4 py-4">
+          <div>
+            <div className="mb-1.5 text-[12px] font-bold text-gray-700">Сарын дундажид орох сарууд</div>
+            <div className="grid grid-cols-6 gap-1.5">
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
+                const on = months.includes(m);
+                return (
+                  <button key={m} type="button" disabled={!canEdit} onClick={() => toggle(m)}
+                    className={`rounded-lg py-2 text-[13px] font-semibold tabular-nums ${on ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"} disabled:opacity-60`}>
+                    {m}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[11px] text-gray-500">Сонгосон: {months.length ? months.join(", ") + "-р сар" : "—"} — сар бүрийн хамгийн сүүлийн жилийн дата (агуулах + заал)</p>
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-[12px] font-bold text-gray-700">Excel-д тусад нь харуулах сар</span>
+            <select value={single} disabled={!canEdit} onChange={(e) => setSingle(Number(e.target.value))}
+              className="rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-[13px] outline-none">
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}-р сар</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[12px] font-bold text-gray-700">Борлуулалтыг поддоноор тооцох брендүүд (мөр бүрд нэг)</span>
+            <textarea value={brands} disabled={!canEdit} onChange={(e) => setBrands(e.target.value)} rows={4}
+              className="rounded-xl border border-gray-200 px-2.5 py-2 text-[13px] outline-none focus:border-gray-400" />
+            <span className="text-[11px] text-gray-500">Брендийн нэр мастертай яг ижил (том жижиг үсэг хамаагүй) байх ёстой</span>
+          </label>
+          {err && <p className="rounded-lg bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">{err}</p>}
+          {initial.updated_by && <p className="text-[11px] text-gray-400">Сүүлд засан: {initial.updated_by} · {(initial.updated_at || "").slice(0, 16).replace("T", " ")}</p>}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-gray-100 px-4 py-3">
+          <button onClick={onClose} className="rounded-xl border border-gray-200 px-4 py-2 text-[13px] font-semibold text-gray-700">Хаах</button>
+          {canEdit && (
+            <button onClick={save} disabled={busy} className="inline-flex items-center gap-1.5 rounded-xl bg-gray-900 px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-40">
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}Хадгалах
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PalletsPage() {
   const { role, baseRole } = useAuthStore();
   const canEdit = EDIT_ROLES.includes((baseRole || role || "") as string);
@@ -537,6 +617,25 @@ export default function PalletsPage() {
       document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (e: any) { flash("err", errMsg(e, "Татахад алдаа")); } finally { setDl(false); }
   };
+  // Борлуулалтын Excel — цонхны шүүлтээр (tag, төлөв, хайлт)
+  const [dlSales, setDlSales] = useState(false);
+  const exportSalesXlsx = async () => {
+    setDlSales(true);
+    try {
+      const r = await api.get("/pallets/sales-export", { params: { tag: wTag, status: wStatus, q: wQ }, responseType: "blob" });
+      const cd: string = r.headers?.["content-disposition"] || "";
+      const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+      const url = URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement("a"); a.href = url; a.download = m ? decodeURIComponent(m[1]) : "borluulalt_poddon.xlsx";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e: any) { flash("err", errMsg(e, "Татахад алдаа")); } finally { setDlSales(false); }
+  };
+  const [salesSettings, setSalesSettings] = useState<SalesSettings | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const loadSalesSettings = useCallback(async () => {
+    try { const r = await api.get("/pallets/sales-settings"); setSalesSettings(r.data); } catch { /* */ }
+  }, []);
+  useEffect(() => { loadSalesSettings(); }, [loadSalesSettings]);
   tagRef.current = wTag;
   // Дараагийн оруулаагүй бараа (борлуулалт ихээс) — нэг нэгээр хурдан оруулахад
   const [nextTodo, setNextTodo] = useState<WRow | null>(null);
@@ -575,6 +674,10 @@ export default function PalletsPage() {
         </div>
       )}
       {scan && <BarcodeScanner onDetected={(c) => { setScan(false); lookup(c); }} onClose={() => setScan(false)} />}
+      {settingsOpen && salesSettings && (
+        <SalesSettingsModal initial={salesSettings} canEdit={canEdit} onClose={() => setSettingsOpen(false)}
+          onSaved={(st) => { setSalesSettings(st); setSettingsOpen(false); flash("ok", "Тохиргоо хадгалагдлаа"); loadList(); if (prod) { api.get("/pallets/lookup", { params: { q: prod.item_code, tag: wTag } }).then((r) => setSales(r.data.sales && Array.isArray(r.data.sales.months) ? r.data.sales : null)).catch(() => {}); } }} />
+      )}
       {copyOpen && prod && existing && (
         <CopyBoundary onClose={() => setCopyOpen(false)}>
           <CopyModal src={prod} cfg={existing} tpls={tpls} onClose={() => setCopyOpen(false)} onDone={() => { loadList(); loadTpls(); }} />
@@ -775,6 +878,12 @@ export default function PalletsPage() {
               <button onClick={exportXlsx} disabled={dl || !wl?.total} className="inline-flex items-center gap-1.5 rounded-xl bg-gray-900 px-3.5 py-2 text-[12.5px] font-semibold text-white disabled:opacity-40">
                 {dl ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}Excel
               </button>
+              <button onClick={exportSalesXlsx} disabled={dlSales || !wl?.total} title="Борлуулалт хайрцгаар, дүнгээр, поддоноор"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-[12.5px] font-semibold text-white disabled:opacity-40">
+                {dlSales ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />}Борлуулалт Excel
+              </button>
+              <button onClick={() => setSettingsOpen(true)} disabled={!salesSettings} title="Сарын дундажийн тохиргоо"
+                className="rounded-xl border border-gray-200 p-2 text-gray-600 disabled:opacity-40"><Settings2 size={14} /></button>
             </div>
             {wl && (
               <>
@@ -797,6 +906,8 @@ export default function PalletsPage() {
                 </div>
                 <p className="text-[11px] text-gray-500">
                   Эрэмбэ: {monthsLabel(wl.months)} сарын дундаж борлуулалт (агуулах + заал, ширхэг) — ихээс бага руу
+                  {" · "}
+                  <button type="button" onClick={() => setSettingsOpen(true)} className="font-semibold text-gray-700 underline decoration-dotted">сарыг өөрчлөх</button>
                 </p>
               </>
             )}

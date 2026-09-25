@@ -12,6 +12,9 @@
   GET    /pallets/copy-candidates?source=&q=&scope=all|brand|match — хуулах бараа (бүх бараа, хуудаслалттай)
   POST   /pallets/products/{item_code}/copy — сонгосон талбаруудыг өөр бараанд хуулах
   GET    /pallets/export?tag=&status=       — Excel (tag-гүй бол тохиргоотой бүх бараа)
+  GET    /pallets/sales-settings            — сарын дундажийн сарууд, тусгай сар, поддоноор тооцох брендүүд
+  PUT    /pallets/sales-settings            — тохиргоо хадгалах (засах эрхтэй)
+  GET    /pallets/sales-export?tag=&status=&q= — борлуулалтын Excel (хайрцаг, дүн, поддон)
 
 Дүнгийн томьёо (calc):
   boxes_per_pallet = boxes_per_layer × layers
@@ -43,14 +46,42 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, require_role
 from app.core.audit import audit
-from app.models.pallet import PalletTemplate, ProductPallet
+from app.models.pallet import PalletSalesSettings, PalletTemplate, ProductPallet
 from app.models.product import Product
 from app.models.user import User
 
 router = APIRouter(prefix="/pallets", tags=["pallets"])
 EDIT_ROLES = ("admin", "supervisor", "manager", "warehouse_clerk")
 DEFAULT_TAG = "Архи Ус ундаа пиво"        # архины агуулах
-SALES_MONTHS = (1, 2, 3, 6, 7, 8)         # поддон тооцох сарын дундаж (4, 5-р сар ороогүй)
+SALES_MONTHS = (1, 2, 3, 6, 8)            # анхдагч сарын дундаж — тохиргооноос өөрчилнө (PalletSalesSettings)
+DEFAULT_SINGLE_MONTH = 7
+DEFAULT_PALLET_BRANDS = "Апу;Тотал ус ундаа;Тотал архи"
+
+
+def _settings(db: Session) -> PalletSalesSettings:
+    """Singleton тохиргоо (id=1) — байхгүй бол анхдагчаар үүсгэнэ."""
+    st = db.get(PalletSalesSettings, 1)
+    if st is None:
+        st = PalletSalesSettings(id=1, avg_months=",".join(map(str, SALES_MONTHS)), single_month=DEFAULT_SINGLE_MONTH,
+                                 pallet_brands=DEFAULT_PALLET_BRANDS, updated_by="", updated_at=datetime.utcnow())
+        db.add(st)
+        db.commit()
+        db.refresh(st)
+    return st
+
+
+def _parse_months(raw: str) -> tuple[int, ...]:
+    out = sorted({int(x) for x in re.findall(r"\d+", raw or "") if 1 <= int(x) <= 12})
+    return tuple(out) or SALES_MONTHS
+
+
+def _avg_months(db: Session) -> tuple[int, ...]:
+    """Сарын дунджид орох сарууд — цонх, сард поддон, Excel бүгд үүнийг ашиглана."""
+    return _parse_months(_settings(db).avg_months)
+
+
+def _brand_list(raw: str) -> list[str]:
+    return [b.strip() for b in re.split(r"[;\n]", raw or "") if b.strip()]
 
 
 def _iso(d):
@@ -555,7 +586,7 @@ def _worklist_rows(db: Session, tag: str, status: str = "all", q: str = "", temp
     mt = _master_tag_map()
     codes = [c for c, tags in mt.items() if not tag or tag in tags]
     idx = {r.item_code: r for r in _product_index(db)}
-    slots, sales = _sales(db)
+    slots, sales = _sales(db, _avg_months(db))
     cfgs = {c.item_code: c for c in db.query(ProductPallet).all()}
     tpls = {t.id: t for t in db.query(PalletTemplate).all()}
     base = []
@@ -603,7 +634,7 @@ def warm_worklist_caches() -> None:
     db = SessionLocal()
     try:
         _product_index(db)
-        _sales(db)
+        _sales(db, _avg_months(db))
         _master_tag_map()
     finally:
         db.close()
@@ -629,7 +660,7 @@ def worklist(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Query(
 
 def _product_sales(db: Session, code: str, tag: str) -> dict:
     """Нэг барааны сарын борлуулалт + tag доторх борлуулалтын эрэмбэ (поддон оруулах цонхонд)."""
-    slots, sales = _sales(db)
+    slots, sales = _sales(db, _avg_months(db))
     per = sales.get(code, {})
     avg = sum(per.get(s, 0.0) for s in slots) / len(slots) if slots else 0.0
     tags = _master_tag_map().get(code, [])
@@ -719,6 +750,196 @@ def export_xlsx(template_id: Optional[int] = None, tag: Optional[str] = Query(No
 
     buf = io.BytesIO(); wb.save(buf)
     fname = f"{datetime.now():%Y%m%d}_poddon_huraalt{'_' + re.sub(r'[^0-9A-Za-zА-Яа-яӨөҮүЁё]+', '_', tag.strip()) if tag else ''}.xlsx"
+    return Response(content=buf.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})
+
+
+# ── Борлуулалтын тохиргоо ба Excel ───────────────────────────────────────────
+
+class SalesSettingsIn(BaseModel):
+    avg_months: list[int]
+    single_month: int = DEFAULT_SINGLE_MONTH
+    pallet_brands: list[str] = []
+
+
+def _settings_dict(st: PalletSalesSettings) -> dict:
+    return {"avg_months": list(_parse_months(st.avg_months)), "single_month": int(st.single_month or DEFAULT_SINGLE_MONTH),
+            "pallet_brands": _brand_list(st.pallet_brands), "updated_by": st.updated_by or "",
+            "updated_at": _iso(st.updated_at)}
+
+
+@router.get("/sales-settings")
+def get_sales_settings(db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    return _settings_dict(_settings(db))
+
+
+@router.put("/sales-settings")
+def put_sales_settings(body: SalesSettingsIn, request: Request, db: Session = Depends(get_db),
+                       u: User = Depends(require_role(*EDIT_ROLES))):
+    months = sorted({int(m) for m in body.avg_months if 1 <= int(m) <= 12})
+    if not months:
+        raise HTTPException(400, "Дор хаяж нэг сар сонгоно уу")
+    if not 1 <= int(body.single_month) <= 12:
+        raise HTTPException(400, "Тусгай сар 1-12 байна")
+    st = _settings(db)
+    before = _settings_dict(st)
+    st.avg_months = ",".join(map(str, months))
+    st.single_month = int(body.single_month)
+    st.pallet_brands = ";".join(b.strip() for b in body.pallet_brands if b.strip())
+    st.updated_by = getattr(u, "username", "") or ""
+    st.updated_at = datetime.utcnow()
+    db.commit()
+    audit(db, request, u, action="pallet_sales_settings", entity_type="pallet_sales_settings", entity_id=1,
+          extra={"before": before, "after": _settings_dict(st)}, autocommit=True)
+    return _settings_dict(st)
+
+
+def _round_unit(v: float) -> int:
+    """Нэгжийн орноор тоймлоно (0.5 → дээш). Python-ы round() банкны дүрэмтэй (2.5 → 2) тул Decimal."""
+    from decimal import ROUND_HALF_UP, Decimal
+    return int(Decimal(str(v)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+@router.get("/sales-export")
+def sales_export(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Query("all", pattern="^(all|todo|done)$"),
+                 q: str = Query("", max_length=80), db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    """Борлуулалтын Excel — цонхны шүүлтээр (tag, төлөв, хайлт).
+
+    Багана: Код, Нэр, Бренд, Хайрцаг дахь ширхэг, Нэгж үнэ, сарын дундаж борлуулалт
+    хайрцгаар (нэгжийн орноор тоймлосон) ба × нэгж үнэ, тусгай сарын (анхдагч 7-р сар)
+    борлуулалт хайрцгаар ба × нэгж үнэ, поддон хэмжээ (хайрцаг/поддон). Тохиргооны
+    брендүүдийн бараанд борлуулалт хэдэн поддон болохыг бичнэ; поддон мэдээлэлгүй бол
+    «Поддон мэдээлэл байхгүй».
+    Нэгж үнэ = барааны мастерын сүүлийн орлогын үнэ (last_purchase_price).
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    st = _settings(db)
+    avg_months = _parse_months(st.avg_months)
+    single = int(st.single_month or DEFAULT_SINGLE_MONTH)
+    brand_names = _brand_list(st.pallet_brands)
+    brands = {b.lower() for b in brand_names}
+
+    rows, _counts, avg_slots = _worklist_rows(db, tag.strip(), status, q)
+    single_slots, single_sales = _sales(db, (single,))
+    cfgs = {c.item_code: c for c in db.query(ProductPallet).all()}
+    tpls = {t.id: t for t in db.query(PalletTemplate).all()}
+    idx = {r.item_code: r for r in _product_index(db)}
+    prices: dict[str, float] = {}
+    for code, price in db.execute(text("SELECT item_code, last_purchase_price FROM products")).all():
+        if code and float(price or 0) > 0 and code not in prices:
+            prices[code] = float(price)
+
+    avg_label = ", ".join(str(m) for _y, m in avg_slots) or ", ".join(map(str, avg_months))
+    single_label = f"{single_slots[0][0]} оны {single}-р сар" if single_slots else f"{single}-р сар"
+    no_pallet = "Поддон мэдээлэл байхгүй"
+    cols = ["Код", "Нэр", "Бренд", "Хайрцаг дахь ширхэг", "Нэгж үнэ",
+            f"Сарын дундаж ({avg_label}-р сар), хайрцаг", f"Сарын дундаж ({avg_label}-р сар) × нэгж үнэ",
+            f"{single_label}, хайрцаг", f"{single_label} × нэгж үнэ",
+            "Поддон хэмжээ (хайрцаг/поддон)", "Сарын дундаж, поддон", f"{single_label}, поддон"]
+    widths = [11, 42, 18, 11, 12, 14, 16, 13, 16, 15, 14, 14]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Борлуулалт"
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    hf, hfont = PatternFill("solid", fgColor="1F4E78"), Font(color="FFFFFF", bold=True)
+    pallet_fill, missing_fill = PatternFill("solid", fgColor="E2EFDA"), PatternFill("solid", fgColor="FCE4D6")
+    for ci, h in enumerate(cols, 1):
+        c = ws.cell(1, ci, h); c.fill = hf; c.font = hfont; c.border = border
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for ci, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.row_dimensions[1].height = 48
+
+    tot_avg_amt = tot_single_amt = 0.0
+    tot_avg_box = tot_single_box = 0
+    ri = 1
+    for d in rows:
+        code = d["item_code"]
+        cfg = cfgs.get(code)
+        r = idx.get(code)
+        pcs_box = (cfg.pcs_per_box_override if cfg and cfg.pcs_per_box_override > 0 else (r.pack_ratio if r else 0.0)) or 0.0
+        price = prices.get(code, 0.0)
+        avg_pcs = sum(d["months"]) / len(d["months"]) if d["months"] else 0.0
+        single_pcs = sum(single_sales.get(code, {}).get(s_, 0.0) for s_ in single_slots)
+        avg_box = _round_unit(avg_pcs / pcs_box) if pcs_box > 0 else None
+        single_box = _round_unit(single_pcs / pcs_box) if pcs_box > 0 else None
+        avg_amt = round(avg_pcs * price, 2)
+        single_amt = round(single_pcs * price, 2)
+        boxes_pallet = 0
+        if cfg:
+            boxes_pallet = int(calc(cfg, tpls.get(cfg.template_id), r)["boxes_per_pallet"] or 0)
+        size = boxes_pallet if boxes_pallet > 0 else no_pallet
+        brand = d["brand"] or ""
+        in_brand = brand.strip().lower() in brands
+        if in_brand:
+            if boxes_pallet > 0 and pcs_box > 0:
+                p_avg = round(avg_pcs / pcs_box / boxes_pallet, 2)
+                p_single = round(single_pcs / pcs_box / boxes_pallet, 2)
+            else:
+                p_avg = p_single = no_pallet
+        else:
+            p_avg = p_single = None
+        ri += 1
+        vals = [code, d["name"], brand, pcs_box or None, price or None, avg_box, avg_amt, single_box, single_amt,
+                size, p_avg, p_single]
+        for ci, v in enumerate(vals, 1):
+            cell = ws.cell(ri, ci, v)
+            cell.border = border
+            if ci in (5, 7, 9):
+                cell.number_format = "#,##0"
+        if size == no_pallet:
+            ws.cell(ri, 10).fill = missing_fill
+        if in_brand:
+            for ci in (11, 12):
+                ws.cell(ri, ci).fill = pallet_fill if isinstance(p_avg, float) else missing_fill
+        tot_avg_amt += avg_amt
+        tot_single_amt += single_amt
+        tot_avg_box += avg_box or 0
+        tot_single_box += single_box or 0
+
+    ri += 1
+    total_vals = {1: "Нийт", 6: tot_avg_box, 7: round(tot_avg_amt, 2), 8: tot_single_box, 9: round(tot_single_amt, 2)}
+    for ci in range(1, len(cols) + 1):
+        cell = ws.cell(ri, ci, total_vals.get(ci))
+        cell.border = border
+        cell.font = Font(bold=True)
+        if ci in (7, 9):
+            cell.number_format = "#,##0"
+    ws.freeze_panes = "C2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{max(ri - 1, 2)}"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = "1:1"
+
+    info = wb.create_sheet("Тайлбар")
+    notes = [
+        ("Шүүлт", f"Байршил: {tag.strip() or 'Бүх бараа'} · төлөв: {status} · хайлт: {q or '—'}"),
+        ("Сарын дундаж", f"{avg_label}-р сарын борлуулалтын дундаж (агуулах + заал) — сар бүрийн хамгийн сүүлийн жилийн дата"),
+        ("Тусгай сар", single_label),
+        ("Хайрцаг", "Ширхэгийг хайрцаг дахь ширхэгт хувааж нэгжийн орноор тоймлосон (0.5 → дээш)"),
+        ("Нэгж үнэ", "Барааны мастерын сүүлийн орлогын үнэ; дүн = борлуулалт (ширхэг) × нэгж үнэ"),
+        ("Поддон хэмжээ", "Нэг поддонд багтах хайрцаг (нэг үед × үе)"),
+        ("Поддоноор тооцох брендүүд", ", ".join(brand_names) or "—"),
+        ("Бүрдүүлсэн", f"{datetime.now():%Y-%m-%d %H:%M} · {getattr(u, 'username', '')}"),
+    ]
+    for i, (k, v) in enumerate(notes, 1):
+        info.cell(i, 1, k).font = Font(bold=True)
+        info.cell(i, 2, v)
+    info.column_dimensions["A"].width = 26
+    info.column_dimensions["B"].width = 90
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    safe_tag = re.sub(r"[^0-9A-Za-zА-Яа-яӨөҮүЁё]+", "_", tag.strip())
+    fname = f"{datetime.now():%Y%m%d}_borluulalt_poddon{'_' + safe_tag if tag.strip() else ''}.xlsx"
     return Response(content=buf.getvalue(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})
