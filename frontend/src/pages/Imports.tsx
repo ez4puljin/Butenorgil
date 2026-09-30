@@ -282,7 +282,7 @@ export default function Imports() {
               <CalendarRange size={22}/>
             </div>
             <div className="min-w-0">
-              <div className="text-base font-bold sm:text-lg">Сарын борлуулалт (Агуулах + Заал)</div>
+              <div className="text-base font-bold sm:text-lg">Сарын борлуулалт (Агуулах + Заал + Заалны архи)</div>
               <div className="text-[12px] text-white/80 sm:text-[13px]">Сар бүрийн борлуулалтын тоо ширхэгээр оруулна — Захиалга бэлдэх үед статистик харагдана</div>
             </div>
           </div>

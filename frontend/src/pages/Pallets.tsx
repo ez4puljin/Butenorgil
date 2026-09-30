@@ -474,7 +474,7 @@ function SalesSettingsModal({ initial, canEdit, onClose, onSaved }: {
                 );
               })}
             </div>
-            <p className="mt-1 text-[11px] text-gray-500">Сонгосон: {months.length ? months.join(", ") + "-р сар" : "—"} — сар бүрийн хамгийн сүүлийн жилийн дата (агуулах + заал)</p>
+            <p className="mt-1 text-[11px] text-gray-500">Сонгосон: {months.length ? months.join(", ") + "-р сар" : "—"} — сар бүрийн хамгийн сүүлийн жилийн дата (агуулах + заал + заалны архи)</p>
           </div>
           <label className="flex flex-col gap-1">
             <span className="text-[12px] font-bold text-gray-700">Excel-д тусад нь харуулах сар</span>
@@ -826,7 +826,7 @@ export default function PalletsPage() {
                   ))}
                 </div>
                 <p className="mt-2 text-[10.5px] text-emerald-800/70">
-                  {monthsLabel(sales.months)} сарын дундаж (агуулах + заал). Сард поддон = сарын дундаж ÷ {live.pcs_per_pallet > 0 ? `${fmt(live.pcs_per_pallet, 0)} ш/поддон` : "1 поддоны ширхэг"}
+                  {monthsLabel(sales.months)} сарын дундаж (агуулах + заал + заалны архи). Сард поддон = сарын дундаж ÷ {live.pcs_per_pallet > 0 ? `${fmt(live.pcs_per_pallet, 0)} ш/поддон` : "1 поддоны ширхэг"}
                   {live.pcs_per_box > 0 && <> · ≈ {fmt(sales.avg_monthly / live.pcs_per_box, 0)} хайрцаг/сар</>}
                 </p>
               </div>
@@ -908,7 +908,7 @@ export default function PalletsPage() {
                   </div>
                 </div>
                 <p className="text-[11px] text-gray-500">
-                  Эрэмбэ: {monthsLabel(wl.months)} сарын дундаж борлуулалт (агуулах + заал, ширхэг) — ихээс бага руу
+                  Эрэмбэ: {monthsLabel(wl.months)} сарын дундаж борлуулалт (агуулах + заал + заалны архи, ширхэг) — ихээс бага руу
                   {" · "}
                   <button type="button" onClick={() => setSettingsOpen(true)} className="font-semibold text-gray-700 underline decoration-dotted">сарыг өөрчлөх</button>
                 </p>

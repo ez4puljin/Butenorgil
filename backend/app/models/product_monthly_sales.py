@@ -1,13 +1,14 @@
 """
 Сарын борлуулалтын тоо ширхэг — Бараа болгоны сар тутмын борлуулалт.
 
-Эх сурвалж: Хэрэглэгч сар бүр 2 Excel файл оруулна:
+Эх сурвалж: Хэрэглэгч сар бүр 3 Excel файл оруулна:
   - Агуулахын борлуулалт (warehouse)
   - Заалны борлуулалт (showroom)
+  - Заалны архины борлуулалт (liquor)
 
-Нэг (item_code, year, month) хослолд нэг л мөр байна. Агуулах + Заал-ын
-qty-г 2 тусдаа баган дээр хадгална — нэг тал нь дутуу upload бол нөгөө
-талыг хадгална. Нийт борлуулалт = qty_warehouse + qty_showroom
+Нэг (item_code, year, month) хослолд нэг л мөр байна. Төрөл бүрийн qty-г
+тусдаа баганад хадгална — аль нэг нь дутуу upload бол бусдыг хадгална.
+Нийт борлуулалт = qty_warehouse + qty_showroom + qty_liquor
 (query үед нэмж тооцно).
 
 Захиалга бэлдэх үед сүүлийн 12 сарын дундаж, 3 сарын дундаж, сүүлийн
@@ -23,7 +24,19 @@ from app.core.db import Base
 # kind enum (frontend болон API-д хэрэглэнэ)
 PMS_KIND_WAREHOUSE = "warehouse"
 PMS_KIND_SHOWROOM  = "showroom"
-PMS_KINDS = {PMS_KIND_WAREHOUSE, PMS_KIND_SHOWROOM}
+PMS_KIND_LIQUOR    = "liquor"      # Заалны архи (архины заалны тусдаа борлуулалт)
+PMS_KINDS = {PMS_KIND_WAREHOUSE, PMS_KIND_SHOWROOM, PMS_KIND_LIQUOR}
+# kind → хадгалах багана, монгол нэр
+PMS_KIND_FIELDS = {
+    PMS_KIND_WAREHOUSE: "qty_warehouse",
+    PMS_KIND_SHOWROOM:  "qty_showroom",
+    PMS_KIND_LIQUOR:    "qty_liquor",
+}
+PMS_KIND_LABELS = {
+    PMS_KIND_WAREHOUSE: "Агуулах",
+    PMS_KIND_SHOWROOM:  "Заал",
+    PMS_KIND_LIQUOR:    "Заалны архи",
+}
 
 
 class ProductMonthlySales(Base):
@@ -37,9 +50,10 @@ class ProductMonthlySales(Base):
     year:  Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     month: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
 
-    # Агуулах + Заал тусдаа баган — нэг талыг upload хийсэн ч нөгөөг хөндөхгүй
+    # Агуулах, Заал, Заалны архи тусдаа баган — нэгийг upload хийсэн ч бусдыг хөндөхгүй
     qty_warehouse: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     qty_showroom:  Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    qty_liquor:    Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

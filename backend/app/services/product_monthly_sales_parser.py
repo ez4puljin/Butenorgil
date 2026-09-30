@@ -9,8 +9,8 @@
 
 Upsert логик:
   - (item_code, year, month)-аар олох
-  - kind=warehouse → qty_warehouse баганыг шинэчилнэ (qty_showroom-ыг хөндөхгүй)
-  - kind=showroom  → qty_showroom баганыг шинэчилнэ (qty_warehouse-ийг хөндөхгүй)
+  - kind=warehouse → qty_warehouse, kind=showroom → qty_showroom,
+    kind=liquor (заалны архи) → qty_liquor баганыг шинэчилнэ — бусад баганыг хөндөхгүй
   - Хэрвээ мөр байхгүй бол шинээр үүсгэнэ
 """
 from __future__ import annotations
@@ -27,13 +27,12 @@ from sqlalchemy.orm import Session
 
 from app.models.product_monthly_sales import (
     ProductMonthlySales,
-    PMS_KIND_WAREHOUSE,
-    PMS_KIND_SHOWROOM,
+    PMS_KIND_FIELDS,
     PMS_KINDS,
 )
 
 
-Kind = Literal["warehouse", "showroom"]
+Kind = Literal["warehouse", "showroom", "liquor"]
 
 
 def _safe_float(val, default: float = 0.0) -> float:
@@ -146,9 +145,8 @@ def parse_and_upsert(
     if not aggregated:
         return {"parsed": parsed, "upserted": 0, "skipped": skipped, "examples": []}
 
-    # SQLite upsert
-    qty_field = "qty_warehouse" if kind == PMS_KIND_WAREHOUSE else "qty_showroom"
-    other_field = "qty_showroom" if kind == PMS_KIND_WAREHOUSE else "qty_warehouse"
+    # SQLite upsert — шинэ мөрд бусад төрлийн qty = 0, байгаа мөрд зөвхөн энэ төрлийн багана шинэчлэгдэнэ
+    qty_field = PMS_KIND_FIELDS[kind]
     now = datetime.utcnow()
 
     rows = [
@@ -156,8 +154,7 @@ def parse_and_upsert(
             "item_code": code,
             "year": year,
             "month": month,
-            qty_field: qty,
-            other_field: 0.0,
+            **{f: (qty if f == qty_field else 0.0) for f in PMS_KIND_FIELDS.values()},
             "created_at": now,
             "updated_at": now,
         }
@@ -165,7 +162,7 @@ def parse_and_upsert(
     ]
 
     # ── BATCH-аар оруулна — SQLite-ийн "too many SQL variables" (999) хязгаараас
-    #    зайлсхийнэ. Мөр бүр 7 багана тул 100 мөр = 700 хувьсагч (аюулгүй). ──
+    #    зайлсхийнэ. Мөр бүр 8 багана тул 100 мөр = 800 хувьсагч (аюулгүй). ──
     BATCH = 100
     for i in range(0, len(rows), BATCH):
         chunk = rows[i:i + BATCH]

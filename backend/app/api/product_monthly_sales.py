@@ -35,8 +35,8 @@ from app.core.audit import audit
 from app.models.user import User
 from app.models.product_monthly_sales import (
     ProductMonthlySales,
-    PMS_KIND_WAREHOUSE,
-    PMS_KIND_SHOWROOM,
+    PMS_KIND_FIELDS,
+    PMS_KIND_LABELS,
     PMS_KINDS,
 )
 from app.services.product_monthly_sales_parser import parse_and_upsert
@@ -134,9 +134,10 @@ def import_excel(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Excel файлыг (item_code + qty) парс хийгээд upsert хийнэ."""
+    """Excel файлыг (item_code + qty) парс хийгээд upsert хийнэ.
+    kind: warehouse (Агуулах) | showroom (Заал) | liquor (Заалны архи)."""
     if kind not in PMS_KINDS:
-        raise HTTPException(400, f"kind нь '{PMS_KIND_WAREHOUSE}' эсвэл '{PMS_KIND_SHOWROOM}' байх ёстой.")
+        raise HTTPException(400, "kind нь " + ", ".join(f"'{k}'" for k in PMS_KIND_FIELDS) + " -ийн нэг байх ёстой.")
     if not (1 <= month <= 12):
         raise HTTPException(400, "month нь 1-12 хооронд байх ёстой.")
     if year < 2000 or year > 2100:
@@ -173,7 +174,7 @@ def import_excel(
         action="product_monthly_sales_import",
         entity_type="product_monthly_sales",
         extra={
-            "year": year, "month": month, "kind": kind,
+            "year": year, "month": month, "kind": kind, "kind_label": PMS_KIND_LABELS[kind],
             "filename": file.filename, "rows_parsed": result["parsed"],
             "rows_upserted": result["upserted"], "rows_skipped": result["skipped"],
         },
@@ -238,12 +239,13 @@ def get_stats(
             ProductMonthlySales.month,
             ProductMonthlySales.qty_warehouse,
             ProductMonthlySales.qty_showroom,
+            ProductMonthlySales.qty_liquor,
         ).filter(
             ProductMonthlySales.item_code.in_(chunk),
             tuple_(ProductMonthlySales.year, ProductMonthlySales.month).in_(needed),
         ).all()
-        for code, y, m, qw, qs in rows:
-            total = (qw or 0.0) + (qs or 0.0)
+        for code, y, m, qw, qs, ql in rows:
+            total = (qw or 0.0) + (qs or 0.0) + (ql or 0.0)
             if total > 0:
                 by_code[code][(y, m)] = total
 
@@ -318,6 +320,7 @@ def list_slot(
         ProductMonthlySales.item_code,
         ProductMonthlySales.qty_warehouse,
         ProductMonthlySales.qty_showroom,
+        ProductMonthlySales.qty_liquor,
         ProductMonthlySales.updated_at,
     ).filter(
         ProductMonthlySales.year == year,
@@ -333,10 +336,11 @@ def list_slot(
                 "item_code": code,
                 "qty_warehouse": qw or 0.0,
                 "qty_showroom": qs or 0.0,
-                "qty_total": (qw or 0.0) + (qs or 0.0),
+                "qty_liquor": ql or 0.0,
+                "qty_total": (qw or 0.0) + (qs or 0.0) + (ql or 0.0),
                 "updated_at": (updated.isoformat() if updated else None),
             }
-            for code, qw, qs, updated in rows
+            for code, qw, qs, ql, updated in rows
         ],
     }
 
@@ -352,27 +356,24 @@ def list_slots(
         ProductMonthlySales.month,
         ProductMonthlySales.qty_warehouse,
         ProductMonthlySales.qty_showroom,
+        ProductMonthlySales.qty_liquor,
     ).all()
 
     by_slot: dict[tuple[int, int], dict] = {}
-    for y, m, qw, qs in rows:
+    for y, m, qw, qs, ql in rows:
         key = (y, m)
         if key not in by_slot:
-            by_slot[key] = {"count": 0, "has_warehouse": False, "has_showroom": False}
-        by_slot[key]["count"] += 1
-        if (qw or 0.0) > 0:
-            by_slot[key]["has_warehouse"] = True
-        if (qs or 0.0) > 0:
-            by_slot[key]["has_showroom"] = True
+            by_slot[key] = {"count": 0, "has_warehouse": False, "has_showroom": False, "has_liquor": False,
+                            "n_warehouse": 0, "n_showroom": 0, "n_liquor": 0}
+        info = by_slot[key]
+        info["count"] += 1
+        for kind, q in (("warehouse", qw), ("showroom", qs), ("liquor", ql)):
+            if (q or 0.0) > 0:
+                info[f"has_{kind}"] = True
+                info[f"n_{kind}"] += 1
 
     return [
-        {
-            "year": y,
-            "month": m,
-            "count": info["count"],
-            "has_warehouse": info["has_warehouse"],
-            "has_showroom": info["has_showroom"],
-        }
+        {"year": y, "month": m, **info}
         for (y, m), info in sorted(by_slot.items(), reverse=True)
     ]
 
@@ -410,7 +411,7 @@ def delete_slot(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin")),
 ):
-    """Тухайн slot-ийн kind талын qty-г 0 болгоно. Хэрэв нөгөө тал нь ч 0 бол мөрийг устгана."""
+    """Тухайн slot-ийн kind талын qty-г 0 болгоно. Бусад төрөл нь ч 0 бол мөрийг устгана."""
     if kind not in PMS_KINDS:
         raise HTTPException(400, "kind буруу.")
     if not (1 <= month <= 12):
@@ -421,20 +422,16 @@ def delete_slot(
         ProductMonthlySales.month == month,
     ).all()
 
+    field = PMS_KIND_FIELDS[kind]
     affected = 0
     removed = 0
     for r in rows:
-        if kind == PMS_KIND_WAREHOUSE:
-            if (r.qty_warehouse or 0.0) <= 0:
-                continue
-            r.qty_warehouse = 0.0
-        else:
-            if (r.qty_showroom or 0.0) <= 0:
-                continue
-            r.qty_showroom = 0.0
+        if (getattr(r, field) or 0.0) <= 0:
+            continue
+        setattr(r, field, 0.0)
         affected += 1
-        # Хоёр тал нь 0 болсон бол мөрийг устгана
-        if (r.qty_warehouse or 0.0) <= 0 and (r.qty_showroom or 0.0) <= 0:
+        # Бүх төрөл 0 болсон бол мөрийг устгана
+        if all((getattr(r, f) or 0.0) <= 0 for f in PMS_KIND_FIELDS.values()):
             db.delete(r)
             removed += 1
     db.commit()
@@ -443,7 +440,8 @@ def delete_slot(
         db, request, u,
         action="product_monthly_sales_delete",
         entity_type="product_monthly_sales",
-        extra={"year": year, "month": month, "kind": kind, "affected": affected, "removed": removed},
+        extra={"year": year, "month": month, "kind": kind, "kind_label": PMS_KIND_LABELS[kind],
+               "affected": affected, "removed": removed},
         autocommit=True,
     )
 

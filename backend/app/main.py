@@ -356,7 +356,7 @@ def ensure_documents_schema():
 def ensure_product_monthly_sales_schema():
     """Сарын борлуулалтын тоо ширхэг (product_monthly_sales) — шинэ table бол
     create_all() үүсгэнэ. Хуучин үед үүссэн хувилбарт qty_warehouse,
-    qty_showroom баганыг шалгаж, дутуу бол ALTER хийнэ."""
+    qty_showroom, qty_liquor (заалны архи) баганыг шалгаж, дутуу бол ALTER хийнэ."""
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(product_monthly_sales)")).fetchall()]
         if not cols:
@@ -365,6 +365,8 @@ def ensure_product_monthly_sales_schema():
             conn.execute(text("ALTER TABLE product_monthly_sales ADD COLUMN qty_warehouse FLOAT NOT NULL DEFAULT 0"))
         if "qty_showroom" not in cols:
             conn.execute(text("ALTER TABLE product_monthly_sales ADD COLUMN qty_showroom FLOAT NOT NULL DEFAULT 0"))
+        if "qty_liquor" not in cols:
+            conn.execute(text("ALTER TABLE product_monthly_sales ADD COLUMN qty_liquor FLOAT NOT NULL DEFAULT 0"))
     # Хадгалах хавтсыг хангах
     import os
     pms_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "monthly_sales")

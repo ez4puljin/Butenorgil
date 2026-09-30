@@ -555,7 +555,7 @@ _SALES_LOCK = threading.Lock()
 
 def _sales(db: Session, months: tuple = SALES_MONTHS) -> tuple[list[tuple[int, int]], dict]:
     """(slots, {code: {(year, month): qty}}) — сар бүрийн ХАМГИЙН СҮҮЛИЙН (дататай) жилийг авна.
-    qty = агуулах + заалны борлуулалт (ширхэг). Сарын борлуулалт шинэчлэгдэхэд кэш шинэчлэгдэнэ."""
+    qty = агуулах + заал + заалны архины борлуулалт (ширхэг). Сарын борлуулалт шинэчлэгдэхэд кэш шинэчлэгдэнэ."""
     from app.models.product_monthly_sales import ProductMonthlySales as PMS
     sig = tuple(db.execute(text("SELECT count(*), max(updated_at) FROM product_monthly_sales")).one())
     key = (sig, tuple(months))
@@ -569,8 +569,9 @@ def _sales(db: Session, months: tuple = SALES_MONTHS) -> tuple[list[tuple[int, i
         out: dict = {}
         if slots:
             cond = or_(*[and_(PMS.year == y, PMS.month == m) for y, m in slots])
-            for code, y, m, w, s in db.query(PMS.item_code, PMS.year, PMS.month, PMS.qty_warehouse, PMS.qty_showroom).filter(cond):
-                out.setdefault(code, {})[(y, m)] = float(w or 0) + float(s or 0)
+            for code, y, m, w, s, lq in db.query(PMS.item_code, PMS.year, PMS.month, PMS.qty_warehouse,
+                                                 PMS.qty_showroom, PMS.qty_liquor).filter(cond):
+                out.setdefault(code, {})[(y, m)] = float(w or 0) + float(s or 0) + float(lq or 0)
         _SALES.update(key=key, slots=slots, map=out)
         return slots, out
 
@@ -927,7 +928,7 @@ def sales_export(tag: str = Query(DEFAULT_TAG, max_length=120), status: str = Qu
     info = wb.create_sheet("Тайлбар")
     notes = [
         ("Шүүлт", f"Байршил: {tag.strip() or 'Бүх бараа'} · төлөв: {status} · хайлт: {q or '—'}"),
-        ("Сарын дундаж", f"{avg_label}-р сарын борлуулалтын дундаж (агуулах + заал) — сар бүрийн хамгийн сүүлийн жилийн дата"),
+        ("Сарын дундаж", f"{avg_label}-р сарын борлуулалтын дундаж (агуулах + заал + заалны архи) — сар бүрийн хамгийн сүүлийн жилийн дата"),
         ("Тусгай сар", single_label),
         ("Хайрцаг", "Ширхэгийг хайрцаг дахь ширхэгт хувааж нэгжийн орноор тоймлосон (0.5 → дээш)"),
         ("Нэгж үнэ", "Зарах үнэ — локал POS-ийн лангууны үнэ (кодоор, үгүй бол баркодоор тулгасан); "

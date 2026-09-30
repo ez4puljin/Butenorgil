@@ -125,7 +125,7 @@ def _build_tools(db: Session, calls: list[str]):
         return {"location": loc, "count": len(out), "items": out}
 
     def get_product_sales(query: str, months: int = 3) -> dict:
-        """Барааны сүүлийн саруудын борлуулалт (агуулах + заал).
+        """Барааны сүүлийн саруудын борлуулалт (агуулах + заал + заалны архи).
 
         Args:
             query: Барааны нэр, код эсвэл бренд.
@@ -145,12 +145,13 @@ def _build_tools(db: Session, calls: list[str]):
         agg: dict[tuple, dict] = {}
         for r in rows:
             k = (r.year, r.month)
-            a = agg.setdefault(k, {"year": r.year, "month": r.month, "warehouse": 0.0, "showroom": 0.0})
+            a = agg.setdefault(k, {"year": r.year, "month": r.month, "warehouse": 0.0, "showroom": 0.0, "hall_liquor": 0.0})
             a["warehouse"] += float(r.qty_warehouse or 0)
             a["showroom"] += float(r.qty_showroom or 0)
+            a["hall_liquor"] += float(r.qty_liquor or 0)
         months_out = sorted(agg.values(), key=lambda x: (-x["year"], -x["month"]))[:n]
         for m in months_out:
-            m["total"] = m["warehouse"] + m["showroom"]
+            m["total"] = m["warehouse"] + m["showroom"] + m["hall_liquor"]
         total = sum(m["total"] for m in months_out)
         return {"matched_products": len(codes), "months": months_out,
                 "total_pcs": total, "avg_per_month": round(total / max(1, len(months_out)), 1)}

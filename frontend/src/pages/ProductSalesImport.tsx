@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft, UploadCloud, RefreshCw, Check, AlertCircle, Warehouse, Store, Trash2,
-  Settings2, ChevronDown, ChevronRight, Save, X,
+  Settings2, ChevronDown, ChevronRight, Save, X, Wine,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -13,8 +13,25 @@ type SlotInfo = {
   count: number;
   has_warehouse: boolean;
   has_showroom: boolean;
+  has_liquor?: boolean;
+  n_warehouse?: number;
+  n_showroom?: number;
+  n_liquor?: number;
 };
-type Kind = "warehouse" | "showroom";
+type Kind = "warehouse" | "showroom" | "liquor";
+type KindColor = "blue" | "violet" | "amber";
+
+// Борлуулалтын 3 төрөл — нийт борлуулалт = Агуулах + Заал + Заалны архи
+const KINDS: { key: Kind; label: string; color: KindColor; icon: (s: number) => React.ReactNode }[] = [
+  { key: "warehouse", label: "Агуулах", color: "blue", icon: (s) => <Warehouse size={s} /> },
+  { key: "showroom", label: "Заал", color: "violet", icon: (s) => <Store size={s} /> },
+  { key: "liquor", label: "Заалны архи", color: "amber", icon: (s) => <Wine size={s} /> },
+];
+const KIND_LABEL: Record<Kind, string> = { warehouse: "Агуулах", showroom: "Заал", liquor: "Заалны архи" };
+const KIND_CHIP: Record<KindColor, string> = {
+  blue: "bg-blue-50 text-blue-700", violet: "bg-violet-50 text-violet-700", amber: "bg-amber-50 text-amber-700",
+};
+const hasKind = (s: SlotInfo | undefined, k: Kind) => !!s?.[`has_${k}` as const];
 
 const MN_MONTHS = ["1-р сар","2-р сар","3-р сар","4-р сар","5-р сар","6-р сар","7-р сар","8-р сар","9-р сар","10-р сар","11-р сар","12-р сар"];
 // Excel баганын үсэг (0=A, 1=B, ...). 12 багана хангалттай.
@@ -79,7 +96,7 @@ export default function ProductSalesImport() {
       fd.append("kind", t.kind);
       const r = await api.post("/product-monthly-sales/import", fd);
       const d = r.data ?? {};
-      flash(`${MN_MONTHS[t.month - 1]} · ${t.kind === "warehouse" ? "Агуулах" : "Заал"}: ${d.rows_upserted ?? 0} бараа` +
+      flash(`${MN_MONTHS[t.month - 1]} · ${KIND_LABEL[t.kind]}: ${d.rows_upserted ?? 0} бараа` +
         (d.rows_skipped ? ` (${d.rows_skipped} алгассан)` : ""));
       await loadSlots();
     } catch (e: any) {
@@ -91,7 +108,7 @@ export default function ProductSalesImport() {
   };
 
   const onDelete = async (month: number, kind: Kind) => {
-    if (!confirm(`${year} оны ${MN_MONTHS[month - 1]} — ${kind === "warehouse" ? "Агуулах" : "Заал"}-ийн борлуулалт устгах уу?`)) return;
+    if (!confirm(`${year} оны ${MN_MONTHS[month - 1]} — «${KIND_LABEL[kind]}» борлуулалтыг устгах уу?`)) return;
     try {
       await api.delete(`/product-monthly-sales/${year}/${month}/${kind}`);
       flash("Устгалаа.");
@@ -119,15 +136,14 @@ export default function ProductSalesImport() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slots]);
 
-  // Тухайн оны нийт оруулсан тоо (статист)
+  // Тухайн оны нийт оруулсан сарын тоо — төрөл бүрээр (статист)
   const yearStat = useMemo(() => {
-    let wh = 0, sh = 0;
+    const st: Record<Kind, number> = { warehouse: 0, showroom: 0, liquor: 0 };
     for (let m = 1; m <= 12; m++) {
       const s = slotOf(m);
-      if (s?.has_warehouse) wh++;
-      if (s?.has_showroom) sh++;
+      KINDS.forEach((k) => { if (hasKind(s, k.key)) st[k.key]++; });
     }
-    return { wh, sh };
+    return st;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slots, year]);
 
@@ -157,7 +173,7 @@ export default function ProductSalesImport() {
         </Link>
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Сарын борлуулалт</h1>
-          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Агуулах + Заалны сарын борлуулалтыг оруулна. Захиалга бэлдэх үед статистик харагдана.</p>
+          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Агуулах, Заал, Заалны архины сарын борлуулалтыг тус тусад нь оруулна — нийлбэр нь захиалга, поддоны статистикт харагдана.</p>
         </div>
       </div>
 
@@ -211,9 +227,12 @@ export default function ProductSalesImport() {
             {years.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
-        <div className="flex items-center gap-2 text-[12px]">
-          <span className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 font-medium text-blue-700"><Warehouse size={12} /> Агуулах {yearStat.wh}/12</span>
-          <span className="inline-flex items-center gap-1 rounded-md bg-violet-50 px-2 py-1 font-medium text-violet-700"><Store size={12} /> Заал {yearStat.sh}/12</span>
+        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+          {KINDS.map((k) => (
+            <span key={k.key} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium ${KIND_CHIP[k.color]}`}>
+              {k.icon(12)} {k.label} {yearStat[k.key]}/12
+            </span>
+          ))}
         </div>
         <button onClick={loadSlots} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[12px] text-gray-600 hover:bg-gray-50">
           <RefreshCw size={13} /> Сэргээх
@@ -230,16 +249,15 @@ export default function ProductSalesImport() {
             <div key={m} className={`rounded-2xl border bg-white p-3.5 shadow-sm ${isFuture ? "border-gray-100 opacity-60" : "border-gray-200"}`}>
               <div className="mb-2.5 flex items-center justify-between">
                 <span className="text-[14px] font-bold text-gray-900">{mName}</span>
-                {s && (s.has_warehouse || s.has_showroom) && (
+                {s && KINDS.some((k) => hasKind(s, k.key)) && (
                   <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">{s.count} бараа</span>
                 )}
               </div>
-              <KindRow icon={<Warehouse size={13} />} label="Агуулах" color="blue"
-                has={!!s?.has_warehouse} busy={busy === `${m}-warehouse`}
-                onUpload={() => pickFile(m, "warehouse")} onDelete={() => onDelete(m, "warehouse")} />
-              <KindRow icon={<Store size={13} />} label="Заал" color="violet"
-                has={!!s?.has_showroom} busy={busy === `${m}-showroom`}
-                onUpload={() => pickFile(m, "showroom")} onDelete={() => onDelete(m, "showroom")} />
+              {KINDS.map((k) => (
+                <KindRow key={k.key} icon={k.icon(13)} label={k.label} color={k.color}
+                  has={hasKind(s, k.key)} count={s?.[`n_${k.key}` as const]} busy={busy === `${m}-${k.key}`}
+                  onUpload={() => pickFile(m, k.key)} onDelete={() => onDelete(m, k.key)} />
+              ))}
             </div>
           );
         })}
@@ -248,21 +266,24 @@ export default function ProductSalesImport() {
   );
 }
 
-function KindRow({ icon, label, color, has, busy, onUpload, onDelete }: {
-  icon: React.ReactNode; label: string; color: "blue" | "violet";
-  has: boolean; busy: boolean; onUpload: () => void; onDelete: () => void;
+function KindRow({ icon, label, color, has, count, busy, onUpload, onDelete }: {
+  icon: React.ReactNode; label: string; color: KindColor;
+  has: boolean; count?: number; busy: boolean; onUpload: () => void; onDelete: () => void;
 }) {
-  const c = color === "blue"
-    ? { tx: "text-blue-700", bg: "bg-blue-50", ring: "ring-blue-200" }
-    : { tx: "text-violet-700", bg: "bg-violet-50", ring: "ring-violet-200" };
+  const c = {
+    blue: { tx: "text-blue-700", bg: "bg-blue-50", ring: "ring-blue-200" },
+    violet: { tx: "text-violet-700", bg: "bg-violet-50", ring: "ring-violet-200" },
+    amber: { tx: "text-amber-700", bg: "bg-amber-50", ring: "ring-amber-200" },
+  }[color];
   return (
     <div className="flex items-center gap-2 py-1">
       <span className={`inline-flex items-center gap-1 text-[12px] font-medium ${c.tx}`}>{icon}{label}</span>
       <div className="ml-auto flex items-center gap-1">
         {has ? (
           <>
-            <span className={`inline-flex items-center gap-1 rounded-md ${c.bg} px-2 py-0.5 text-[11px] font-semibold ${c.tx} ring-1 ${c.ring}`}>
-              <Check size={11} /> Орсон
+            <span title={count ? `${count} бараа` : undefined}
+              className={`inline-flex items-center gap-1 rounded-md ${c.bg} px-2 py-0.5 text-[11px] font-semibold ${c.tx} ring-1 ${c.ring}`}>
+              <Check size={11} /> Орсон{count ? ` · ${count}` : ""}
             </span>
             <button onClick={onUpload} disabled={busy} title="Дахин оруулах"
               className="grid h-6 w-6 place-items-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50">
