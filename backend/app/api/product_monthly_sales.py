@@ -35,11 +35,12 @@ from app.core.audit import audit
 from app.models.user import User
 from app.models.product_monthly_sales import (
     ProductMonthlySales,
+    PMS_KIND_AMOUNT_FIELDS,
     PMS_KIND_FIELDS,
     PMS_KIND_LABELS,
     PMS_KINDS,
 )
-from app.services.product_monthly_sales_parser import parse_and_upsert
+from app.services.product_monthly_sales_parser import backfill_amounts, parse_and_upsert
 
 
 router = APIRouter(prefix="/product-monthly-sales", tags=["product-monthly-sales"])
@@ -181,6 +182,13 @@ def import_excel(
         autocommit=True,
     )
 
+    # Борлуулалтын графикийн кэшийг background-д шинэчилнэ (дараагийн нээлт хүлээхгүй)
+    try:
+        from app.services.sales_analytics import rebuild_async
+        rebuild_async()
+    except Exception as e:
+        print(f"[sales-analytics] rebuild trigger алдаа: {e}")
+
     return {
         "ok": True,
         "year": year,
@@ -189,8 +197,26 @@ def import_excel(
         "rows_parsed": result["parsed"],
         "rows_upserted": result["upserted"],
         "rows_skipped": result["skipped"],
+        "has_amount": result.get("has_amount", False),
         "examples": result["examples"],
     }
+
+
+@router.post("/reload")
+def reload_all(
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Бүх сарын хадгалсан файлуудаас борлуулалтын дүнг нэг удаа дахин ачаалж (тоо ширхэгийг
+    хөндөхгүй), борлуулалтын графикийн өгөгдлийг шинээр бэлдэнэ."""
+    cfg = get_ms_config()
+    rep = backfill_amounts(db, code_col=cfg["code_col"], qty_col=cfg["qty_col"], only_missing=False)
+    from app.services.sales_analytics import get_cube
+    cube = get_cube(db, force=True)
+    audit(db, request, u, action="product_monthly_sales_reload", entity_type="product_monthly_sales",
+          extra={"updated_rows": rep["updated_rows"], "slots": len(rep["slots"])}, autocommit=True)
+    return {"ok": True, "amounts": rep, "analytics": cube["info"]}
 
 
 @router.post("/stats")
@@ -321,6 +347,9 @@ def list_slot(
         ProductMonthlySales.qty_warehouse,
         ProductMonthlySales.qty_showroom,
         ProductMonthlySales.qty_liquor,
+        ProductMonthlySales.amount_warehouse,
+        ProductMonthlySales.amount_showroom,
+        ProductMonthlySales.amount_liquor,
         ProductMonthlySales.updated_at,
     ).filter(
         ProductMonthlySales.year == year,
@@ -338,9 +367,13 @@ def list_slot(
                 "qty_showroom": qs or 0.0,
                 "qty_liquor": ql or 0.0,
                 "qty_total": (qw or 0.0) + (qs or 0.0) + (ql or 0.0),
+                "amount_warehouse": aw or 0.0,
+                "amount_showroom": as_ or 0.0,
+                "amount_liquor": al or 0.0,
+                "amount_total": (aw or 0.0) + (as_ or 0.0) + (al or 0.0),
                 "updated_at": (updated.isoformat() if updated else None),
             }
-            for code, qw, qs, ql, updated in rows
+            for code, qw, qs, ql, aw, as_, al, updated in rows
         ],
     }
 
@@ -429,6 +462,7 @@ def delete_slot(
         if (getattr(r, field) or 0.0) <= 0:
             continue
         setattr(r, field, 0.0)
+        setattr(r, PMS_KIND_AMOUNT_FIELDS[kind], 0.0)
         affected += 1
         # Бүх төрөл 0 болсон бол мөрийг устгана
         if all((getattr(r, f) or 0.0) <= 0 for f in PMS_KIND_FIELDS.values()):
@@ -444,5 +478,10 @@ def delete_slot(
                "affected": affected, "removed": removed},
         autocommit=True,
     )
+    try:
+        from app.services.sales_analytics import rebuild_async
+        rebuild_async()
+    except Exception as e:
+        print(f"[sales-analytics] rebuild trigger алдаа: {e}")
 
     return {"ok": True, "affected": affected, "removed": removed}

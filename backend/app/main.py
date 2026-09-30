@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router, digest_router, pos_recon_router, price_check_router, hall_count_router, pallets_router, custom_master_router, brand_orderers_router, po_history_router, arrival_list_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router, digest_router, pos_recon_router, price_check_router, hall_count_router, pallets_router, custom_master_router, brand_orderers_router, po_history_router, arrival_list_router, sales_analytics_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -367,6 +367,9 @@ def ensure_product_monthly_sales_schema():
             conn.execute(text("ALTER TABLE product_monthly_sales ADD COLUMN qty_showroom FLOAT NOT NULL DEFAULT 0"))
         if "qty_liquor" not in cols:
             conn.execute(text("ALTER TABLE product_monthly_sales ADD COLUMN qty_liquor FLOAT NOT NULL DEFAULT 0"))
+        for c in ("amount_warehouse", "amount_showroom", "amount_liquor"):   # борлуулалтын дүн (₮)
+            if c not in cols:
+                conn.execute(text(f"ALTER TABLE product_monthly_sales ADD COLUMN {c} FLOAT NOT NULL DEFAULT 0"))
     # Хадгалах хавтсыг хангах
     import os
     pms_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads", "monthly_sales")
@@ -1137,6 +1140,13 @@ async def _dashboard_warm_loop():
             await asyncio.to_thread(warm_arrival_images)
         except Exception as e:
             print(f"[arrivals] warm алдаа: {e}")
+        # Борлуулалтын график — дүн нөхөх (нэг удаа) + мастер/борлуулалт өөрчлөгдсөн бол cube-ийг урьдчилан ачаална
+        try:
+            from app.services.sales_analytics import ensure_amounts_once, warm as _sa_warm
+            await asyncio.to_thread(ensure_amounts_once)
+            await asyncio.to_thread(_sa_warm)
+        except Exception as e:
+            print(f"[sales-analytics] warm алдаа: {e}")
         await asyncio.sleep(60)  # 60с тутамд snapshot-уудыг шинэ байлгана
 
 
@@ -1304,6 +1314,7 @@ app.include_router(custom_master_router)
 app.include_router(brand_orderers_router)
 app.include_router(po_history_router)
 app.include_router(arrival_list_router)
+app.include_router(sales_analytics_router)
 
 @app.get("/health")
 def health():

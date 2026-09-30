@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft, UploadCloud, RefreshCw, Check, AlertCircle, Warehouse, Store, Trash2,
-  Settings2, ChevronDown, ChevronRight, Save, X, Wine,
+  Settings2, ChevronDown, ChevronRight, Save, X, Wine, TrendingUp,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -72,7 +72,26 @@ export default function ProductSalesImport() {
     } catch { /* default */ }
   };
 
-  useEffect(() => { loadSlots(); loadConfig(); }, []);
+  // Борлуулалтын график — сервер урьдчилан ачаалсан өгөгдлийн төлөв
+  const [sa, setSa] = useState<{ info: { products: number; rows: number; built_at: string; has_amount: boolean; master_updated: string | null };
+    years: { year: number; months: number[] }[] } | null>(null);
+  const [reloading, setReloading] = useState(false);
+  const loadSa = async () => {
+    try { const r = await api.get("/sales-analytics/meta"); setSa(r.data); } catch { /* график заавал биш */ }
+  };
+  const reloadAll = async () => {
+    if (!confirm("Бүх сарын хадгалсан файлуудыг дахин уншиж борлуулалтын дүнг ачаалаад, графикийн өгөгдлийг шинээр бэлдэх үү?\n(Тоо ширхэг өөрчлөгдөхгүй)")) return;
+    setReloading(true); setError("");
+    try {
+      const r = await api.post("/product-monthly-sales/reload", {}, { timeout: 300000 });
+      flash(`Бүх сарыг ачааллаа: ${Number(r.data?.amounts?.updated_rows ?? 0).toLocaleString("mn-MN")} мөрийн дүн · график ${Number(r.data?.analytics?.products ?? 0).toLocaleString("mn-MN")} бараатай бэлэн`);
+      await loadSa();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "Дахин ачаалахад алдаа гарлаа.");
+    } finally { setReloading(false); }
+  };
+
+  useEffect(() => { loadSlots(); loadConfig(); loadSa(); }, []);
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(""), 3500); };
 
@@ -97,8 +116,9 @@ export default function ProductSalesImport() {
       const r = await api.post("/product-monthly-sales/import", fd);
       const d = r.data ?? {};
       flash(`${MN_MONTHS[t.month - 1]} · ${KIND_LABEL[t.kind]}: ${d.rows_upserted ?? 0} бараа` +
-        (d.rows_skipped ? ` (${d.rows_skipped} алгассан)` : ""));
+        (d.rows_skipped ? ` (${d.rows_skipped} алгассан)` : "") + (d.has_amount === false ? " · дүнгийн багана олдсонгүй" : ""));
       await loadSlots();
+      setTimeout(loadSa, 4000);                       // график background-д дахин бэлдэгдэнэ
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Файл оруулахад алдаа гарлаа.");
     } finally {
@@ -175,6 +195,30 @@ export default function ProductSalesImport() {
           <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Сарын борлуулалт</h1>
           <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Агуулах, Заал, Заалны архины сарын борлуулалтыг тус тусад нь оруулна — нийлбэр нь захиалга, поддоны статистикт харагдана.</p>
         </div>
+      </div>
+
+      {/* ── Борлуулалтын график — урьдчилан ачаалсан өгөгдөл ── */}
+      <div className="mt-4 flex flex-wrap items-center gap-3 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 p-4 text-white shadow-sm">
+        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/20"><TrendingUp size={20} /></div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-bold">Борлуулалтын график</div>
+          <div className="text-[11.5px] text-white/85">
+            {sa ? (
+              <>
+                {sa.years.map((y) => `${y.year}: ${y.months[0]}–${y.months[y.months.length - 1]} сар`).join(" · ")} ачаалагдсан ·{" "}
+                {sa.info.products.toLocaleString("mn-MN")} бараа{sa.info.has_amount ? " · тоо + дүн" : " · тоо"} · бэлдсэн {sa.info.built_at.split("T")[1]?.slice(0, 5)}
+                {" "}— мастер/борлуулалт шинэчлэгдэх бүрт автоматаар дахин бэлдэнэ
+              </>
+            ) : "Бренд, бараа, ангилал, байршлаар сарын өсөлт/бууралт"}
+          </div>
+        </div>
+        <button onClick={reloadAll} disabled={reloading}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-2 text-[12px] font-semibold hover:bg-white/25 disabled:opacity-60">
+          <RefreshCw size={13} className={reloading ? "animate-spin" : ""} /> {reloading ? "Ачаалж байна…" : "Бүх сарыг дахин ачаалах"}
+        </button>
+        <Link to="/sales-analytics" className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-2 text-[12px] font-bold text-indigo-700 hover:bg-indigo-50">
+          Графикаар харах <ChevronRight size={14} />
+        </Link>
       </div>
 
       {/* ── Баганын тохиргоо (хураагдсан) ── */}

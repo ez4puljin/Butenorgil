@@ -49,6 +49,7 @@ const PosRecon           = page(() => import("./pages/PosRecon"));
 const PriceCheck         = page(() => import("./pages/PriceCheck"));
 const HallCount          = page(() => import("./pages/HallCount"));
 const Pallets            = page(() => import("./pages/Pallets"));
+const SalesAnalytics     = page(() => import("./pages/SalesAnalytics"));
 const CustomMaster       = page(() => import("./pages/CustomMaster"));
 const ExpirationTracking = page(() => import("./pages/ExpirationTracking"));
 const Documents          = page(() => import("./pages/Documents"));
@@ -107,6 +108,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "price_check",         path: "/price-check" },
   { key: "hall_count",          path: "/hall-count" },
   { key: "pallets",             path: "/pallets" },
+  { key: "sales_analytics",     path: "/sales-analytics" },
   { key: "custom_master",       path: "/custom-master" },
   { key: "expiration_tracking", path: "/expiration" },
   { key: "documents",           path: "/documents" },
@@ -348,6 +350,10 @@ export default function App() {
                 <Route
                   path="/pallets"
                   element={can("pallets") ? <Pallets /> : <DefaultRedirect />}
+                />
+                <Route
+                  path="/sales-analytics"
+                  element={can("sales_analytics") ? <SalesAnalytics /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/custom-master"
