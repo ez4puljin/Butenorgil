@@ -37,7 +37,7 @@ PMS_KIND_LABELS = {
     PMS_KIND_SHOWROOM:  "Заал",
     PMS_KIND_LIQUOR:    "Заалны архи",
 }
-# kind → борлуулалтын дүнгийн багана (Эрхэтийн «Нийт борлуулалт», НӨАТ-гүй ₮)
+# kind → борлуулалтын дүнгийн багана (Эрхэтийн «НӨАТ-тай дүн» — H багана, НӨАТ-тэй ₮)
 PMS_KIND_AMOUNT_FIELDS = {
     PMS_KIND_WAREHOUSE: "amount_warehouse",
     PMS_KIND_SHOWROOM:  "amount_showroom",
@@ -60,7 +60,7 @@ class ProductMonthlySales(Base):
     qty_warehouse: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     qty_showroom:  Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     qty_liquor:    Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    # Борлуулалтын дүн (₮, НӨАТ-гүй) — файлын «Нийт борлуулалт» баганаас; график/шинжилгээнд
+    # Борлуулалтын дүн (₮, НӨАТ-тэй) — файлын «НӨАТ-тай дүн» (H) баганаас; график/шинжилгээнд
     amount_warehouse: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     amount_showroom:  Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     amount_liquor:    Mapped[float] = mapped_column(Float, default=0.0, nullable=False)

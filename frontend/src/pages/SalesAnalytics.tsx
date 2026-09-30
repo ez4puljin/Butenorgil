@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { TrendingUp, RefreshCw, X, Search, Table2, BarChart3, ChevronRight, Upload } from "lucide-react";
+import { TrendingUp, RefreshCw, X, Search, Table2, BarChart3, ChevronRight, ChevronDown, Check, Upload } from "lucide-react";
 import { api } from "../lib/api";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -282,8 +282,118 @@ function DivergingBars({ up, down, metric, basis, onPick }: {
   );
 }
 
+// ── Хайж, олон сонгох шүүлт (ангилал / бренд / tag) ──
+type Opt = { name: string; count: number; total: number | null };
+type Facets = { categories: Opt[]; brands: Opt[]; tags: Opt[] };
+const SEP = "||";                                   // олон утгын тусгаарлагч (нэрэнд таслал байдаг)
+const splitSel = (v: string) => (v ? v.split(SEP).filter(Boolean) : []);
+
+function MultiSelect({ label, allLabel, options, selected, onChange, metric, className = "" }: {
+  label: string; allLabel: string; options: Opt[]; selected: string[]; onChange: (v: string[]) => void;
+  metric: Metric; className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [hi, setHi] = useState(0);
+  const [alignRight, setAlignRight] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [open]);
+
+  const openMenu = () => {
+    const r = boxRef.current?.getBoundingClientRect();
+    setAlignRight(!!r && r.left + 340 > window.innerWidth - 8);
+    setQ(""); setHi(0); setOpen(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const selSet = useMemo(() => new Set(selected), [selected]);
+  const toks = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const list = useMemo(() => {
+    const all = [...options];
+    selected.forEach((v) => { if (!all.some((o) => o.name === v)) all.push({ name: v, count: 0, total: null }); });
+    const f = toks.length ? all.filter((o) => { const n = o.name.toLowerCase(); return toks.every((t) => n.includes(t)); }) : all;
+    return [...f.filter((o) => selSet.has(o.name)), ...f.filter((o) => !selSet.has(o.name))];   // сонгосон нь дээр
+  }, [options, selected, q]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setHi(0); }, [q]);
+  useEffect(() => { listRef.current?.querySelector(`[data-i="${hi}"]`)?.scrollIntoView({ block: "nearest" }); }, [hi]);
+
+  const toggle = (name: string) => onChange(selSet.has(name) ? selected.filter((x) => x !== name) : [...selected, name]);
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setHi((h) => Math.min(list.length - 1, h + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHi((h) => Math.max(0, h - 1)); }
+    else if (e.key === "Enter") { e.preventDefault(); if (list[hi]) toggle(list[hi].name); }
+    else if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
+  };
+  const found = toks.length ? list.filter((o) => !selSet.has(o.name)) : [];
+  const summary = selected.length === 0 ? allLabel : selected.length === 1 ? selected[0] : `${selected[0]} +${selected.length - 1}`;
+
+  return (
+    <div ref={boxRef} className={`relative min-w-0 ${className}`}>
+      <button type="button" onClick={() => (open ? setOpen(false) : openMenu())} aria-haspopup="listbox" aria-expanded={open}
+        title={selected.join(", ")}
+        className={`flex w-full items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-[12.5px] outline-none focus:border-blue-400 ${
+          selected.length ? "border-blue-300 bg-blue-50/60 text-blue-900" : "border-gray-200 bg-white text-gray-800"}`}>
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        {selected.length > 1 && <span className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10.5px] font-bold leading-4 text-white">{selected.length}</span>}
+        <ChevronDown size={14} className={`shrink-0 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className={`absolute z-30 mt-1 w-[340px] max-w-[calc(100vw-24px)] rounded-xl border border-gray-200 bg-white shadow-xl ${alignRight ? "right-0" : "left-0"}`}>
+          <div className="border-b border-gray-100 p-2">
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey}
+                placeholder={`${label} бичиж хайх…`} aria-label={`${label} хайх`}
+                className="w-full rounded-lg border border-gray-200 py-1.5 pl-8 pr-2 text-[13px] outline-none focus:border-blue-400" />
+            </div>
+          </div>
+          <div className="flex px-3 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+            <span className="flex-1">{label}</span><span>бараа</span><span className="w-[64px] text-right">{metric === "amount" ? "дүн ₮" : "тоо ш"}</span>
+          </div>
+          <div ref={listRef} role="listbox" aria-multiselectable="true" aria-label={label} className="max-h-[300px] overflow-y-auto pb-1">
+            {list.length === 0 ? (
+              <div className="px-3 py-4 text-center text-[12px] text-gray-400">«{q}» олдсонгүй</div>
+            ) : list.map((o, i) => {
+              const on = selSet.has(o.name);
+              return (
+                <div key={o.name} data-i={i} role="option" aria-selected={on} onClick={() => toggle(o.name)} onMouseEnter={() => setHi(i)}
+                  className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[12.5px] ${i === hi ? "bg-blue-50/70" : ""}`}>
+                  <span className={`grid h-4 w-4 shrink-0 place-items-center rounded border ${on ? "border-blue-600 bg-blue-600 text-white" : "border-gray-300 bg-white"}`}>
+                    {on && <Check size={11} strokeWidth={3} />}
+                  </span>
+                  <span className={`min-w-0 flex-1 truncate ${on ? "font-semibold text-gray-900" : "text-gray-700"}`}>{o.name}</span>
+                  <span className="shrink-0 text-[10.5px] tabular-nums text-gray-400">{o.count}</span>
+                  <span className="w-[64px] shrink-0 text-right text-[11px] tabular-nums text-gray-500">{o.total == null ? "" : compact(o.total)}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-gray-100 px-3 py-2 text-[12px]">
+            <span className="text-gray-500">{selected.length ? `${selected.length} сонгосон` : "Олныг сонгож болно"}</span>
+            {found.length > 1 && found.length <= 100 && (
+              <button onClick={() => onChange([...selected, ...found.map((o) => o.name)])} className="font-medium text-blue-700 hover:underline">Олдсон {found.length}-г сонгох</button>
+            )}
+            <span className="flex-1" />
+            {selected.length > 0 && <button onClick={() => onChange([])} className="text-gray-600 hover:underline">Цэвэрлэх</button>}
+            <button onClick={() => setOpen(false)} className="rounded-md bg-blue-600 px-2.5 py-1 font-semibold text-white hover:bg-blue-700">Болсон</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ═══ Хуудас ═══
 const cache = new Map<string, Result>();
+const fcache = new Map<string, Facets>();
 
 export default function SalesAnalytics() {
   const [sp, setSp] = useSearchParams();
@@ -336,6 +446,19 @@ export default function SalesAnalytics() {
   }, [year, mFrom, mTo, kinds.join(","), P.mt, P.cat, P.br, P.tag, P.q, P.code, P.s]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const qs = meta ? qsFor(P.d, top) : "";
+
+  // Сонголтын жагсаалт — бусад шүүлтээр шүүгдсэн (ангилал сонговол бренд нь зөвхөн түүнийх г.м)
+  const [facets, setFacets] = useState<Facets | null>(null);
+  const fqs = meta ? new URLSearchParams({ year: String(year), m_from: String(mFrom), m_to: String(mTo), kinds: kinds.join(","),
+    metric: P.mt, cats: P.cat, brands: P.br, tags: P.tag, q: P.q }).toString() : "";
+  useEffect(() => {
+    if (!fqs) return;
+    const hit = fcache.get(fqs);
+    if (hit) { setFacets(hit); return; }
+    let dead = false;
+    api.get(`/sales-analytics/facets?${fqs}`).then((r) => { fcache.set(fqs, r.data); if (!dead) setFacets(r.data); }).catch(() => { /* meta-гийн жагсаалт үлдэнэ */ });
+    return () => { dead = true; };
+  }, [fqs]);
   useEffect(() => { setTop(50); }, [qsFor, P.d]);
   useEffect(() => {
     if (!qs) return;
@@ -380,14 +503,22 @@ export default function SalesAnalytics() {
   const d = data;
   const kpi = d?.kpi;
   const lastM = d?.months[d.months.length - 1];
-  const scope = [P.cat && `Ангилал: ${P.cat}`, P.br && `Бренд: ${P.br}`, P.tag && `Tag: ${P.tag}`, P.code && `Бараа: ${P.cn || P.code}`, P.q && `«${P.q}»`].filter(Boolean).join(" · ");
-  const chips: { k: string; label: string; clear: Record<string, null> }[] = [
-    ...(P.cat ? [{ k: "cat", label: `Ангилал: ${P.cat}`, clear: { cat: null } }] : []),
-    ...(P.br ? [{ k: "br", label: `Бренд: ${P.br}`, clear: { br: null } }] : []),
-    ...(P.tag ? [{ k: "tag", label: `Tag: ${P.tag}`, clear: { tag: null } }] : []),
+  const catSel = splitSel(P.cat), brSel = splitSel(P.br), tagSel = splitSel(P.tag);
+  const listTxt = (lb: string, arr: string[]) =>
+    arr.length ? `${lb}: ${arr.length > 2 ? `${arr.slice(0, 2).join(", ")} +${arr.length - 2}` : arr.join(", ")}` : "";
+  const scope = [listTxt("Ангилал", catSel), listTxt("Бренд", brSel), listTxt("Tag", tagSel),
+    P.code && `Бараа: ${P.cn || P.code}`, P.q && `«${P.q}»`].filter(Boolean).join(" · ");
+  const without = (arr: string[], v: string) => arr.filter((x) => x !== v).join(SEP) || null;
+  const chips: { k: string; label: string; clear: Record<string, string | null> }[] = [
+    ...catSel.map((v) => ({ k: `cat:${v}`, label: `Ангилал: ${v}`, clear: { cat: without(catSel, v) } })),
+    ...brSel.map((v) => ({ k: `br:${v}`, label: `Бренд: ${v}`, clear: { br: without(brSel, v) } })),
+    ...tagSel.map((v) => ({ k: `tag:${v}`, label: `Tag: ${v}`, clear: { tag: without(tagSel, v) } })),
     ...(P.code ? [{ k: "code", label: `Бараа: ${P.cn || P.code}`, clear: { code: null, cn: null } }] : []),
     ...(P.q ? [{ k: "q", label: `Хайлт: ${P.q}`, clear: { q: null } }] : []),
   ];
+  const optCats: Opt[] = facets?.categories ?? (meta?.categories ?? []).map((c) => ({ name: c.name, count: c.count, total: null }));
+  const optBrands: Opt[] = facets?.brands ?? (meta?.brands ?? []).map((b) => ({ name: b.name, count: b.count, total: null }));
+  const optTags: Opt[] = facets?.tags ?? (meta?.tags ?? []).map((t) => ({ name: t, count: 0, total: null }));
   const sel = "rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-800 outline-none focus:border-blue-400";
 
   return (
@@ -398,7 +529,7 @@ export default function SalesAnalytics() {
         <div className="min-w-0 flex-1">
           <h1 className="text-[16px] font-bold leading-tight text-gray-900">Борлуулалтын график</h1>
           <p className="truncate text-[11.5px] text-gray-500">
-            {d ? `${d.year} оны ${monthsText(d.months)}-р сар · ${P.mt === "amount" ? "Дүн ₮ (НӨАТ-гүй)" : "Тоо ширхэг"}` : "Ачаалж байна…"}
+            {d ? `${d.year} оны ${monthsText(d.months)}-р сар · ${P.mt === "amount" ? "Дүн ₮ (НӨАТ-тэй)" : "Тоо ширхэг"}` : "Ачаалж байна…"}
             {meta?.info.master_updated && ` · мастер ${meta.info.master_updated.split("T")[0]}`}
             {meta?.info.built_at && ` · бэлдсэн ${meta.info.built_at.split("T")[1]?.slice(0, 5)}`}
           </p>
@@ -407,7 +538,7 @@ export default function SalesAnalytics() {
           className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[12px] text-gray-600 hover:bg-gray-50">
           <Upload size={13} /><span className="hidden sm:inline">Сарын борлуулалт</span>
         </Link>
-        <button onClick={() => { cache.clear(); loadMeta(true); setData(null); }} title="Шинэчлэх"
+        <button onClick={() => { cache.clear(); fcache.clear(); loadMeta(true); setData(null); }} title="Шинэчлэх"
           className="rounded-lg border border-gray-200 p-2 text-gray-500 hover:bg-gray-50"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>
       </div>
 
@@ -446,19 +577,13 @@ export default function SalesAnalytics() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <select value={P.cat} onChange={(e) => setP({ cat: e.target.value })} className={`${sel} max-w-[46%] sm:max-w-[220px]`} aria-label="Ангилал">
-            <option value="">Бүх ангилал</option>
-            {(meta?.categories ?? []).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-          </select>
-          <select value={P.br} onChange={(e) => setP({ br: e.target.value })} className={`${sel} max-w-[46%] sm:max-w-[220px]`} aria-label="Бренд">
-            <option value="">Бүх бренд</option>
-            {(meta?.brands ?? []).map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
-          </select>
+          <MultiSelect label="Ангилал" allLabel="Бүх ангилал" options={optCats} selected={catSel} metric={P.mt}
+            onChange={(v) => setP({ cat: v.join(SEP) || null }, false)} className="w-[calc(50%-4px)] sm:w-[220px]" />
+          <MultiSelect label="Бренд" allLabel="Бүх бренд" options={optBrands} selected={brSel} metric={P.mt}
+            onChange={(v) => setP({ br: v.join(SEP) || null }, false)} className="w-[calc(50%-4px)] sm:w-[220px]" />
           {!!meta?.tags.length && (
-            <select value={P.tag} onChange={(e) => setP({ tag: e.target.value })} className={`${sel} max-w-[46%] sm:max-w-[200px]`} aria-label="Байршлын tag">
-              <option value="">Бүх tag</option>
-              {meta.tags.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
+            <MultiSelect label="Tag" allLabel="Бүх tag" options={optTags} selected={tagSel} metric={P.mt}
+              onChange={(v) => setP({ tag: v.join(SEP) || null }, false)} className="w-[calc(50%-4px)] sm:w-[200px]" />
           )}
           <div className="relative min-w-[160px] flex-1">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -498,7 +623,7 @@ export default function SalesAnalytics() {
             <div className="mb-2 flex flex-wrap items-start gap-2">
               <div className="min-w-0 flex-1">
                 <div className="text-[14px] font-bold text-gray-900">Сар бүрийн борлуулалт{d.by_location.length > 1 ? " — байршлаар" : ` — ${d.by_location[0]?.label ?? ""}`}</div>
-                <div className="truncate text-[11.5px] text-gray-500">{scope || "Бүх бараа"} · {P.mt === "amount" ? "₮, НӨАТ-гүй" : "ширхэг"}</div>
+                <div className="truncate text-[11.5px] text-gray-500">{scope || "Бүх бараа"} · {P.mt === "amount" ? "₮, НӨАТ-тэй" : "ширхэг"}</div>
               </div>
               <button onClick={() => setTableView((v) => !v)} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 text-[11.5px] text-gray-600 hover:bg-gray-50">
                 {tableView ? <><BarChart3 size={12} /> График</> : <><Table2 size={12} /> Хүснэгт</>}

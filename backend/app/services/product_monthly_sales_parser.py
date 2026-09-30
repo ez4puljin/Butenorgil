@@ -4,7 +4,7 @@
   A багана = item_code (Эрхэт дотоод код, тоо эсвэл string)
   B багана = qty (тоо ширхэг)
   Хэрэв 1-р мөр нь header бол (B багана нь тоо биш) автомат алгасна.
-  Header-т «Нийт борлуулалт» багана байвал борлуулалтын дүнг (₮, НӨАТ-гүй) мөн хадгална.
+  Header-т «НӨАТ-тай дүн» (H) багана байвал борлуулалтын дүнг (₮, НӨАТ-тэй) мөн хадгална.
 
 Нэг файлд нэг item_code олон удаа гарвал нийт qty, дүнг SUM хийнэ.
 
@@ -99,16 +99,20 @@ def _read_rows(file_path) -> list[list]:
         return df.where(pd.notna(df), None).values.tolist()
 
 
-def _amount_col(header: list) -> int | None:
-    """Header-ээс борлуулалтын дүнгийн багана: «Нийт борлуулалт» → бусад «...борлуулалт...»."""
+def _amount_cols(header: list) -> list[int]:
+    """Header-ээс борлуулалтын ДҮН (НӨАТ-тэй) баганууд — нийлбэрийг нь авна.
+    Эрхэтийн «Борлуулалтын тайлан бараагаар»: E=Нийт борлуулалт, F=НӨАТ дүн, G=НХАТ дүн, H=НӨАТ-тай дүн.
+      1) «НӨАТ-тай дүн» (H) байвал зөвхөн түүнийг;
+      2) үгүй бол «Нийт борлуулалт» + «НӨАТ дүн» + «НХАТ дүн» (= H)."""
     norm = [re.sub(r"\s+", " ", str(h or "")).strip().lower() for h in header]
     for i, h in enumerate(norm):
-        if h == "нийт борлуулалт":
-            return i
-    for i, h in enumerate(norm):
-        if "борлуулалт" in h and not any(w in h for w in ("тоо", "нөат", "хувь", "%")):
-            return i
-    return None
+        if re.search(r"нөат-?\s?т[аэ]й", h):
+            return [i]
+    base = [i for i, h in enumerate(norm) if h == "нийт борлуулалт"]
+    if not base:
+        return []
+    taxes = [i for i, h in enumerate(norm) if h in ("нөат дүн", "нхат дүн")]
+    return base + taxes
 
 
 def read_sales_file(file_path, code_col: int = 0, qty_col: int = 1) -> dict:
@@ -123,11 +127,10 @@ def read_sales_file(file_path, code_col: int = 0, qty_col: int = 1) -> dict:
     first_qty = rows[0][qty_col] if len(rows[0]) > qty_col else None
     try:
         float(str(first_qty).replace(",", ""))
-        start_row, amt_col = 0, None           # header байхгүй — дүнгийн баганыг мэдэхгүй
+        start_row, amt_cols = 0, []            # header байхгүй — дүнгийн баганыг мэдэхгүй
     except (TypeError, ValueError):
-        start_row, amt_col = 1, _amount_col(rows[0])
-    if amt_col in (code_col, qty_col):
-        amt_col = None
+        start_row, amt_cols = 1, _amount_cols(rows[0])
+    amt_cols = [c for c in amt_cols if c not in (code_col, qty_col)]
     agg: dict[str, list] = defaultdict(lambda: [0.0, 0.0])
     for r in rows[start_row:]:
         code = _safe_code(r[code_col] if len(r) > code_col else None)
@@ -137,11 +140,12 @@ def read_sales_file(file_path, code_col: int = 0, qty_col: int = 1) -> dict:
             continue
         a = agg[code]
         a[0] += qty
-        if amt_col is not None and len(r) > amt_col:
-            a[1] += _safe_float(r[amt_col])
+        for c in amt_cols:
+            if len(r) > c:
+                a[1] += _safe_float(r[c])
         out["parsed"] += 1
     out["agg"] = dict(agg)
-    out["amount_col"] = amt_col
+    out["amount_col"] = amt_cols or None
     return out
 
 
@@ -263,10 +267,39 @@ def backfill_amounts(db: Session, code_col: int = 0, qty_col: int = 1,
                     if hit and abs(hit[0] - float(q or 0)) < 1e-6:
                         updates.append({"a": hit[1], "c": code})
                         break
+            if parsed and not only_missing:                       # бүрэн дахин ачаалалт — хуучин дүнг цэвэрлээд шинээр
+                db.execute(text(f"UPDATE product_monthly_sales SET {af}=0 WHERE year=:y AND month=:m"), {"y": y, "m": m})
             if updates:
                 db.execute(text(f"UPDATE product_monthly_sales SET {af}=:a "
                                 f"WHERE item_code=:c AND year={int(y)} AND month={int(m)}"), updates)
             report.append({"kind": kind, "year": y, "month": m, "rows": n, "matched": len(updates),
                            "files": len(files)})
     db.commit()
-    return {"slots": report, "updated_rows": sum(r["matched"] for r in report)}
+    updated = sum(r["matched"] for r in report)
+    if not only_missing:
+        set_amount_basis(updated)
+    return {"slots": report, "updated_rows": updated}
+
+
+# Хадгалсан дүнгийн суурь — өөрчлөгдвөл (жишээ нь НӨАТ-гүй → НӨАТ-тэй) startup-д бүгдийг нэг удаа дахин ачаална
+AMOUNT_BASIS = "vat_incl_H"                  # файлын H «НӨАТ-тай дүн» (= E + F + G)
+_BASIS_FILE = Path("app/data/monthly_sales_amounts.json")
+
+
+def amount_basis() -> str | None:
+    import json
+    try:
+        return json.loads(_BASIS_FILE.read_text(encoding="utf-8")).get("basis")
+    except Exception:
+        return None
+
+
+def set_amount_basis(rows: int) -> None:
+    import json
+    try:
+        _BASIS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _BASIS_FILE.write_text(json.dumps({"basis": AMOUNT_BASIS, "rows": rows,
+                                           "at": datetime.now().isoformat(timespec="seconds")},
+                                          ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        print(f"[pms] amount basis бичиж чадсангүй: {e}")

@@ -235,13 +235,15 @@ def ensure_amounts_once() -> None:
     _AMOUNTS_DONE["done"] = True
     from app.core.db import SessionLocal
     from app.api.product_monthly_sales import get_ms_config
-    from app.services.product_monthly_sales_parser import backfill_amounts
+    from app.services.product_monthly_sales_parser import AMOUNT_BASIS, amount_basis, backfill_amounts
     db = SessionLocal()
     try:
         cfg = get_ms_config()
-        rep = backfill_amounts(db, code_col=cfg["code_col"], qty_col=cfg["qty_col"], only_missing=True)
+        full = amount_basis() != AMOUNT_BASIS                     # дүнгийн суурь өөрчлөгдсөн → бүгдийг дахин
+        rep = backfill_amounts(db, code_col=cfg["code_col"], qty_col=cfg["qty_col"], only_missing=not full)
         if rep["slots"]:
-            print(f"[sales-analytics] дүн нөхлөө: {len(rep['slots'])} slot, {rep['updated_rows']} мөр")
+            print(f"[sales-analytics] дүн {'дахин ачааллаа' if full else 'нөхлөө'}: "
+                  f"{len(rep['slots'])} slot, {rep['updated_rows']} мөр")
     finally:
         db.close()
 
@@ -317,6 +319,71 @@ def _split(v) -> tuple:
     return tuple(x for x in str(v).split(SEP) if x)
 
 
+def _masks(cube: dict, cats, brands, tags, q) -> tuple:
+    """Шүүлт тус бүрийн mask (сонгоогүй бол бүгд True). Нэг шүүлт дотор олон утга = OR."""
+    P = len(cube["names"])
+    ones = np.ones(P, dtype=bool)
+    m_cat = np.isin(cube["cat_idx"], [cube["cats"].index(c) for c in cats if c in cube["cats"]]) if cats else ones
+    m_br = np.isin(cube["brand_idx"], [cube["brands"].index(b) for b in brands if b in cube["brands"]]) if brands else ones
+    if tags:
+        ids = [cube["tags"].index(t) for t in tags if t in cube["tags"]]
+        m_tag = cube["tag_mat"][:, ids].any(axis=1) if ids else np.zeros(P, dtype=bool)
+    else:
+        m_tag = ones
+    if q:
+        toks = q.split()
+        m_q = np.fromiter((all(t in h for t in toks) for h in cube["hay"]), dtype=bool, count=P)
+    else:
+        m_q = ones
+    return m_cat, m_br, m_tag, m_q
+
+
+def facets(cube: dict, *, year: int, m_from: int, m_to: int, kinds=KINDS, metric: str = "amount",
+           cats=(), brands=(), tags=(), q: str = "") -> dict:
+    """Шүүлтийн сонголтууд (faceted): ангилал/бренд/tag бүрийн жагсаалтыг БУСАД шүүлтээр шүүж,
+    тухайн хугацаа/байршилд борлуулалттай барааны тоо, нийт дүнтэй буцаана (сонгосон нь 0 байсан ч орно)."""
+    kinds = tuple(k for k in KINDS if k in set(kinds)) or KINDS
+    cats, brands, tags = _split(cats), _split(brands), _split(tags)
+    q = q.strip().lower()
+    key = ("facets", cube["version"], year, m_from, m_to, kinds, metric, cats, brands, tags, q)
+    with _QLOCK:
+        hit = _QCACHE.get(key)
+        if hit is not None:
+            _QCACHE.move_to_end(key)
+            return hit
+    out = {"categories": [], "brands": [], "tags": []}
+    if year in cube["years"]:
+        yi = cube["years"].index(year)
+        months = [m - 1 for m in range(max(1, m_from), min(12, m_to) + 1)]
+        K = [KINDS.index(k) for k in kinds]
+        base = cube["amt" if metric == "amount" else "qty"]
+        tot = base[:, yi][:, months][:, :, K].sum(axis=(1, 2))
+        sold = tot > 0
+        m_cat, m_br, m_tag, m_q = _masks(cube, cats, brands, tags, q)
+
+        def listing(names, idx, mask, selected):
+            cnt = np.bincount(idx[mask], minlength=len(names))
+            s = np.bincount(idx[mask], weights=tot[mask], minlength=len(names))
+            return [{"name": n, "count": int(cnt[i]), "total": _num(s[i], 1 if metric == "qty" else 0)}
+                    for i, n in enumerate(names) if cnt[i] > 0 or n in selected]
+
+        out["categories"] = listing(cube["cats"], cube["cat_idx"], sold & m_br & m_tag & m_q, cats)
+        out["brands"] = listing(cube["brands"], cube["brand_idx"], sold & m_cat & m_tag & m_q, brands)
+        mt = sold & m_cat & m_br & m_q
+        tm = cube["tag_mat"][mt]
+        tcnt = tm.sum(axis=0)
+        ttot = tm.T.astype(float) @ tot[mt] if len(tot[mt]) else np.zeros(tm.shape[1])
+        out["tags"] = [{"name": t, "count": int(tcnt[i]), "total": _num(ttot[i], 1 if metric == "qty" else 0)}
+                       for i, t in enumerate(cube["tags"]) if tcnt[i] > 0 or t in tags]
+        for k in out:
+            out[k].sort(key=lambda x: -(x["total"] or 0))
+    with _QLOCK:
+        _QCACHE[key] = out
+        while len(_QCACHE) > QCACHE_MAX:
+            _QCACHE.popitem(last=False)
+    return out
+
+
 def query(cube: dict, *, year: int, m_from: int, m_to: int, kinds=KINDS, metric: str = "amount",
           dim: str = "category", cats=(), brands=(), tags=(), q: str = "", code: str = "",
           sort: str = "total", top: int = 50) -> dict:
@@ -356,22 +423,10 @@ def _compute(cube, year, m_from, m_to, kinds, metric, dim, cats, brands, tags, q
     K = [KINDS.index(k) for k in kinds]
     base = cube["amt" if metric == "amount" else "qty"]
 
-    P = len(cube["names"])
-    mask = np.ones(P, dtype=bool)
-    if cats:
-        ids = [cube["cats"].index(c) for c in cats if c in cube["cats"]]
-        mask &= np.isin(cube["cat_idx"], ids)
-    if brands:
-        ids = [cube["brands"].index(b) for b in brands if b in cube["brands"]]
-        mask &= np.isin(cube["brand_idx"], ids)
-    if tags:
-        ids = [cube["tags"].index(t) for t in tags if t in cube["tags"]]
-        mask &= cube["tag_mat"][:, ids].any(axis=1) if ids else False
+    m_cat, m_br, m_tag, m_q = _masks(cube, cats, brands, tags, q)
+    mask = m_cat & m_br & m_tag & m_q
     if code:
-        mask &= cube["codes"] == code
-    if q:
-        toks = q.split()
-        mask &= np.fromiter((all(t in h for t in toks) for h in cube["hay"]), dtype=bool, count=P)
+        mask = mask & (cube["codes"] == code)
     idx = np.nonzero(mask)[0]
     sub = base[idx][:, yi][:, [m - 1 for m in months]][:, :, K]    # P' × M × K'
     by_loc = sub.sum(axis=0)                                      # M × K'
