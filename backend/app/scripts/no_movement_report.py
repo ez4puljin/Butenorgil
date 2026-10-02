@@ -14,9 +14,11 @@
 Эх сурвалж: income_files (сарын/бүтэн оны), movement_files (Үндсэн заал + Архи заал),
 master_latest.xlsx (таг), Бүх агуулахын үлдэгдэл (мэдээлэл).
 Хуудсууд: Дүгнэлт · Хөдөлгөөнгүй · Хөдөлгөөнтэй · Тагаар хасагдсан.
+PDF (утсанд): build_no_movement_pdf — «Хөдөлгөөнгүй» жагсаалт агуулахын тагаар, барааны зурагтай.
 """
 from __future__ import annotations
 
+import threading
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -50,10 +52,23 @@ def _norm_tag(t: str) -> str:
 _WH_TAGS_N = {_norm_tag(t): t for t in WAREHOUSE_TAGS}
 
 
+_TAGS: dict = {"mtime": None, "map": {}}
+
+
 def _master_tags() -> dict[str, str]:
-    """{code: «Байршил tag»} — master_latest.xlsx-ээс (файл байхгүй бол хоосон)."""
+    """{code: «Байршил tag»} — master_latest.xlsx-ээс (файл байхгүй бол хоосон). mtime-кэштэй."""
     if not MASTER_PATH.exists():
         return {}
+    mtime = MASTER_PATH.stat().st_mtime
+    if _TAGS["mtime"] != mtime:
+        m = _read_master_tags()
+        if not m:
+            return {}
+        _TAGS.update(mtime=mtime, map=m)
+    return dict(_TAGS["map"])
+
+
+def _read_master_tags() -> dict[str, str]:
     try:
         import pandas as pd
         from app.api.tag_location_check import _read_excel_fast
@@ -105,11 +120,29 @@ def _read_movement(path: Path) -> list[tuple]:
     return out
 
 
-def build_no_movement_report(db, days: int, out_path: str, end: date | None = None) -> dict:
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.utils import get_column_letter
+_MOV: dict[str, tuple[float, list]] = {}
+_MOV_LOCK = threading.Lock()
 
+
+def _movement_out_rows(path: Path) -> list[tuple]:
+    """Хөдөлгөөний файлын ГАРСАН мөрүүд (Кредит > 0) → [(date, code, qty, location)] — mtime-кэштэй
+    (8 МБ файл ~10 сек уншдаг — Excel, PDF, өөр хоногоор дахин гаргахад хүлээхгүй)."""
+    key, mtime = str(path), path.stat().st_mtime
+    hit = _MOV.get(key)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    with _MOV_LOCK:
+        hit = _MOV.get(key)
+        if hit and hit[0] == mtime:
+            return hit[1]
+        locs: dict[str, str] = {}
+        rows = [(d, c, q, locs.setdefault(l, l)) for d, c, _n, q, cr, l in _read_movement(path) if cr > 0]
+        _MOV[key] = (mtime, rows)
+        return rows
+
+
+def compute_no_movement(db, days: int, end: date | None = None) -> dict:
+    """Орлого (агуулахад) ↔ хөдөлгөөн (Кредит > 0) харьцуулалт — Excel болон PDF-ийн нийтлэг тооцоо."""
     from app.api.product_yearly_movement import UPLOAD_DIR as MOV_DIR
     from app.api.tag_location_check import _get_income_rows
     from app.models.income_file import IncomeFile
@@ -139,11 +172,13 @@ def build_no_movement_report(db, days: int, out_path: str, end: date | None = No
     inc = defaultdict(lambda: {"qty": 0.0, "amt": 0.0, "first": None, "last": None, "docs": set(),
                                "name": "", "locs": set(), "hall_qty": 0.0})
     inc_rows_window = 0
+    inc_until = None
     hall_only_codes: set[str] = set()
     for d, doc, code, name, loc, q, price, debit, _u in _get_income_rows():
         if d < start or d > end:
             continue
         inc_rows_window += 1
+        inc_until = d if inc_until is None or d > inc_until else inc_until
         a = inc[code]
         if name and not a["name"]:
             a["name"] = name
@@ -167,9 +202,14 @@ def build_no_movement_report(db, days: int, out_path: str, end: date | None = No
     # ── Хөдөлгөөн (цонхон доторх, Кредит > 0) ──
     mov = defaultdict(lambda: {"qty": 0.0, "rows": 0, "first": None, "last": None, "locs": set()})
     mov_rows_window = 0
+    mov_rows_all = 0
+    mov_until = None
     for _y, _k, p in mov_paths:
-        for d, code, _n, q, credit, loc in _read_movement(p):
-            if d < start or d > end or credit <= 0:
+        out_rows = _movement_out_rows(p)
+        mov_rows_all += len(out_rows)
+        for d, code, q, loc in out_rows:
+            mov_until = d if mov_until is None or d > mov_until else mov_until
+            if d < start or d > end:
                 continue
             mov_rows_window += 1
             m = mov[code]
@@ -179,6 +219,13 @@ def build_no_movement_report(db, days: int, out_path: str, end: date | None = No
             m["last"] = d if m["last"] is None or d > m["last"] else m["last"]
             if loc:
                 m["locs"].add(loc)
+    # Хоосон (зөвхөн толгой мөртэй) эсвэл хоцорсон файлаар бүх бараа «хөдөлгөөнгүй» гэж гарахаас сэргийлнэ
+    if mov_rows_all == 0:
+        raise ReportInputError(f"{'/'.join(map(str, years))} оны хөдөлгөөний файл хоосон байна (зөвхөн толгой мөртэй, гарсан мөр алга). "
+                               "Файл оруулалт → Хөдөлгөөний файл хэсэгт өгөгдөлтэй файлыг дахин оруулна уу.")
+    if mov_rows_window == 0:
+        raise ReportInputError(f"Хөдөлгөөний файлд {start} – {end} хугацааны гарсан мөр алга (файл {mov_until} хүртэлх өгөгдөлтэй). "
+                               "Шинэ хөдөлгөөний файл оруулна уу.")
 
     stock = get_location_stock_map(db, "warehouse")
 
@@ -207,6 +254,22 @@ def build_no_movement_report(db, days: int, out_path: str, end: date | None = No
     none_rows.sort(key=lambda r: (-r["inc_amt"], r["code"]))
     moved_rows.sort(key=lambda r: (r["out_qty"] / r["inc_qty"] if r["inc_qty"] else 0, -r["inc_amt"]))
     excluded_rows.sort(key=lambda r: (r["tag"], -r["inc_amt"]))
+    return {"days": days, "start": start, "end": end, "inc_files": inc_files, "mov_paths": mov_paths, "kinds": kinds,
+            "tags": tags, "inc": inc, "none_rows": none_rows, "moved_rows": moved_rows, "excluded_rows": excluded_rows,
+            "hall_only_codes": hall_only_codes, "inc_rows_window": inc_rows_window, "mov_rows_window": mov_rows_window,
+            "inc_until": inc_until, "mov_until": mov_until, "has_stock": bool(stock)}
+
+
+def build_no_movement_report(db, days: int, out_path: str, end: date | None = None) -> dict:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    res = compute_no_movement(db, days, end)
+    days, start, end = res["days"], res["start"], res["end"]
+    inc_files, mov_paths, kinds, tags, inc = res["inc_files"], res["mov_paths"], res["kinds"], res["tags"], res["inc"]
+    none_rows, moved_rows, excluded_rows = res["none_rows"], res["moved_rows"], res["excluded_rows"]
+    hall_only_codes, inc_rows_window, mov_rows_window = res["hall_only_codes"], res["inc_rows_window"], res["mov_rows_window"]
 
     # ── Excel ──
     wb = Workbook()
@@ -266,9 +329,11 @@ def build_no_movement_report(db, days: int, out_path: str, end: date | None = No
         ("ОРЛОГО БАЙСАН Ч ХӨДӨЛГӨӨНГҮЙ", f"сүүлийн {days} хоног", f"{start} – {end}"),
         ("Гаргасан", datetime.now().strftime("%Y-%m-%d %H:%M"), ""),
         ("Орлогын файл", ", ".join(f.original_filename for f in sorted(inc_files, key=lambda f: (f.year, f.month or 0))),
-         f"цонхон дотор {inc_rows_window:,} мөр"),
+         f"цонхон дотор {inc_rows_window:,} мөр · {res['inc_until']} хүртэл"),
         ("Хөдөлгөөний файл", ", ".join(f"{y} {kind_lbl.get(k, k)}" for y, k, _p in sorted(mov_paths)),
-         f"цонхон дотор {mov_rows_window:,} мөр (Кредит > 0)" + ("" if kinds == {"main", "liquor"} else "  ⚠ нэг л заалны файл орсон")),
+         f"цонхон дотор {mov_rows_window:,} мөр (Кредит > 0) · {res['mov_until']} хүртэл"
+         + ("" if kinds == {"main", "liquor"} else "  ⚠ нэг л заалны файл орсон")
+         + (f"  ⚠ {res['mov_until']}-аас хойш орсон бараа хөдөлгөөнгүй мэт гарч болно" if res["mov_until"] < end else "")),
         ("Барааны мастер (таг)", MASTER_PATH.name if tags else "⚠ олдсонгүй — таг шүүлт хийгдээгүй", f"{len(tags):,} бараа"),
         ("", "", ""),
         ("Агуулахад орлого авсан бараа (цонх)", len(inc), "Заалд шууд орсон орлогыг тооцоогүй"),
@@ -301,3 +366,51 @@ def build_no_movement_report(db, days: int, out_path: str, end: date | None = No
             "excluded_by_tag": len(excluded_rows), "hall_only": len(hall_only_codes),
             "income_rows": inc_rows_window, "movement_rows": mov_rows_window,
             "movement_kinds": sorted(kinds), "master_tags": len(tags)}
+
+
+# ── PDF (утсанд) — «Хөдөлгөөнгүй» жагсаалт агуулахын тагаар, барааны зурагтай ─────────────
+
+def _fmt_qty(v: float) -> str:
+    return f"{v:,.0f}" if abs(v - round(v)) < 1e-9 else f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
+def build_no_movement_pdf(db, days: int, end: date | None = None, wait_s: float = 45) -> tuple[bytes, dict]:
+    from app.services.mobile_pdf import build_product_list_pdf, fmt_d, image_stats, master_products, wait_images
+
+    r = compute_no_movement(db, days, end)
+    days, start, end, rows = r["days"], r["start"], r["end"], r["none_rows"]
+    master = master_products()
+    by_tag: dict[str, list] = {t: [] for t in WAREHOUSE_TAGS}
+    for row in rows:                                               # none_rows: дүнгээр (их → бага) эрэмбэлсэн
+        by_tag[_WH_TAGS_N[_norm_tag(row["tag"])]].append(row)
+    urls = [u for u in (master.get(x["code"], {}).get("img") for x in rows) if u]
+    wait_images(urls, timeout=wait_s)                              # proxy-ийн хугацаанд багтаана; үлдсэн нь дараагийн удаа
+
+    def item(x: dict) -> dict:
+        m = master.get(x["code"], {})
+        f, l = x["inc_first"], x["inc_last"]
+        when = f"{f:%m.%d}" if f == l else f"{f:%m.%d}–{l:%m.%d}"
+        st = x["stock"]
+        return {"img": m.get("img", ""), "name": x["name"] or m.get("name") or x["code"],
+                "line2": f"Код: {x['code']} · Орсон: {when}",
+                "line3": (f"Үлдэгдэл: {_fmt_qty(st)} ш" if st is not None else "Үлдэгдэл: —") if r["has_stock"] else None,
+                "right": f"{round(x['inc_amt']):,}₮" if x["inc_amt"] > 0 else "—",
+                "right_sub": f"{_fmt_qty(x['inc_qty'])} ш орсон", "right_color": "ink"}
+
+    groups = [(t, [item(x) for x in its]) for t, its in by_tag.items() if its]
+    total_amt = round(sum(x["inc_amt"] for x in rows))
+    note = (f"Сүүлийн {days} хоногт агуулахад орлого авсан ч заал руу огт гараагүй (хөдөлгөөний файлд гарсан мөргүй) "
+            f"агуулахын тагтай бараа. Өгөгдөл: орлого {fmt_d(r['inc_until'])}, хөдөлгөөн {fmt_d(min(r['mov_until'], end))} хүртэл.")
+    warn = []
+    if r["mov_until"] < end:
+        warn.append(f"Хөдөлгөөний файл {fmt_d(r['mov_until'])} хүртэл — түүнээс хойш орсон бараа хөдөлгөөнгүй мэт гарч болно.")
+    if r["kinds"] != {"main", "liquor"}:
+        warn.append("Зөвхөн " + ("Үндсэн заал" if "main" in r["kinds"] else "Архи заал") + "ны хөдөлгөөний файл орсон.")
+    pdf = build_product_list_pdf(
+        title="Хөдөлгөөнгүй барааны жагсаалт", period=f"{fmt_d(start)} – {fmt_d(end)}", groups=groups,
+        group_noun="агуулах",
+        box={"label": "Агуулахад орсон ч огт хөдөлгөөнгүй", "big": f"{len(rows):,} бараа",
+             "small": f"Орлогын дүн: {total_amt:,}₮"},
+        note=note, warn=" ".join(warn) or None, empty_text="Энэ хугацаанд хөдөлгөөнгүй бараа алга.")
+    return pdf, {"days": days, "start": start.isoformat(), "end": end.isoformat(), "count": len(rows),
+                 "images": {"total": len(urls), **image_stats(urls)}}

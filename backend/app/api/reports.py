@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 from pathlib import Path
+from urllib.parse import quote
 import time
 
 from app.api.deps import get_db, require_role
@@ -283,6 +284,27 @@ def run_no_movement(
         filename=f"no_movement_{d}d_{ts}.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@router.get("/no-movement/pdf")
+def no_movement_pdf(
+    days: int = 7,
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Хөдөлгөөнгүй барааны жагсаалт — утсан дээр үзэх PDF (агуулахын тагаар, барааны зурагтай).
+    Excel-тэй ижил тооцоо; кэшгүй зургийг ≤45 сек татаж хүлээнэ (үлдсэн нь дараагийн удаа бэлэн)."""
+    d = max(1, min(int(days or 7), 365))
+    try:
+        from app.scripts.no_movement_report import build_no_movement_pdf, ReportInputError
+        pdf, st = build_no_movement_pdf(db, d)
+    except ReportInputError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Хөдөлгөөнгүй барааны PDF гаргахад алдаа гарлаа: {e}")
+    fname = f"Хөдөлгөөнгүй_бараа_{st['start']}_{st['end']}.pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f"attachment; filename=no_movement_{d}d.pdf; filename*=UTF-8''{quote(fname)}"})
 
 
 @router.post("/run/last_purchase_price")

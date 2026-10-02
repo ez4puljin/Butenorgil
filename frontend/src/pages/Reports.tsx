@@ -567,6 +567,10 @@ export default function Reports() {
   const [movDays, setMovDays] = useState<number>(7);
   const [incomeYears, setIncomeYears] = useState<Record<number, number>>({});   // year → файлын тоо
   const [movYears, setMovYears] = useState<Record<number, { main: boolean; liquor: boolean }>>({});
+  // Хөдөлгөөнгүй — утсанд үзэх PDF (зурагтай)
+  const [nmPdfBusy, setNmPdfBusy] = useState(false);
+  const [nmPdfFile, setNmPdfFile] = useState<File | null>(null);
+  useEffect(() => { setNmPdfFile(null); }, [movDays]);
 
   const loadStatus = async () => {
     try {
@@ -660,6 +664,28 @@ export default function Reports() {
     } finally {
       setRunning(null);
     }
+  };
+
+  const downloadNoMovementPdf = async () => {
+    setNmPdfBusy(true); setNmPdfFile(null);
+    try {
+      const r = await api.get("/reports/no-movement/pdf", { params: { days: movDays }, responseType: "blob", timeout: 240000 });
+      const name = `Хөдөлгөөнгүй_бараа_${movDays}хоног_${ymd(new Date())}.pdf`;
+      const f = new File([r.data], name, { type: "application/pdf" });
+      setNmPdfFile(f);
+      const url = URL.createObjectURL(f);
+      const a = document.createElement("a");
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (e: any) {
+      alert(await blobDetail(e, "PDF гаргахад алдаа гарлаа."));
+    } finally { setNmPdfBusy(false); }
+  };
+  const canShareNm = !!nmPdfFile && typeof navigator !== "undefined" && !!navigator.canShare && navigator.canShare({ files: [nmPdfFile] });
+  const shareNm = async () => {
+    if (!nmPdfFile) return;
+    try { await navigator.share({ files: [nmPdfFile], title: "Хөдөлгөөнгүй барааны жагсаалт" }); } catch { /* цуцалсан */ }
   };
 
   // Карт бэлэн эсэхийг шалгах
@@ -869,10 +895,28 @@ export default function Reports() {
                   ) : (
                     <>
                       <Download size={13} />
-                      Татах
+                      {card.key === "no_movement" ? "Excel татах" : "Татах"}
                     </>
                   )}
                 </button>
+                {card.key === "no_movement" && (
+                  <>
+                    <button
+                      onClick={downloadNoMovementPdf}
+                      disabled={nmPdfBusy || ready === false}
+                      className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-apple bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {nmPdfBusy ? <RefreshCw size={13} className="animate-spin" /> : <FileDown size={13} />}
+                      {nmPdfBusy ? "PDF бэлдэж байна…" : "PDF татах (утсанд, зурагтай)"}
+                    </button>
+                    {canShareNm && (
+                      <button onClick={shareNm}
+                        className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-apple border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100">
+                        <Share2 size={13} /> PDF хуваалцах
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           );
