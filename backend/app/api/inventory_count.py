@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -10,8 +10,9 @@ import re
 
 from app.api.deps import get_db, require_role
 
-from app.models.inventory_count import InventoryCount, InventoryCountFile
+from app.models.inventory_count import InventoryCount, InventoryCountFile, InventoryCountNote
 from app.models.kpi import KpiAdminDailyTask, KpiChecklistEntry, KpiDailyChecklist
+from app.services.inventory_compare import build_compare, compare_pdf, read_count_sheet
 
 router = APIRouter(prefix="/inventory-count", tags=["inventory-count"])
 
@@ -159,23 +160,6 @@ def _normalize_code(value) -> str:
     return s
 
 
-def _to_float(value) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            return float(value)
-        except Exception:
-            return None
-    s = str(value).strip().replace(",", "")
-    if not s or s.lower() == "nan":
-        return None
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-
 def _decode_text_file(path: Path) -> str:
     raw = path.read_bytes()
     for enc in ("utf-8-sig", "utf-8", "cp1251", "cp1252"):
@@ -206,53 +190,6 @@ def _build_txt_code_index(txt_files: list[InventoryCountFile]) -> dict[str, list
                 continue
             code_index.setdefault(code, []).append((person_name, line_no))
     return code_index
-
-
-def _read_discrepancy_rows(excel_path: Path) -> list[dict]:
-    import pandas as pd
-
-    df = pd.read_excel(excel_path, header=None, dtype=object)
-    if df.empty:
-        return []
-
-    header_row = -1
-    scan_rows = min(len(df), 30)
-    for i in range(scan_rows):
-        c0 = str(df.iat[i, 0]).strip().lower() if df.shape[1] > 0 else ""
-        c3 = str(df.iat[i, 3]).strip().lower() if df.shape[1] > 3 else ""
-        c4 = str(df.iat[i, 4]).strip().lower() if df.shape[1] > 4 else ""
-        if "код" in c0 and ("зөрүү" in c4 or "тоо" in c3):
-            header_row = i
-            break
-
-    start_idx = header_row + 1 if header_row >= 0 else 0
-    out: list[dict] = []
-    for i in range(start_idx, len(df)):
-        code = _normalize_code(df.iat[i, 0] if df.shape[1] > 0 else None)
-        if not code:
-            continue
-
-        name_raw = df.iat[i, 1] if df.shape[1] > 1 else ""
-        name = "" if name_raw is None else str(name_raw).strip()
-        if name.lower() == "nan":
-            name = ""
-
-        balance = _to_float(df.iat[i, 2] if df.shape[1] > 2 else None)
-        counted = _to_float(df.iat[i, 3] if df.shape[1] > 3 else None)
-        diff = _to_float(df.iat[i, 4] if df.shape[1] > 4 else None)
-        if diff is None:
-            diff = (counted or 0.0) - (balance or 0.0)
-        unit_price = _to_float(df.iat[i, 5] if df.shape[1] > 5 else None)
-
-        out.append({
-            "code": code,
-            "name": name,
-            "balance": balance,
-            "counted": counted,
-            "diff": diff,
-            "unit_price": unit_price,
-        })
-    return out
 
 
 MASTER_FILE_PATH = Path("app/data/outputs/master_latest.xlsx")
@@ -743,7 +680,7 @@ def export_discrepancy_excel(
     ).all()
     txt_index = _build_txt_code_index(txt_files)
 
-    source_rows = _read_discrepancy_rows(excel_path)
+    source_rows = read_count_sheet(excel_path)                    # Зөрүү = Тооллого − Програм (дутагдал сөрөг)
     # Master эксэлээс байршлын tag + зургийн URL байгаа эсэхийг код-оор татна
     master_lookup = _master_loc_image_lookup()
 
@@ -805,10 +742,10 @@ def export_discrepancy_excel(
             r.get("name") or "",
             loc_tag,
             zurag,
-            _int_if_whole(r.get("balance")),
+            _int_if_whole(r.get("program")),
             _int_if_whole(r.get("counted")),
             _int_if_whole(diff),
-            _int_if_whole(r.get("unit_price")),
+            _int_if_whole(r.get("price")),
             source_info,
         ])
         out_count += 1
@@ -846,6 +783,122 @@ def export_discrepancy_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={ascii_fallback}; filename*=UTF-8''{utf8_quoted}"},
     )
+
+
+class NoteIn(BaseModel):
+    code: str
+    note: str = ""
+
+
+def _count_excel(db: Session, count_id: int, excel_file_id: Optional[int]) -> tuple[InventoryCount, InventoryCountFile, Path]:
+    """Тооллого + түүний Excel (заагаагүй бол хамгийн сүүлд оруулсан)."""
+    c = db.query(InventoryCount).filter(InventoryCount.id == count_id).first()
+    if not c:
+        raise HTTPException(404, "Тооллого олдсонгүй")
+    q = db.query(InventoryCountFile).filter(
+        InventoryCountFile.inventory_count_id == count_id,
+        InventoryCountFile.file_type == "excel",
+    )
+    if excel_file_id is not None:
+        f = q.filter(InventoryCountFile.id == excel_file_id).first()
+    else:
+        f = q.order_by(InventoryCountFile.uploaded_at.desc(), InventoryCountFile.id.desc()).first()
+    if not f:
+        raise HTTPException(400, "Тооллогоны Эксэл файл (.xlsx) оруулаагүй байна")
+    p = Path(f.saved_path or "")
+    if not p.exists():
+        raise HTTPException(404, "Тооллогоны Эксэл файл дискнээс олдсонгүй")
+    return c, f, p
+
+
+def _compare_data(db: Session, c: InventoryCount, p: Path) -> dict:
+    try:
+        rows = read_count_sheet(p)
+    except Exception as e:
+        raise HTTPException(400, f"Тооллогын хуудсыг уншиж чадсангүй: {e}")
+    if not rows:
+        raise HTTPException(400, "Тооллогын хуудсанд барааны мөр олдсонгүй "
+                                 "(Код · Нэр · Үлдэгдэл: Програм, Тооллого · Зөрүү тоо · Зарах үнэ).")
+    notes = {
+        n.item_code: {"note": n.note or "", "by": n.updated_by or "",
+                      "at": n.updated_at.isoformat() if n.updated_at else None}
+        for n in db.query(InventoryCountNote).filter(InventoryCountNote.inventory_count_id == c.id)
+    }
+    return build_compare(rows, notes)
+
+
+@router.get("/counts/{count_id}/compare")
+def compare_count(
+    count_id: int,
+    excel_file_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Тооллогын хуудас: таарсан / таараагүй, брэндээр бүлэглэсэн, илүүдэл·дутагдлын нийлбэр, тайлбар."""
+    c, f, p = _count_excel(db, count_id, excel_file_id)
+    data = _compare_data(db, c, p)
+    return {
+        "count": {"id": c.id, "warehouse_label": WAREHOUSE_MAP.get(c.warehouse_key, {}).get("label", c.warehouse_key),
+                  "count_date": c.count_date.isoformat(), "description": c.description or ""},
+        "file": {"id": f.id, "original_filename": f.original_filename,
+                 "uploaded_at": f.uploaded_at.isoformat() if f.uploaded_at else None},
+        "files": [{"id": x.id, "original_filename": x.original_filename,
+                   "uploaded_at": x.uploaded_at.isoformat() if x.uploaded_at else None}
+                  for x in sorted((x for x in c.files if x.file_type == "excel"),
+                                  key=lambda x: (x.uploaded_at or datetime.min, x.id), reverse=True)],
+        **data,
+    }
+
+
+@router.put("/counts/{count_id}/notes")
+def save_count_note(
+    count_id: int,
+    body: NoteIn,
+    db: Session = Depends(get_db),
+    u=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Барааны илүүдэл/дутагдлын шалтгааны тайлбар — хоосон бол устгана."""
+    if not db.query(InventoryCount.id).filter(InventoryCount.id == count_id).first():
+        raise HTTPException(404, "Тооллого олдсонгүй")
+    code = _normalize_code(body.code)
+    if not code:
+        raise HTTPException(400, "Барааны код хоосон байна")
+    text_ = (body.note or "").strip()[:1000]
+    n = db.query(InventoryCountNote).filter(
+        InventoryCountNote.inventory_count_id == count_id, InventoryCountNote.item_code == code,
+    ).first()
+    if not text_:
+        if n:
+            db.delete(n)
+            db.commit()
+        return {"code": code, "note": "", "note_by": "", "note_at": None}
+    if not n:
+        n = InventoryCountNote(inventory_count_id=count_id, item_code=code)
+        db.add(n)
+    n.note = text_
+    n.updated_by = getattr(u, "username", "") or ""
+    n.updated_at = datetime.utcnow()
+    db.commit()
+    return {"code": code, "note": n.note, "note_by": n.updated_by, "note_at": n.updated_at.isoformat()}
+
+
+@router.get("/counts/{count_id}/compare/pdf")
+def compare_count_pdf(
+    count_id: int,
+    excel_file_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Зөрүүтэй бүх бараа — A4 хэвтээ, хуудас бүрт тооллогын огноо, тайлбар, хуудасны дугаар."""
+    from urllib.parse import quote
+    c, f, p = _count_excel(db, count_id, excel_file_id)
+    data = _compare_data(db, c, p)
+    wh = WAREHOUSE_MAP.get(c.warehouse_key, {}).get("label", c.warehouse_key)
+    pdf = compare_pdf(warehouse=wh, count_date=c.count_date, description=c.description or "",
+                      file_name=f.original_filename or "", data=data)
+    fname = f"Тооллогын_зөрүү_{wh}_{c.count_date.isoformat()}.pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f"inline; filename=count_{count_id}_diff.pdf; filename*=UTF-8''{quote(fname)}"})
 
 
 @router.get("/calendar")

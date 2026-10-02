@@ -2,7 +2,7 @@
 
   • Барааны зураг: мастерын imageUrl (erxes read-file) — `&width=` жижиг хувилбарыг татаж
     app/data/image_cache-д хадгална (дахин татахгүй; HEIC/0 байт → «зураггүй»).
-  • Мастер: код → нэр, ангилал, нэгж үнэ, зураг (master_latest.xlsx, mtime-кэш).
+  • Мастер: код → нэр, ангилал, брэнд, нэгж үнэ, зураг (master_latest.xlsx, mtime-кэш).
   • build_product_list_pdf(): 360×780pt (iPhone харьцаа) хуудас — лого, гарчиг, огноо, онцлох хайрцаг,
     дарж шилжих бүлгийн жагсаалт (+ bookmark), бүлгээр мөрүүд: зураг · нэр · 1-2 мөр мэдээлэл · баруун талын утга.
 
@@ -48,7 +48,7 @@ def _price(v) -> float:
         return 0.0
 
 
-# ── Мастер (код → нэр, ангилал, үнэ, зураг) ─────────────────────────────────────
+# ── Мастер (код → нэр, ангилал, брэнд, үнэ, зураг) ──────────────────────────────
 
 _MASTER: dict = {"mtime": None, "map": {}}
 _MASTER_LOCK = threading.Lock()
@@ -76,6 +76,7 @@ def master_products() -> dict[str, dict]:
                 continue
             img = str(g(r, "imageUrl") or "").strip()
             out[code] = {"name": str(g(r, "Нэр") or "").strip(), "cat": str(g(r, "Ангилал нэр") or "").strip(),
+                         "brand": str(g(r, "Брэнд нэр") or "").strip(),
                          "price": _price(g(r, "Нэгж үнэ")), "img": img if img.startswith("http") else ""}
         _MASTER.update(mtime=mtime, map=out)
         return out

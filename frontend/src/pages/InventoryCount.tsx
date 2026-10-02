@@ -21,9 +21,11 @@ import {
   Square,
   ClipboardCheck,
   Upload,
+  ListChecks,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
+import InventoryCountCompare from "./InventoryCountCompare";
 
 // ─── Types ────────────────────────────────────────────────────
 type WarehouseDef = { key: string; label: string; color: string; bg: string };
@@ -157,6 +159,9 @@ export default function InventoryCount() {
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<CountRecord | null>(null);
 
+  // Тооллогын хуудас — таарсан / таараагүй харьцуулалт (fileId null = хамгийн сүүлд оруулсан Excel)
+  const [compare, setCompare] = useState<{ countId: number; fileId: number | null } | null>(null);
+
   // Calendar
   const now = new Date();
   const [calYear, setCalYear] = useState(now.getFullYear());
@@ -250,6 +255,7 @@ export default function InventoryCount() {
       await api.post(`/inventory-count/counts/${countId}/upload-excel`, fd);
       showFlash("Excel файл оруулагдлаа");
       await loadData();
+      setCompare({ countId, fileId: null });                    // оруулсан даруйд таарсан / таараагүйг харуулна
     } catch (e: any) { showFlash(e?.response?.data?.detail ?? "Excel оруулахад алдаа", false); }
     finally { setBusy(false); }
   };
@@ -722,6 +728,15 @@ export default function InventoryCount() {
                                         </span>
                                         <div className="flex items-center gap-1.5">
                                           <button
+                                            onClick={(e) => { e.stopPropagation(); setCompare({ countId: c.id, fileId: null }); }}
+                                            disabled={excelFiles.length === 0}
+                                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                            title="Тооллогын хуудсыг таарсан / таараагүйгээр, брэндээр харах · тайлбар бичих · хэвлэх"
+                                          >
+                                            <ListChecks size={12} />
+                                            Таарсан / таараагүй
+                                          </button>
+                                          <button
                                             onClick={(e) => { e.stopPropagation(); handleDownloadCountDiff(c.id); }}
                                             disabled={busy || excelFiles.length === 0}
                                             className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
@@ -759,6 +774,13 @@ export default function InventoryCount() {
                                                 <span className="text-xs text-gray-700 truncate">{f.original_filename}</span>
                                               </div>
                                               <div className="flex items-center gap-0.5 shrink-0">
+                                                <button
+                                                  onClick={(e) => { e.stopPropagation(); setCompare({ countId: c.id, fileId: f.id }); }}
+                                                  className="rounded-lg p-1.5 text-gray-400 hover:text-emerald-700 hover:bg-emerald-50"
+                                                  title="Таарсан / таараагүй харах"
+                                                >
+                                                  <ListChecks size={13} />
+                                                </button>
                                                 <button
                                                   onClick={(e) => { e.stopPropagation(); handleDownload(f.id, f.original_filename); }}
                                                   className="rounded-lg p-1.5 text-gray-400 hover:text-[#0071E3] hover:bg-blue-50"
@@ -1195,6 +1217,11 @@ export default function InventoryCount() {
             </div>
           </motion.div>
         </div>
+      )}
+
+      {/* ═══════ Тооллогын хуудас: таарсан / таараагүй ═══════ */}
+      {compare && (
+        <InventoryCountCompare countId={compare.countId} fileId={compare.fileId} onClose={() => setCompare(null)} />
       )}
     </motion.div>
   );

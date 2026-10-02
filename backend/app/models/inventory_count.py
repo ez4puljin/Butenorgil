@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -35,6 +35,7 @@ class InventoryCount(Base):
         back_populates="inventory_count",
         cascade="all, delete-orphan",
     )
+    notes = relationship("InventoryCountNote", cascade="all, delete-orphan")
 
 
 class InventoryCountFile(Base):
@@ -50,3 +51,22 @@ class InventoryCountFile(Base):
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
     inventory_count = relationship("InventoryCount", back_populates="files")
+
+
+class InventoryCountNote(Base):
+    """Зөрүүтэй барааны илүүдэл/дутагдлын шалтгааны тайлбар — тооллого × барааны код.
+    Excel-ийг дахин оруулсан ч код таарвал тайлбар хэвээр үлдэнэ."""
+    __tablename__ = "inventory_count_notes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    inventory_count_id = Column(
+        Integer, ForeignKey("inventory_counts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    item_code = Column(String(64), nullable=False)
+    note = Column(Text, default="")
+    updated_by = Column(String(100), default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("inventory_count_id", "item_code", name="uq_inventory_count_note"),
+    )
