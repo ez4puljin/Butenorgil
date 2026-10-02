@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from app.services import code128
+
 COMPANY = "Бүтэн-Оргил ХХК"
 MASTER_FILE = Path("app/data/outputs/master_latest.xlsx")
 IMG_CACHE = Path("app/data/image_cache")
@@ -198,10 +200,27 @@ RED = (185, 28, 28)
 IMG = 60.0
 RIGHT_W = 84.0
 COLORS = {"green": GREEN, "gray": GRAY, "ink": INK, "red": RED}
+BC_H = 22.0                   # баркодын өндөр
+BC_X_MAX = 2.0                # модулийн өргөн ≤2pt (6 оронтой код ≈136pt). 1.5pt-ийг кодын ард нэг мөрөнд
+                              # тавихад zxing 13 нягтралаар 3 алдаж 4 буруу уншсан; тусдаа мөрөнд 1.75–2pt → 0/≤1
 
 
 def fmt_d(d) -> str:
     return f"{d:%Y.%m.%d}"
+
+
+def _barcode_x(value: str, tw: float) -> float:
+    """Мөрөнд багтах модулийн өргөн — хоёр талд 10X чөлөөт зай (quiet zone)."""
+    return min(BC_X_MAX, tw / (sum(code128.modules(value)) + 20))
+
+
+def draw_barcode(pdf, value: str, x0: float, y0: float, X: float, h: float) -> None:
+    """Code128 — вектор зураас (томруулахад бүдгэрэхгүй)."""
+    pdf.set_fill_color(0, 0, 0)
+    for k, m in enumerate(code128.modules(value)):
+        if k % 2 == 0:
+            pdf.rect(x0, y0, m * X, h, style="F")
+        x0 += m * X
 
 
 def fit(pdf, text: str, w: float) -> str:
@@ -216,9 +235,11 @@ def fit(pdf, text: str, w: float) -> str:
 def build_product_list_pdf(*, title: str, period: str, groups: list, group_noun: str = "ангилал",
                            box: dict | None = None, note: str | None = None, warn: str | None = None,
                            empty_text: str = "Бараа алга.", footer_left: str = COMPANY,
-                           footer_link: str | None = None, doc_title: str | None = None) -> bytes:
-    """groups = [(label, [row, …]), …]; row = {"img", "name", "line2", "line3"?, "right", "right_sub"?,
-    "right_color"?: green|gray|ink|red}. box = {"label", "big", "small"?, "link"?} — нүүрний онцлох хайрцаг.
+                           footer_link: str | None = None, doc_title: str | None = None,
+                           right_w: float = RIGHT_W) -> bytes:
+    """groups = [(label, [row, …]), …]; row = {"img", "name", "lines": [str, …], "barcode"?, "right",
+    "right_sub"?, "right_color"?: green|gray|ink|red}. barcode — lines[0]-ийн шууд дор Code128.
+    box = {"label", "big", "small"?, "link"?} — нүүрний онцлох хайрцаг.
     note (саарал) / warn (улаан) — хайрцгийн доорх тайлбар; бараа алга бол нүүрэнд empty_text."""
     from fpdf import FPDF
     from PIL import Image
@@ -349,7 +370,7 @@ def build_product_list_pdf(*, title: str, period: str, groups: list, group_noun:
         y = M
 
     tx = M + IMG + 10
-    tw = CW - IMG - 10 - RIGHT_W - 4
+    tw = CW - IMG - 10 - right_w - 4
     new_page()                                                    # нүүр + бүлгийн жагсаалтаас тусдаа
     for gi, (label, its) in enumerate(groups):
         if y > PH - FOOT - 32 - 80:                                # толгой + дор хаяж 1 бараа багтахгүй бол
@@ -363,8 +384,13 @@ def build_product_list_pdf(*, title: str, period: str, groups: list, group_noun:
             if len(lines) > 3:
                 lines = lines[:3]
                 lines[2] = lines[2].rstrip()[: max(1, len(lines[2]) - 2)] + "…"
-            extra = [t for t in (it.get("line2"), it.get("line3")) if t]
-            text_h = len(lines) * 14.5 + sum(4 + 13 for _ in extra)
+            # мэдээллийн мөрүүд: (бичвэр, өндөр, баркодын модулийн өргөн | None) — баркод lines[0]-ийн дор
+            info = []
+            for k, t in enumerate(x for x in it.get("lines") or [] if x):
+                info.append((t, 13.0, None))
+                if k == 0 and code128.supported(it.get("barcode") or ""):
+                    info.append(("", BC_H, _barcode_x(it["barcode"], tw)))
+            text_h = len(lines) * 14.5 + sum(4 + h for _, h, _ in info)
             rh = max(IMG + 12, text_h + 16)
             if y + rh > PH - FOOT - 2:
                 new_page()
@@ -401,25 +427,29 @@ def build_product_list_pdf(*, title: str, period: str, groups: list, group_noun:
             yy = ty + len(lines) * 14.5
             pdf.set_text_color(*GRAY)
             pdf.set_font("Main", "", 10)
-            for t in extra:
-                pdf.set_xy(tx, yy + 4)
-                pdf.cell(tw, 13, fit(pdf, t, tw))
-                yy += 4 + 13
+            for t, h, X in info:
+                yy += 4
+                if t:
+                    pdf.set_xy(tx, yy)
+                    pdf.cell(tw, 13, fit(pdf, t, tw))
+                if X:                                              # зургийн хүрээнээс 10X зай (10pt нь gutter)
+                    draw_barcode(pdf, it["barcode"], tx + max(0.0, 10 * X - 10), yy, X, h)
+                yy += h
             # баруун талын утга (+ доор нь тайлбар)
             sub = it.get("right_sub")
             right, size = it.get("right") or "", 13.5
             pdf.set_text_color(*COLORS.get(it.get("right_color") or "green", GREEN))
             pdf.set_font("Main", "B", size)
-            while size > 9 and pdf.get_string_width(right) > RIGHT_W - 2:   # том дүн багтахгүй бол жижигрүүлнэ
+            while size > 9 and pdf.get_string_width(right) > right_w - 2:   # том дүн багтахгүй бол жижигрүүлнэ
                 size -= 0.5
                 pdf.set_font("Main", "B", size)
-            pdf.set_xy(PW - M - RIGHT_W, y + rh / 2 - (15 if sub else 9))
-            pdf.cell(RIGHT_W, 18, right, align="R")
+            pdf.set_xy(PW - M - right_w, y + rh / 2 - (15 if sub else 9))
+            pdf.cell(right_w, 18, right, align="R")
             if sub:
                 pdf.set_text_color(*GRAY)
                 pdf.set_font("Main", "", 9)
-                pdf.set_xy(PW - M - RIGHT_W, y + rh / 2 + 3)
-                pdf.cell(RIGHT_W, 12, fit(pdf, sub, RIGHT_W), align="R")
+                pdf.set_xy(PW - M - right_w, y + rh / 2 + 3)
+                pdf.cell(right_w, 12, fit(pdf, sub, right_w), align="R")
             # тусгаарлагч
             pdf.set_draw_color(*LINE)
             pdf.line(tx, y + rh, PW - M, y + rh)

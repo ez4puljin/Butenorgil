@@ -257,7 +257,7 @@ def _fmt_price(p: float) -> str:
 
 def _build_pdf(d1: date, d2: date, data: dict) -> bytes:
     period = fmt_d(d1) if d1 == d2 else f"{fmt_d(d1)} – {fmt_d(d2)}"
-    groups = [(label, [{"img": it["img"], "name": it["name"] or it["code"], "line2": f"Код: {it['code']}",
+    groups = [(label, [{"img": it["img"], "name": it["name"] or it["code"], "lines": [f"Код: {it['code']}"],
                         "right": _fmt_price(it["price"]), "right_color": "green" if it["price"] else "gray"}
                        for it in its])
               for _, label, its in data["groups"]]

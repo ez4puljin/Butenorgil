@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import threading
+from datetime import date, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -124,6 +125,18 @@ def get_location_stock_map(db: Session, location: str) -> dict[str, float]:
         return out
     # warehouse (default)
     return _cached_map_for(rows.get(BAL_KIND_WAREHOUSE, ""))
+
+
+def get_balance_as_of(db: Session, kind: str = BAL_KIND_WAREHOUSE) -> date | None:
+    """Үлдэгдлийн файл аль өдрийн эцсийн үлдэгдэл вэ: Эрхэт автомат sync → файлын нэрийн огноо
+    (тэр өдрийн эцсийн үлдэгдэл), гараар оруулсан → оруулсан өдөр (серверийн локал цаг)."""
+    rec = db.query(BalanceFile).filter(BalanceFile.kind == kind).first()
+    if not rec or not rec.stored_filename:
+        return None
+    m = re.match(r"Эрхэт_автомат_(\d{4}-\d{2}-\d{2})", rec.original_filename or "")
+    if m:
+        return date.fromisoformat(m.group(1))
+    return rec.uploaded_at.replace(tzinfo=timezone.utc).astimezone().date() if rec.uploaded_at else None
 
 
 def warm_balance_maps() -> None:

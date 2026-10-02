@@ -147,7 +147,7 @@ def compute_no_movement(db, days: int, end: date | None = None) -> dict:
     from app.api.tag_location_check import _get_income_rows
     from app.models.income_file import IncomeFile
     from app.models.movement_file import MovementFile
-    from app.services.balance_stock import get_location_stock_map
+    from app.services.balance_stock import get_balance_as_of, get_location_stock_map
 
     days = max(1, min(int(days), 365))
     end = end or date.today()
@@ -257,7 +257,8 @@ def compute_no_movement(db, days: int, end: date | None = None) -> dict:
     return {"days": days, "start": start, "end": end, "inc_files": inc_files, "mov_paths": mov_paths, "kinds": kinds,
             "tags": tags, "inc": inc, "none_rows": none_rows, "moved_rows": moved_rows, "excluded_rows": excluded_rows,
             "hall_only_codes": hall_only_codes, "inc_rows_window": inc_rows_window, "mov_rows_window": mov_rows_window,
-            "inc_until": inc_until, "mov_until": mov_until, "has_stock": bool(stock)}
+            "inc_until": inc_until, "mov_until": mov_until, "has_stock": bool(stock),
+            "stock_as_of": get_balance_as_of(db) if stock else None}
 
 
 def build_no_movement_report(db, days: int, out_path: str, end: date | None = None) -> dict:
@@ -333,7 +334,8 @@ def build_no_movement_report(db, days: int, out_path: str, end: date | None = No
         ("Хөдөлгөөний файл", ", ".join(f"{y} {kind_lbl.get(k, k)}" for y, k, _p in sorted(mov_paths)),
          f"цонхон дотор {mov_rows_window:,} мөр (Кредит > 0) · {res['mov_until']} хүртэл"
          + ("" if kinds == {"main", "liquor"} else "  ⚠ нэг л заалны файл орсон")
-         + (f"  ⚠ {res['mov_until']}-аас хойш орсон бараа хөдөлгөөнгүй мэт гарч болно" if res["mov_until"] < end else "")),
+         + (f"  ⚠ файл {res['mov_until']} хүртэл — түүнээс хойш орсон бараа хөдөлгөөнгүй мэт гарч болно"
+            if res["mov_until"] < end else "")),
         ("Барааны мастер (таг)", MASTER_PATH.name if tags else "⚠ олдсонгүй — таг шүүлт хийгдээгүй", f"{len(tags):,} бараа"),
         ("", "", ""),
         ("Агуулахад орлого авсан бараа (цонх)", len(inc), "Заалд шууд орсон орлогыг тооцоогүй"),
@@ -386,31 +388,34 @@ def build_no_movement_pdf(db, days: int, end: date | None = None, wait_s: float 
     urls = [u for u in (master.get(x["code"], {}).get("img") for x in rows) if u]
     wait_images(urls, timeout=wait_s)                              # proxy-ийн хугацаанд багтаана; үлдсэн нь дараагийн удаа
 
+    as_of = f" ({fmt_d(r['stock_as_of'])})" if r["stock_as_of"] else ""
+
     def item(x: dict) -> dict:
         m = master.get(x["code"], {})
         f, l = x["inc_first"], x["inc_last"]
         when = f"{f:%m.%d}" if f == l else f"{f:%m.%d}–{l:%m.%d}"
         st = x["stock"]
-        return {"img": m.get("img", ""), "name": x["name"] or m.get("name") or x["code"],
-                "line2": f"Код: {x['code']} · Орсон: {when}",
-                "line3": (f"Үлдэгдэл: {_fmt_qty(st)} ш" if st is not None else "Үлдэгдэл: —") if r["has_stock"] else None,
-                "right": f"{round(x['inc_amt']):,}₮" if x["inc_amt"] > 0 else "—",
-                "right_sub": f"{_fmt_qty(x['inc_qty'])} ш орсон", "right_color": "ink"}
+        lines = [f"Код: {x['code']} · Буусан: {when}"]
+        if r["has_stock"]:
+            lines.append(f"Үлдэгдэл{as_of}: " + (f"{_fmt_qty(st)} ш" if st is not None else "—"))
+        return {"img": m.get("img", ""), "name": x["name"] or m.get("name") or x["code"], "lines": lines,
+                "barcode": x["code"], "right": f"{_fmt_qty(x['inc_qty'])} ш", "right_sub": "буусан",
+                "right_color": "ink"}
 
     groups = [(t, [item(x) for x in its]) for t, its in by_tag.items() if its]
-    total_amt = round(sum(x["inc_amt"] for x in rows))
-    note = (f"Сүүлийн {days} хоногт агуулахад орлого авсан ч заал руу огт гараагүй (хөдөлгөөний файлд гарсан мөргүй) "
-            f"агуулахын тагтай бараа. Өгөгдөл: орлого {fmt_d(r['inc_until'])}, хөдөлгөөн {fmt_d(min(r['mov_until'], end))} хүртэл.")
+    note = (f"Агуулахын тагтай, заал руу огт гараагүй (хөдөлгөөний файлд гарсан мөргүй) бараа; орлогын дүнгээр "
+            f"(ихээс бага руу) эрэмбэлсэн. Өгөгдөл: орлого {fmt_d(r['inc_until'])}, хөдөлгөөн {fmt_d(min(r['mov_until'], end))} "
+            f"хүртэл" + (f"; үлдэгдэл {fmt_d(r['stock_as_of'])} өдрийн байдлаар." if r["stock_as_of"] else "."))
     warn = []
     if r["mov_until"] < end:
-        warn.append(f"Хөдөлгөөний файл {fmt_d(r['mov_until'])} хүртэл — түүнээс хойш орсон бараа хөдөлгөөнгүй мэт гарч болно.")
+        warn.append(f"Хөдөлгөөний файл {fmt_d(r['mov_until'])} хүртэл — түүнээс хойш буусан бараа хөдөлгөөнгүй мэт гарч болно.")
     if r["kinds"] != {"main", "liquor"}:
         warn.append("Зөвхөн " + ("Үндсэн заал" if "main" in r["kinds"] else "Архи заал") + "ны хөдөлгөөний файл орсон.")
     pdf = build_product_list_pdf(
         title="Хөдөлгөөнгүй барааны жагсаалт", period=f"{fmt_d(start)} – {fmt_d(end)}", groups=groups,
         group_noun="агуулах",
-        box={"label": "Агуулахад орсон ч огт хөдөлгөөнгүй", "big": f"{len(rows):,} бараа",
-             "small": f"Орлогын дүн: {total_amt:,}₮"},
-        note=note, warn=" ".join(warn) or None, empty_text="Энэ хугацаанд хөдөлгөөнгүй бараа алга.")
+        box={"label": f"Сүүлийн {days} хоногт агуулахад буусан ч", "big": f"{len(rows):,} бараа",
+             "small": "огт хөдөлгөөнгүй (заал руу гараагүй)"},
+        note=note, warn=" ".join(warn) or None, empty_text="Энэ хугацаанд хөдөлгөөнгүй бараа алга.", right_w=64)
     return pdf, {"days": days, "start": start.isoformat(), "end": end.isoformat(), "count": len(rows),
                  "images": {"total": len(urls), **image_stats(urls)}}
