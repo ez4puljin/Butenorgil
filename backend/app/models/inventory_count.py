@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Text, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Date, DateTime, Float, ForeignKey, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -54,8 +54,8 @@ class InventoryCountFile(Base):
 
 
 class InventoryCountNote(Base):
-    """Зөрүүтэй барааны илүүдэл/дутагдлын шалтгааны тайлбар — тооллого × барааны код.
-    Excel-ийг дахин оруулсан ч код таарвал тайлбар хэвээр үлдэнэ."""
+    """Зөрүүтэй барааны илүүдэл/дутагдлын шалтгааны тайлбар ба тоолсон тооны залруулга —
+    тооллого × барааны код. Excel-ийг дахин оруулсан ч код таарвал хэвээр үлдэнэ."""
     __tablename__ = "inventory_count_notes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -65,7 +65,11 @@ class InventoryCountNote(Base):
     item_code = Column(String(64), nullable=False)
     note = Column(Text, default="")
     updated_by = Column(String(100), default="")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)       # тайлбарыг сүүлд зассан (API тохируулна)
+    # Тоолсон тооны залруулга (дахин тоолсон г.м.) — None бол файлын анхны утга хүчинтэй
+    counted_override = Column(Float, nullable=True)
+    counted_by = Column(String(100), default="")
+    counted_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("inventory_count_id", "item_code", name="uq_inventory_count_note"),

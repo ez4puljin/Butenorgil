@@ -5,8 +5,9 @@
 дутагдал сөрөг (−28), илүүдэл эерэг (+7). Зөрүүний дүн = Зөрүү × Зарах үнэ.
 
 Брэнд — барааны мастерын «Брэнд нэр». Бүлгүүд монгол цагаан толгойн дарааллаар, бүлэг дотор
-зөрүүний дүнгийн үнэмлэхүй хэмжээгээр (их → бага). Хэвлэх PDF: A4 хэвтээ, хуудас бүрт огноо,
-тайлбар, хуудасны дугаар.
+анхны зөрүүний дүнгийн үнэмлэхүй хэмжээгээр (их → бага). Тоолсон тоог гараар засвал (дахин тоолсон
+г.м.) Зөрүү, дүн, нийлбэр нь засварласан утгаар, анхны утга нь *_orig талбарт хадгалагдана.
+Хэвлэх PDF: A4 хэвтээ, хуудас бүрт огноо, тайлбар, хуудасны дугаар.
 """
 from __future__ import annotations
 
@@ -104,6 +105,9 @@ def totals(rows: list[dict]) -> dict:
     t["unmatched"] = t["surplus_n"] + t["shortage_n"]
     t["net_qty"] = t["surplus_qty"] + t["shortage_qty"]
     t["net_amt"] = t["surplus_amt"] + t["shortage_amt"]
+    t["adjusted"] = sum(1 for r in rows if r.get("adjusted"))
+    t["net_qty_orig"] = round(sum(r.get("diff_orig", r["diff"]) for r in rows), 3)
+    t["net_amt_orig"] = round(sum(r.get("amount_orig", r["amount"]) for r in rows), 2)
     for k in ("surplus_qty", "shortage_qty", "net_qty"):
         t[k] = round(t[k], 3)
     for k in ("surplus_amt", "shortage_amt", "net_amt"):
@@ -112,8 +116,9 @@ def totals(rows: list[dict]) -> dict:
 
 
 def build_compare(rows: list[dict], notes: dict[str, dict]) -> dict:
-    """Брэнд, үнэ, зөрүүний дүн, тайлбарыг нэмж брэндээр бүлэглэнэ.
-    notes = {code: {"note", "by", "at"}}. Зарах үнэ файлд байхгүй бол мастерын нэгж үнэ."""
+    """Брэнд, үнэ, зөрүүний дүн, тайлбар, тоолсон тооны залруулгыг нэмж брэндээр бүлэглэнэ.
+    notes = {code: {"note", "by", "at", "counted"?, "counted_by"?, "counted_at"?}}.
+    Зарах үнэ файлд байхгүй бол мастерын нэгж үнэ."""
     from app.services.mobile_pdf import master_products
     master = master_products()
     groups: dict[str, list] = {}
@@ -123,14 +128,21 @@ def build_compare(rows: list[dict], notes: dict[str, dict]) -> dict:
         if not r["price"] and m and m.get("price"):
             r["price"] = m["price"]
         r["price"] = r["price"] or 0.0
-        r["amount"] = round(r["diff"] * r["price"], 2)
         n = notes.get(r["code"]) or {}
+        r["counted_orig"], r["diff_orig"] = r["counted"], r["diff"]
+        r["adjusted"] = n.get("counted") is not None
+        if r["adjusted"]:
+            r["counted"] = n["counted"]
+            r["diff"] = round(n["counted"] - (r["program"] or 0.0), 3)
+        r["amount"] = round(r["diff"] * r["price"], 2)
+        r["amount_orig"] = round(r["diff_orig"] * r["price"], 2)
         r["note"], r["note_by"], r["note_at"] = n.get("note", ""), n.get("by", ""), n.get("at")
+        r["counted_by"], r["counted_at"] = n.get("counted_by", ""), n.get("counted_at")
         groups.setdefault(r["brand"], []).append(r)
     order = sorted(groups, key=lambda b: (_LAST.index(b) + 1 if b in _LAST else 0, mn_key(b)))
     out_rows, out_groups = [], []
     for b in order:
-        its = sorted(groups[b], key=lambda r: (-abs(r["amount"]), -abs(r["diff"]), mn_key(r["name"]), r["code"]))
+        its = sorted(groups[b], key=lambda r: (-abs(r["amount_orig"]), -abs(r["diff_orig"]), mn_key(r["name"]), r["code"]))
         out_rows += its
         out_groups.append({"brand": b, **totals(its)})
     return {"rows": out_rows, "groups": out_groups, "totals": totals(rows)}
@@ -153,8 +165,10 @@ def fa(v: float | None, sign: bool = False) -> str:
     return f"+{s}" if sign and v > 0 else s
 
 
-def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name: str, data: dict) -> bytes:
-    """Зөрүүтэй бүх бараа (бүх багана), брэндээр бүлэглэсэн; хуудас бүрт огноо, тайлбар, дугаар."""
+def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name: str, data: dict,
+                scope: str | None = None) -> bytes:
+    """Зөрүүтэй (эсвэл тоог нь зассан) бүх бараа, бүх багана, брэндээр бүлэглэсэн; хуудас бүрт огноо,
+    тайлбар, дугаар. scope — нэг брэндээр хязгаарласан бол түүний нэр (data нь аль хэдийн шүүгдсэн)."""
     from fpdf import FPDF
     from fpdf.enums import TableHeadingsDisplay
     from fpdf.fonts import FontFace
@@ -164,7 +178,7 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
     RED, GREEN, HEAD = (185, 28, 28), (21, 128, 61), (31, 78, 120)
     GROUP_BG, TOTAL_BG = (232, 240, 233), (219, 234, 254)
     printed = datetime.now().strftime("%Y.%m.%d %H:%M")
-    title = f"Тооллогын зөрүү — {warehouse}"
+    title = f"Тооллогын зөрүү — {warehouse}" + (f" · {scope}" if scope else "")
     when = f"Тооллого: {count_date:%Y.%m.%d}"
     desc = (description or "").strip() or "—"
 
@@ -213,7 +227,9 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
         f"Нийт {t['items']:,} бараа · таарсан {t['matched']:,} · таараагүй {t['unmatched']:,} — "
         f"илүүдэл {t['surplus_n']:,} ({fq(t['surplus_qty'], True)} ш, {fa(t['surplus_amt'], True)}₮), "
         f"дутагдал {t['shortage_n']:,} ({fq(t['shortage_qty'])} ш, {fa(t['shortage_amt'])}₮). "
-        f"Бүх барааны нийт зөрүү: {fq(t['net_qty'], True)} ш, {fa(t['net_amt'], True)}₮"))
+        f"{'Нийт' if scope else 'Бүх барааны нийт'} зөрүү: {fq(t['net_qty'], True)} ш, {fa(t['net_amt'], True)}₮"
+        + (f" · тоог нь зассан {t['adjusted']:,} бараа (анхны нийт зөрүү {fq(t['net_qty_orig'], True)} ш, "
+           f"{fa(t['net_amt_orig'], True)}₮)" if t["adjusted"] else "")))
     pdf.ln(4)
 
     widths = (22, 50, 200, 52, 52, 50, 58, 74)
@@ -228,7 +244,7 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
 
     by_brand: dict[str, list] = {}
     for r in data["rows"]:
-        if r["diff"]:
+        if r["diff"] or r.get("adjusted"):                         # зассан бараа 0 болсон ч хэвлэгдэнэ
             by_brand.setdefault(r["brand"], []).append(r)
     groups = [g for g in data["groups"] if g["brand"] in by_brand]
     if not groups:
@@ -264,8 +280,12 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
                 row.cell(r["code"])
                 row.cell(r["name"])
                 row.cell(fq(r["program"]))
-                row.cell(fq(r["counted"]))
-                row.cell(fq(r["diff"], True), style=signed(r["diff"]))
+                if r.get("adjusted"):                              # засварласан утга + доор нь анхны утга
+                    row.cell(f"{fq(r['counted'])}\n(анх {fq(r['counted_orig'])})")
+                    row.cell(f"{fq(r['diff'], True)}\n(анх {fq(r['diff_orig'], True)})", style=signed(r["diff"]))
+                else:
+                    row.cell(fq(r["counted"]))
+                    row.cell(fq(r["diff"], True), style=signed(r["diff"]))
                 row.cell(fa(r["price"]))
                 row.cell(fa(r["amount"], True), style=signed(r["amount"]))
                 row.cell(r["note"] or "")
@@ -282,7 +302,7 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
     pdf.set_fill_color(*TOTAL_BG)
     pdf.set_text_color(*INK)
     pdf.set_font("Main", "B", 10)
-    pdf.cell(pdf.epw * 0.5, 22, "  БҮХ БАРААНЫ НИЙТ ЗӨРҮҮ", fill=True)
+    pdf.cell(pdf.epw * 0.5, 22, f"  НИЙТ ЗӨРҮҮ — {scope}" if scope else "  БҮХ БАРААНЫ НИЙТ ЗӨРҮҮ", fill=True)
     pdf.set_font("Main", "", 9)
     pdf.cell(pdf.epw * 0.5, 22, (
         f"илүүдэл {fq(t['surplus_qty'], True)} ш ({fa(t['surplus_amt'], True)}₮) · дутагдал {fq(t['shortage_qty'])} ш "

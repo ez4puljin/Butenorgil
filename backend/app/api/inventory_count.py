@@ -12,7 +12,7 @@ from app.api.deps import get_db, require_role
 
 from app.models.inventory_count import InventoryCount, InventoryCountFile, InventoryCountNote
 from app.models.kpi import KpiAdminDailyTask, KpiChecklistEntry, KpiDailyChecklist
-from app.services.inventory_compare import build_compare, compare_pdf, read_count_sheet
+from app.services.inventory_compare import build_compare, compare_pdf, read_count_sheet, totals as compare_totals
 
 router = APIRouter(prefix="/inventory-count", tags=["inventory-count"])
 
@@ -790,6 +790,11 @@ class NoteIn(BaseModel):
     note: str = ""
 
 
+class AdjustIn(BaseModel):
+    code: str
+    counted: Optional[float] = None          # None → файлын анхны тоолсон тоо руу буцаана
+
+
 def _count_excel(db: Session, count_id: int, excel_file_id: Optional[int]) -> tuple[InventoryCount, InventoryCountFile, Path]:
     """Тооллого + түүний Excel (заагаагүй бол хамгийн сүүлд оруулсан)."""
     c = db.query(InventoryCount).filter(InventoryCount.id == count_id).first()
@@ -821,10 +826,23 @@ def _compare_data(db: Session, c: InventoryCount, p: Path) -> dict:
                                  "(Код · Нэр · Үлдэгдэл: Програм, Тооллого · Зөрүү тоо · Зарах үнэ).")
     notes = {
         n.item_code: {"note": n.note or "", "by": n.updated_by or "",
-                      "at": n.updated_at.isoformat() if n.updated_at else None}
+                      "at": n.updated_at.isoformat() if n.updated_at and n.note else None,
+                      "counted": n.counted_override, "counted_by": n.counted_by or "",
+                      "counted_at": n.counted_at.isoformat() if n.counted_at else None}
         for n in db.query(InventoryCountNote).filter(InventoryCountNote.inventory_count_id == c.id)
     }
     return build_compare(rows, notes)
+
+
+def _note_row(db: Session, count_id: int, raw_code: str) -> tuple[str, Optional[InventoryCountNote]]:
+    if not db.query(InventoryCount.id).filter(InventoryCount.id == count_id).first():
+        raise HTTPException(404, "Тооллого олдсонгүй")
+    code = _normalize_code(raw_code)
+    if not code:
+        raise HTTPException(400, "Барааны код хоосон байна")
+    return code, db.query(InventoryCountNote).filter(
+        InventoryCountNote.inventory_count_id == count_id, InventoryCountNote.item_code == code,
+    ).first()
 
 
 @router.get("/counts/{count_id}/compare")
@@ -857,20 +875,15 @@ def save_count_note(
     db: Session = Depends(get_db),
     u=Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Барааны илүүдэл/дутагдлын шалтгааны тайлбар — хоосон бол устгана."""
-    if not db.query(InventoryCount.id).filter(InventoryCount.id == count_id).first():
-        raise HTTPException(404, "Тооллого олдсонгүй")
-    code = _normalize_code(body.code)
-    if not code:
-        raise HTTPException(400, "Барааны код хоосон байна")
+    """Барааны илүүдэл/дутагдлын шалтгааны тайлбар — хоосон бол арилгана."""
+    code, n = _note_row(db, count_id, body.code)
     text_ = (body.note or "").strip()[:1000]
-    n = db.query(InventoryCountNote).filter(
-        InventoryCountNote.inventory_count_id == count_id, InventoryCountNote.item_code == code,
-    ).first()
     if not text_:
-        if n:
+        if n and n.counted_override is None:
             db.delete(n)
-            db.commit()
+        elif n:
+            n.note = ""
+        db.commit()
         return {"code": code, "note": "", "note_by": "", "note_at": None}
     if not n:
         n = InventoryCountNote(inventory_count_id=count_id, item_code=code)
@@ -882,21 +895,60 @@ def save_count_note(
     return {"code": code, "note": n.note, "note_by": n.updated_by, "note_at": n.updated_at.isoformat()}
 
 
+@router.put("/counts/{count_id}/adjust")
+def adjust_counted(
+    count_id: int,
+    body: AdjustIn,
+    db: Session = Depends(get_db),
+    u=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Тоолсон тоог засах (дахин тоолсон г.м.) — Зөрүү = засварласан тоо − Програм. counted=None бол
+    файлын анхны утга руу буцаана. Анхны утга файлд хэвээр — харьцуулалтад хажууд нь харагдана."""
+    import math
+    code, n = _note_row(db, count_id, body.code)
+    if body.counted is not None and (not math.isfinite(body.counted) or not 0 <= body.counted <= 1e9):
+        raise HTTPException(400, "Тоолсон тоо 0-ээс багагүй тоо байх ёстой")
+    if body.counted is None:
+        if n and not (n.note or "").strip():
+            db.delete(n)
+        elif n:
+            n.counted_override, n.counted_by, n.counted_at = None, "", None
+        db.commit()
+        return {"code": code, "counted": None, "counted_by": "", "counted_at": None}
+    if not n:
+        n = InventoryCountNote(inventory_count_id=count_id, item_code=code, note="")
+        db.add(n)
+    n.counted_override = round(body.counted, 3)
+    n.counted_by = getattr(u, "username", "") or ""
+    n.counted_at = datetime.utcnow()
+    db.commit()
+    return {"code": code, "counted": n.counted_override, "counted_by": n.counted_by,
+            "counted_at": n.counted_at.isoformat()}
+
+
 @router.get("/counts/{count_id}/compare/pdf")
 def compare_count_pdf(
     count_id: int,
     excel_file_id: Optional[int] = Query(None),
+    brand: Optional[str] = Query(None, max_length=200),
     db: Session = Depends(get_db),
     _=Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Зөрүүтэй бүх бараа — A4 хэвтээ, хуудас бүрт тооллогын огноо, тайлбар, хуудасны дугаар."""
+    """Зөрүүтэй бүх бараа — A4 хэвтээ, хуудас бүрт тооллогын огноо, тайлбар, хуудасны дугаар.
+    brand өгвөл зөвхөн тэр брэнд (дэлгэц дээр брэндээр шүүсэн үед)."""
     from urllib.parse import quote
     c, f, p = _count_excel(db, count_id, excel_file_id)
     data = _compare_data(db, c, p)
+    if brand:
+        rows = [r for r in data["rows"] if r["brand"] == brand]
+        if not rows:
+            raise HTTPException(404, f"«{brand}» брэндийн бараа энэ тооллогын хуудсанд алга")
+        data = {"rows": rows, "groups": [g for g in data["groups"] if g["brand"] == brand],
+                "totals": compare_totals(rows)}
     wh = WAREHOUSE_MAP.get(c.warehouse_key, {}).get("label", c.warehouse_key)
     pdf = compare_pdf(warehouse=wh, count_date=c.count_date, description=c.description or "",
-                      file_name=f.original_filename or "", data=data)
-    fname = f"Тооллогын_зөрүү_{wh}_{c.count_date.isoformat()}.pdf"
+                      file_name=f.original_filename or "", data=data, scope=brand or None)
+    fname = f"Тооллогын_зөрүү_{wh}_{c.count_date.isoformat()}" + (f"_{brand}" if brand else "") + ".pdf"
     return Response(content=pdf, media_type="application/pdf", headers={
         "Content-Disposition": f"inline; filename=count_{count_id}_diff.pdf; filename*=UTF-8''{quote(fname)}"})
 

@@ -376,6 +376,21 @@ def ensure_product_monthly_sales_schema():
     os.makedirs(pms_dir, exist_ok=True)
 
 
+def ensure_inventory_count_notes_schema():
+    """Тооллогын тайлбар (inventory_count_notes) — шинэ table бол create_all() үүсгэнэ.
+    Тоолсон тооны залруулгын багана (counted_override, counted_by, counted_at) дутуу бол ALTER хийнэ."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_count_notes)")).fetchall()]
+        if not cols:
+            return  # create_all() үүсгэнэ
+        if "counted_override" not in cols:
+            conn.execute(text("ALTER TABLE inventory_count_notes ADD COLUMN counted_override FLOAT"))
+        if "counted_by" not in cols:
+            conn.execute(text("ALTER TABLE inventory_count_notes ADD COLUMN counted_by VARCHAR(100) DEFAULT ''"))
+        if "counted_at" not in cols:
+            conn.execute(text("ALTER TABLE inventory_count_notes ADD COLUMN counted_at DATETIME"))
+
+
 def ensure_product_yearly_movement_schema():
     """Хөдөлгөөний файл (movement_files) — шинэ table бол create_all() үүсгэнэ.
     Хуучин parse-загварын product_yearly_movement table-ыг (хэрэв байгаа бол)
@@ -1063,6 +1078,7 @@ def startup():
     ensure_product_yearly_movement_schema()
     ensure_income_files_schema()
     ensure_balance_files_schema()
+    ensure_inventory_count_notes_schema()
     ensure_product_pallets_schema()
     ensure_erkhet_import_logs_schema()
     ensure_attendance_schema()
