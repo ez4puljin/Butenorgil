@@ -24,6 +24,7 @@ backend/app/data/backups/
 backend/app/data/erkhet_imports/
 backend/app/data/image_cache/
 backend/app/data/new_products/
+backend/app/data/extensions/
 backend/app/uploaded_documents/
 backend/app/data/known_permission_keys.json
 backend/app/data/universal_pages.json

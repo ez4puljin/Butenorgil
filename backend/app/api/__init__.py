@@ -37,3 +37,4 @@ from app.api.brand_orderers import router as brand_orderers_router
 from app.api.po_history import router as po_history_router
 from app.api.arrival_list import router as arrival_list_router
 from app.api.sales_analytics import router as sales_analytics_router
+from app.api.chrome_extensions import router as chrome_extensions_router

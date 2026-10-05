@@ -6,7 +6,7 @@ import {
   FileText, Building2, Truck, X, CalendarDays, CheckSquare,
   BadgeCheck, Settings2, Sparkles, BarChart3, MoreHorizontal,
   ChevronRight, User, Menu, ClipboardCheck, Bot, PackageCheck, Landmark, History, Timer,
-  Clock, CalendarClock, ReceiptText, Store, CalendarCheck, Tag, ScanBarcode, Layers, Columns3, TrendingUp,
+  Clock, CalendarClock, ReceiptText, Store, CalendarCheck, Tag, ScanBarcode, Layers, Columns3, TrendingUp, Puzzle,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 import ConnectionBanner from "../ConnectionBanner";
@@ -53,6 +53,7 @@ const navItems: NavItem[] = [
   { to: "/attendance",         label: "Цаг бүртгэл",         icon: Clock,          pageKey: "attendance" },
   { to: "/attendance/admin",   label: "Цаг бүртгэл (Админ)", icon: CalendarClock,  pageKey: "attendance_admin" },
   { to: "/documents",          label: "Бичиг баримт",        icon: FileText,       pageKey: "documents" },
+  { to: "/extensions",         label: "Extension",           icon: Puzzle,         pageKey: "extensions" },
 ];
 
 const BOTTOM_NAV_MAX = 4;

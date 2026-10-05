@@ -43,6 +43,7 @@ PERMISSION_MANIFEST = [
     {"key": "min_stock",           "label": "Доод үлдэгдэл"},
     {"key": "audit_log",           "label": "Үйлдлийн бүртгэл"},
     {"key": "documents",           "label": "Бичиг баримт"},
+    {"key": "extensions",          "label": "Extension (Chrome)", "universal": True},
     {"key": "admin_panel",         "label": "Удирдлага"},
 ]
 
