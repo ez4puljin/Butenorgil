@@ -792,7 +792,8 @@ class NoteIn(BaseModel):
 
 class AdjustIn(BaseModel):
     code: str
-    counted: Optional[float] = None          # None → файлын анхны тоолсон тоо руу буцаана
+    counted: Optional[float] = None          # илгээсэн бол: тоо → залруулга, null → файлын анхны утга
+    program: Optional[float] = None          # програм үлдэгдэл — мөн адил
 
 
 def _count_excel(db: Session, count_id: int, excel_file_id: Optional[int]) -> tuple[InventoryCount, InventoryCountFile, Path]:
@@ -828,7 +829,9 @@ def _compare_data(db: Session, c: InventoryCount, p: Path) -> dict:
         n.item_code: {"note": n.note or "", "by": n.updated_by or "",
                       "at": n.updated_at.isoformat() if n.updated_at and n.note else None,
                       "counted": n.counted_override, "counted_by": n.counted_by or "",
-                      "counted_at": n.counted_at.isoformat() if n.counted_at else None}
+                      "counted_at": n.counted_at.isoformat() if n.counted_at else None,
+                      "program": n.program_override, "program_by": n.program_by or "",
+                      "program_at": n.program_at.isoformat() if n.program_at else None}
         for n in db.query(InventoryCountNote).filter(InventoryCountNote.inventory_count_id == c.id)
     }
     return build_compare(rows, notes)
@@ -879,7 +882,7 @@ def save_count_note(
     code, n = _note_row(db, count_id, body.code)
     text_ = (body.note or "").strip()[:1000]
     if not text_:
-        if n and n.counted_override is None:
+        if n and n.counted_override is None and n.program_override is None:
             db.delete(n)
         elif n:
             n.note = ""
@@ -902,28 +905,42 @@ def adjust_counted(
     db: Session = Depends(get_db),
     u=Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Тоолсон тоог засах (дахин тоолсон г.м.) — Зөрүү = засварласан тоо − Програм. counted=None бол
-    файлын анхны утга руу буцаана. Анхны утга файлд хэвээр — харьцуулалтад хажууд нь харагдана."""
+    """Тоолсон тоо ба/эсвэл програм үлдэгдлийг засах (дахин тоолсон, програмын алдаа г.м.) —
+    Зөрүү = Тоолсон − Програм. Илгээсэн талбар нь тоо бол залруулга, null бол файлын анхны утга руу
+    буцаана. Анхны утга файлд хэвээр — харьцуулалтад хажууд нь харагдана."""
     import math
     code, n = _note_row(db, count_id, body.code)
-    if body.counted is not None and (not math.isfinite(body.counted) or not 0 <= body.counted <= 1e9):
-        raise HTTPException(400, "Тоолсон тоо 0-ээс багагүй тоо байх ёстой")
-    if body.counted is None:
-        if n and not (n.note or "").strip():
-            db.delete(n)
-        elif n:
-            n.counted_override, n.counted_by, n.counted_at = None, "", None
-        db.commit()
-        return {"code": code, "counted": None, "counted_by": "", "counted_at": None}
+    fields = [f for f in ("counted", "program") if f in body.model_fields_set]
+    if not fields:
+        raise HTTPException(400, "Засах талбар (counted эсвэл program) алга")
+    for f in fields:
+        v = getattr(body, f)
+        if v is not None and not math.isfinite(v):
+            raise HTTPException(400, "Тоо буруу байна")
+        if f == "counted" and v is not None and not 0 <= v <= 1e9:
+            raise HTTPException(400, "Тоолсон тоо 0-ээс багагүй тоо байх ёстой")
+        if f == "program" and v is not None and not -1e9 <= v <= 1e9:
+            raise HTTPException(400, "Програм үлдэгдэл хэт их байна")
     if not n:
+        if all(getattr(body, f) is None for f in fields):
+            return {"code": code, **{k: v for f in fields for k, v in ((f, None), (f"{f}_by", ""), (f"{f}_at", None))}}
         n = InventoryCountNote(inventory_count_id=count_id, item_code=code, note="")
         db.add(n)
-    n.counted_override = round(body.counted, 3)
-    n.counted_by = getattr(u, "username", "") or ""
-    n.counted_at = datetime.utcnow()
+    who, now = getattr(u, "username", "") or "", datetime.utcnow()
+    for f in fields:
+        v = getattr(body, f)
+        setattr(n, f"{f}_override", None if v is None else round(v, 3))
+        setattr(n, f"{f}_by", "" if v is None else who)
+        setattr(n, f"{f}_at", None if v is None else now)
+    out = {"code": code}                                           # commit-оос өмнө (устгасан мөр expire болно)
+    for f in fields:
+        at = getattr(n, f"{f}_at")
+        out.update({f: getattr(n, f"{f}_override"), f"{f}_by": getattr(n, f"{f}_by") or "",
+                    f"{f}_at": at.isoformat() if at else None})
+    if n.counted_override is None and n.program_override is None and not (n.note or "").strip():
+        db.delete(n)
     db.commit()
-    return {"code": code, "counted": n.counted_override, "counted_by": n.counted_by,
-            "counted_at": n.counted_at.isoformat()}
+    return out
 
 
 @router.get("/counts/{count_id}/compare/pdf")

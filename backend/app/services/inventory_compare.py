@@ -5,8 +5,9 @@
 дутагдал сөрөг (−28), илүүдэл эерэг (+7). Зөрүүний дүн = Зөрүү × Зарах үнэ.
 
 Брэнд — барааны мастерын «Брэнд нэр». Бүлгүүд монгол цагаан толгойн дарааллаар, бүлэг дотор
-анхны зөрүүний дүнгийн үнэмлэхүй хэмжээгээр (их → бага). Тоолсон тоог гараар засвал (дахин тоолсон
-г.м.) Зөрүү, дүн, нийлбэр нь засварласан утгаар, анхны утга нь *_orig талбарт хадгалагдана.
+анхны зөрүүний дүнгийн үнэмлэхүй хэмжээгээр (их → бага). Тоолсон тоо эсвэл програм үлдэгдлийг гараар
+засвал (дахин тоолсон, програмын алдаа г.м.) Зөрүү, дүн, нийлбэр нь засварласан утгаар, анхны утга нь
+*_orig талбарт хадгалагдана.
 Хэвлэх PDF: A4 хэвтээ, хуудас бүрт огноо, тайлбар, хуудасны дугаар.
 """
 from __future__ import annotations
@@ -117,7 +118,7 @@ def totals(rows: list[dict]) -> dict:
 
 def build_compare(rows: list[dict], notes: dict[str, dict]) -> dict:
     """Брэнд, үнэ, зөрүүний дүн, тайлбар, тоолсон тооны залруулгыг нэмж брэндээр бүлэглэнэ.
-    notes = {code: {"note", "by", "at", "counted"?, "counted_by"?, "counted_at"?}}.
+    notes = {code: {"note", "by", "at", "counted"?, "counted_by"?, "counted_at"?, "program"?, …}}.
     Зарах үнэ файлд байхгүй бол мастерын нэгж үнэ."""
     from app.services.mobile_pdf import master_products
     master = master_products()
@@ -129,15 +130,21 @@ def build_compare(rows: list[dict], notes: dict[str, dict]) -> dict:
             r["price"] = m["price"]
         r["price"] = r["price"] or 0.0
         n = notes.get(r["code"]) or {}
-        r["counted_orig"], r["diff_orig"] = r["counted"], r["diff"]
-        r["adjusted"] = n.get("counted") is not None
-        if r["adjusted"]:
+        r["counted_orig"], r["program_orig"], r["diff_orig"] = r["counted"], r["program"], r["diff"]
+        r["counted_adjusted"] = n.get("counted") is not None
+        r["program_adjusted"] = n.get("program") is not None
+        r["adjusted"] = r["counted_adjusted"] or r["program_adjusted"]
+        if r["counted_adjusted"]:
             r["counted"] = n["counted"]
-            r["diff"] = round(n["counted"] - (r["program"] or 0.0), 3)
+        if r["program_adjusted"]:
+            r["program"] = n["program"]
+        if r["adjusted"]:
+            r["diff"] = round((r["counted"] or 0.0) - (r["program"] or 0.0), 3)
         r["amount"] = round(r["diff"] * r["price"], 2)
         r["amount_orig"] = round(r["diff_orig"] * r["price"], 2)
         r["note"], r["note_by"], r["note_at"] = n.get("note", ""), n.get("by", ""), n.get("at")
         r["counted_by"], r["counted_at"] = n.get("counted_by", ""), n.get("counted_at")
+        r["program_by"], r["program_at"] = n.get("program_by", ""), n.get("program_at")
         groups.setdefault(r["brand"], []).append(r)
     order = sorted(groups, key=lambda b: (_LAST.index(b) + 1 if b in _LAST else 0, mn_key(b)))
     out_rows, out_groups = [], []
@@ -279,13 +286,11 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
                 row.cell(str(no))
                 row.cell(r["code"])
                 row.cell(r["name"])
-                row.cell(fq(r["program"]))
-                if r.get("adjusted"):                              # засварласан утга + доор нь анхны утга
-                    row.cell(f"{fq(r['counted'])}\n(анх {fq(r['counted_orig'])})")
-                    row.cell(f"{fq(r['diff'], True)}\n(анх {fq(r['diff_orig'], True)})", style=signed(r["diff"]))
-                else:
-                    row.cell(fq(r["counted"]))
-                    row.cell(fq(r["diff"], True), style=signed(r["diff"]))
+                orig = lambda v, o, sign=False: f"{fq(v, sign)}\n(анх {fq(o, sign)})"   # засварласан + анхны утга
+                row.cell(orig(r["program"], r["program_orig"]) if r.get("program_adjusted") else fq(r["program"]))
+                row.cell(orig(r["counted"], r["counted_orig"]) if r.get("counted_adjusted") else fq(r["counted"]))
+                row.cell(orig(r["diff"], r["diff_orig"], True) if r.get("adjusted") else fq(r["diff"], True),
+                         style=signed(r["diff"]))
                 row.cell(fa(r["price"]))
                 row.cell(fa(r["amount"], True), style=signed(r["amount"]))
                 row.cell(r["note"] or "")

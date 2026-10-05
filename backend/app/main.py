@@ -378,7 +378,7 @@ def ensure_product_monthly_sales_schema():
 
 def ensure_inventory_count_notes_schema():
     """Тооллогын тайлбар (inventory_count_notes) — шинэ table бол create_all() үүсгэнэ.
-    Тоолсон тооны залруулгын багана (counted_override, counted_by, counted_at) дутуу бол ALTER хийнэ."""
+    Тоолсон тоо (counted_*) ба програм үлдэгдлийн (program_*) залруулгын багана дутуу бол ALTER хийнэ."""
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_count_notes)")).fetchall()]
         if not cols:
@@ -389,6 +389,13 @@ def ensure_inventory_count_notes_schema():
             conn.execute(text("ALTER TABLE inventory_count_notes ADD COLUMN counted_by VARCHAR(100) DEFAULT ''"))
         if "counted_at" not in cols:
             conn.execute(text("ALTER TABLE inventory_count_notes ADD COLUMN counted_at DATETIME"))
+        for pre in ("program",):
+            if f"{pre}_override" not in cols:
+                conn.execute(text(f"ALTER TABLE inventory_count_notes ADD COLUMN {pre}_override FLOAT"))
+            if f"{pre}_by" not in cols:
+                conn.execute(text(f"ALTER TABLE inventory_count_notes ADD COLUMN {pre}_by VARCHAR(100) DEFAULT ''"))
+            if f"{pre}_at" not in cols:
+                conn.execute(text(f"ALTER TABLE inventory_count_notes ADD COLUMN {pre}_at DATETIME"))
 
 
 def ensure_product_yearly_movement_schema():

@@ -4,14 +4,18 @@ import { api } from "../lib/api";
 
 // Тооллогын хуудас (Эрхэт) — таарсан / таараагүй, брэндээр бүлэглэсэн, шалтгааны тайлбартай.
 // Зөрүү = Тооллого − Програм (дутагдал сөрөг), Зөрүүний дүн = Зөрүү × Зарах үнэ.
-// Тоолсон тоо эсвэл зөрүүг засаж болно (дахин тоолсон г.м.) — анхны утга доор нь харагдана.
+// Програм үлдэгдэл, тоолсон тоо эсвэл зөрүүг засаж болно (дахин тоолсон, програмын алдаа г.м.) —
+// анхны утга доор нь харагдана.
 
 type Row = {
-  code: string; name: string; brand: string; program: number | null;
-  counted: number | null; counted_orig: number | null; diff: number; diff_orig: number;
-  price: number; amount: number; amount_orig: number; adjusted: boolean;
-  note: string; note_by: string; note_at: string | null; counted_by: string; counted_at: string | null;
+  code: string; name: string; brand: string;
+  program: number | null; program_orig: number | null; counted: number | null; counted_orig: number | null;
+  diff: number; diff_orig: number; price: number; amount: number; amount_orig: number;
+  adjusted: boolean; counted_adjusted: boolean; program_adjusted: boolean;
+  note: string; note_by: string; note_at: string | null;
+  counted_by: string; counted_at: string | null; program_by: string; program_at: string | null;
 };
+type Field = "counted" | "program";
 type Totals = {
   items: number; matched: number; unmatched: number; surplus_n: number; shortage_n: number;
   surplus_qty: number; shortage_qty: number; surplus_amt: number; shortage_amt: number; net_qty: number; net_amt: number;
@@ -63,10 +67,13 @@ function sumUp(rows: Row[]): Totals {
   return t;
 }
 
-/** Тоолсон тоог солиход Зөрүү, дүн дагаж өөрчлөгдөнө; null → файлын анхны утга. */
-function withCounted(r: Row, c: number | null): Row {
-  const diff = c == null ? r.diff_orig : Math.round((c - (r.program ?? 0)) * 1000) / 1000;
-  return { ...r, counted: c ?? r.counted_orig, diff, amount: Math.round(diff * r.price * 100) / 100, adjusted: c != null };
+/** Тоолсон тоо / програм үлдэгдлийг солиход Зөрүү, дүн дагаж өөрчлөгдөнө; null → файлын анхны утга. */
+function withValue(r: Row, f: Field, v: number | null): Row {
+  const x = { ...r, [f]: v ?? r[`${f}_orig`], [`${f}_adjusted`]: v != null } as Row;
+  x.adjusted = x.counted_adjusted || x.program_adjusted;
+  x.diff = x.adjusted ? Math.round(((x.counted ?? 0) - (x.program ?? 0)) * 1000) / 1000 : r.diff_orig;
+  x.amount = Math.round(x.diff * x.price * 100) / 100;
+  return x;
 }
 
 const blobDetail = async (e: any, fallback: string) => {
@@ -173,27 +180,31 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
       .catch(() => setNoteState((s) => ({ ...s, [code]: "error" }))));
   };
 
-  /** Тоолсон тоог засна (null = анхны утга руу буцаах). Зөрүүг засвал тоолсон = Програм + зөрүү. */
-  const saveCounted = (code: string, value: number | null) => {
+  /** Тоолсон тоо эсвэл програм үлдэгдлийг засна (null = анхны утга руу буцаах).
+   *  Зөрүүг засвал тоолсон = Програм + зөрүү. */
+  const saveValue = (code: string, f: Field, value: number | null) => {
     const prev = rows.find((r) => r.code === code);
     if (!prev) return;
-    if (value != null && (!Number.isFinite(value) || value < 0)) {
+    if (value != null && !Number.isFinite(value)) return;
+    if (f === "counted" && value != null && value < 0) {
       flash(`${code}: тоолсон тоо сөрөг гарч байна (${fq(value)}) — Програм ${fq(prev.program)}, зөрүүг шалгана уу.`);
       return;
     }
-    const c = value != null && prev.counted_orig != null && Math.abs(value - prev.counted_orig) < 1e-9 ? null : value;
-    if (c === (prev.adjusted ? prev.counted : null)) return;
-    setRows((rs) => rs.map((x) => (x.code === code ? withCounted(x, c) : x)));
+    const orig = prev[`${f}_orig`];
+    const v = value != null && orig != null && Math.abs(value - orig) < 1e-9 ? null : value;
+    if (v === (prev[`${f}_adjusted`] ? prev[f] : null)) return;
+    const key = `${code}:${f}`;
+    setRows((rs) => rs.map((x) => (x.code === code ? withValue(x, f, v) : x)));
     setPinned((p) => new Set(p).add(code));
-    setAdjState((s) => ({ ...s, [code]: "saving" }));
-    track(api.put(`/inventory-count/counts/${countId}/adjust`, { code, counted: c })
+    setAdjState((s) => ({ ...s, [key]: "saving" }));
+    track(api.put(`/inventory-count/counts/${countId}/adjust`, { code, [f]: v })
       .then((r) => {
-        setRows((rs) => rs.map((x) => (x.code === code ? { ...x, counted_by: r.data.counted_by, counted_at: r.data.counted_at } : x)));
-        markSaved(setAdjState, code);
+        setRows((rs) => rs.map((x) => (x.code === code ? { ...x, [`${f}_by`]: r.data[`${f}_by`], [`${f}_at`]: r.data[`${f}_at`] } : x)));
+        markSaved(setAdjState, key);
       })
       .catch((e) => {
-        setRows((rs) => rs.map((x) => (x.code === code ? prev : x)));
-        setAdjState((s) => ({ ...s, [code]: "error" }));
+        setRows((rs) => rs.map((x) => (x.code === code ? { ...withValue(x, f, prev[`${f}_adjusted`] ? prev[f] : null) } : x)));
+        setAdjState((s) => ({ ...s, [key]: "error" }));
         flash(e?.response?.data?.detail ?? `${code}: тоог хадгалж чадсангүй.`);
       }));
   };
@@ -316,7 +327,7 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
                     <th className="w-10 rounded-tl-lg px-2 py-2 text-center">№</th>
                     <th className="w-24 px-2 py-2">Код</th>
                     <th className="px-2 py-2">Нэр</th>
-                    <th className="w-20 px-2 py-2 text-right">Програм</th>
+                    <th className="w-24 px-2 py-2 text-right" title="Засах боломжтой — анхны утга доор нь">Програм ✎</th>
                     <th className="w-24 px-2 py-2 text-right" title="Засах боломжтой — анхны утга доор нь">Тооллого ✎</th>
                     <th className="w-24 px-2 py-2 text-right" title="Засах боломжтой — тоолсон = Програм + зөрүү">Зөрүү ✎</th>
                     <th className="w-24 px-2 py-2 text-right">Зарах үнэ</th>
@@ -336,36 +347,27 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
                         no += 1;
                         const draft = drafts[r.code];
                         const ns = noteState[r.code];
-                        const as = adjState[r.code];
-                        const by = r.counted_by ? `Зассан: ${r.counted_by} · ${when(r.counted_at)}` : "";
+                        const by = (f: Field) => (r[`${f}_by`] ? `Зассан: ${r[`${f}_by`]} · ${when(r[`${f}_at`])}` : "");
+                        const cell = (f: Field) => (
+                          <td className="border-b border-gray-100 px-1 py-1 text-right">
+                            <div className="relative">
+                              <NumInput value={r[f]} invalid={adjState[`${r.code}:${f}`] === "error"} onCommit={(v) => saveValue(r.code, f, v)} />
+                              <SaveIcon st={adjState[`${r.code}:${f}`]} />
+                            </div>
+                            {r[`${f}_adjusted`] && <Orig value={fq(r[`${f}_orig`])} title={by(f)} onReset={() => saveValue(r.code, f, null)} />}
+                          </td>
+                        );
                         return (
                           <tr key={`${b}-${r.code}`} className={`align-top ${r.adjusted ? "bg-violet-50/50" : ""} hover:bg-blue-50/40`}>
                             <td className="border-b border-gray-100 px-2 py-1.5 text-center tabular-nums text-gray-400">{no}</td>
                             <td className="border-b border-gray-100 px-2 py-1.5 font-mono text-[12px] text-gray-600">{r.code}</td>
                             <td className="border-b border-gray-100 px-2 py-1.5 text-gray-800">{r.name}</td>
-                            <td className="border-b border-gray-100 px-2 py-1.5 text-right tabular-nums">{fq(r.program)}</td>
-                            <td className="border-b border-gray-100 px-1 py-1 text-right">
-                              <div className="relative">
-                                <NumInput value={r.counted} invalid={as === "error"} onCommit={(v) => saveCounted(r.code, v)} />
-                                <span className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2">
-                                  {as === "saving" && <RefreshCw size={10} className="animate-spin text-gray-400" />}
-                                  {as === "saved" && <CheckCircle2 size={11} className="text-emerald-500" />}
-                                </span>
-                              </div>
-                              {r.adjusted && (
-                                <div className="flex items-center justify-end gap-1 px-1 text-[10.5px] text-gray-400" title={by}>
-                                  анх {fq(r.counted_orig)}
-                                  <button onClick={() => saveCounted(r.code, null)} className="rounded p-0.5 text-violet-500 hover:bg-violet-100"
-                                    title="Анхны утга руу буцаах">
-                                    <RotateCcw size={10} />
-                                  </button>
-                                </div>
-                              )}
-                            </td>
+                            {cell("program")}
+                            {cell("counted")}
                             <td className="border-b border-gray-100 px-1 py-1 text-right">
                               <NumInput value={r.diff} sign className={`font-bold ${tone(r.diff)}`}
-                                onCommit={(v) => saveCounted(r.code, Math.round(((r.program ?? 0) + v) * 1000) / 1000)} />
-                              {r.adjusted && <div className="px-1 text-[10.5px] text-gray-400" title={by}>анх {fq(r.diff_orig, true)}</div>}
+                                onCommit={(v) => saveValue(r.code, "counted", Math.round(((r.program ?? 0) + v) * 1000) / 1000)} />
+                              {r.adjusted && <Orig value={fq(r.diff_orig, true)} title={[by("program"), by("counted")].filter(Boolean).join("\n")} />}
                             </td>
                             <td className="border-b border-gray-100 px-2 py-1.5 text-right tabular-nums text-gray-600">{fa(r.price)}</td>
                             <td className={`border-b border-gray-100 px-2 py-1.5 text-right font-semibold tabular-nums ${tone(r.amount)}`}>
@@ -414,6 +416,29 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
         )}
       </div>
     </div>
+  );
+}
+
+/** Засварласан нүдний доорх «анх …» (+ ↺ анхны утга руу буцаах). */
+function Orig({ value, title, onReset }: { value: string; title: string; onReset?: () => void }) {
+  return (
+    <div className="flex items-center justify-end gap-1 px-1 text-[10.5px] text-gray-400" title={title}>
+      анх {value}
+      {onReset && (
+        <button onClick={onReset} className="rounded p-0.5 text-violet-500 hover:bg-violet-100" title="Анхны утга руу буцаах">
+          <RotateCcw size={10} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SaveIcon({ st }: { st?: SaveState }) {
+  return (
+    <span className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2">
+      {st === "saving" && <RefreshCw size={10} className="animate-spin text-gray-400" />}
+      {st === "saved" && <CheckCircle2 size={11} className="text-emerald-500" />}
+    </span>
   );
 }
 
