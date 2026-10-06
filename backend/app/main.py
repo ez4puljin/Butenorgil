@@ -1170,6 +1170,12 @@ async def _dashboard_warm_loop():
             await asyncio.to_thread(_sa_warm)
         except Exception as e:
             print(f"[sales-analytics] warm алдаа: {e}")
+        # Ebarimt — сар бүрийн тайлан + НӨАТ баримтын задаргаа (нэгтгэсэн тайлан шууд гарна)
+        try:
+            from app.api.ebarimt_report import warm_ebarimt_reports
+            await asyncio.to_thread(warm_ebarimt_reports)
+        except Exception as e:
+            print(f"[ebarimt] warm алдаа: {e}")
         await asyncio.sleep(60)  # 60с тутамд snapshot-уудыг шинэ байлгана
 
 

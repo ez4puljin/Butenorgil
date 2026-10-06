@@ -17,6 +17,10 @@ Endpoint-ууд:
   GET    /ebarimt/download          — ?year&month&kind → түүхий файл татах
   DELETE /ebarimt/{year}/{month}/{kind}
   GET    /ebarimt/report            — ?year&month → нэгтгэсэн тайлан (mtime cache)
+  GET    /ebarimt/months            — ?year → сар бүрт оруулсан файлын төрлүүд
+  GET    /ebarimt/report-range      — ?year&months=1,2,3 → сонгосон сарууд/бүтэн оны нэгтгэл
+  GET    /ebarimt/entries           — ?year&months&code&which=orgil|harhorin → харилцагчийн шивсэн
+                                      Ebarimt (НӨАТ) баримтууд — тайлан дээрх Ebarimt дүнгийн задаргаа
 """
 from __future__ import annotations
 
@@ -183,6 +187,48 @@ def _parse_ebarimt(path: Path) -> tuple[dict[str, float], dict[str, int]]:
     return sums, counts
 
 
+_entries_cache: dict[str, tuple[float, list[str], list[dict]]] = {}
+
+
+def _cell(v):
+    """Excel-ийн утгыг JSON-д: NaN→None, огноо→YYYY-MM-DD, numpy→python."""
+    import pandas as pd
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (pd.Timestamp, datetime)):
+        return v.strftime("%Y-%m-%d")
+    if hasattr(v, "item"):
+        return v.item()
+    return v
+
+
+def _ebarimt_entries(path: Path) -> tuple[list[str], list[dict]]:
+    """EBARIMT/EBARIMT2.xlsx → (баганууд, мөр бүр {_ttd, …файлын баганууд}). mtime cache."""
+    key, mtime = str(path), path.stat().st_mtime
+    hit = _entries_cache.get(key)
+    if hit and hit[0] == mtime:
+        return hit[1], hit[2]
+    df = _read_excel(path, header=0)
+    cols = [str(c) for c in df.columns]
+    ttd_col = next((c for c in df.columns if "ТТД" in str(c)), None)
+    if ttd_col is None:                                       # _parse_ebarimt-тэй ижил fallback
+        ttd_col = df.columns[4] if len(df.columns) > 4 else df.columns[-1]
+    rows = []
+    for rec in df.to_dict("records"):
+        ttd = _norm_code(rec.get(ttd_col))
+        if not ttd or ttd.lower() == "nan":
+            continue
+        rows.append({"_ttd": ttd, **{str(k): _cell(v) for k, v in rec.items()}})
+    with _report_lock:
+        _entries_cache[key] = (mtime, cols, rows)
+    return cols, rows
+
+
 # ── Report computation (mtime cache) ─────────────────────────────────────────
 
 _report_cache: dict[tuple[int, int], dict] = {}
@@ -299,6 +345,25 @@ def get_report(db: Session, year: int, month: int) -> dict:
         payload["missing"] = [k for k, p in paths.items() if p is None]
         _report_cache[key] = {"sig": sig, "payload": payload}
         return payload
+
+
+def warm_ebarimt_reports() -> None:
+    """main-ийн warm loop-оос — энэ болон өмнөх оны оруулсан сар бүрийн тайлан, баримтын задаргааг
+    cache-д бэлдэнэ (нэгтгэсэн тайлан, НӨАТ задаргаа анх нээхэд хүлээхгүй). Өөрчлөгдөөгүй бол агшин зуур."""
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        this_year = datetime.now().year
+        yms = sorted({(r.year, r.month) for r in db.query(EbarimtFile.year, EbarimtFile.month).distinct()
+                      if r.year >= this_year - 1})
+        for y, m in yms:
+            get_report(db, y, m)
+            for kind in ("ebarimt", "ebarimt2"):
+                p = _stored_paths(db, y, m).get(kind)
+                if p is not None:
+                    _ebarimt_entries(p)
+    finally:
+        db.close()
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -472,16 +537,8 @@ def delete_slot(
     return {"ok": True, "removed": 1}
 
 
-@router.get("/report")
-def report(
-    year: int = Query(...),
-    month: int = Query(...),
-    db: Session = Depends(get_db),
-    u: User = Depends(require_role("admin", "supervisor", "manager")),
-):
-    """Нэгтгэсэн тайлан: харилцагч бүрээр худалдан авалт vs Ebarimt шивэлт,
-    хариуцсан ажилтнаар шүүх боломжтой. Файлууд өөрчлөгдөөгүй бол cache-ээс."""
-    _validate_ym(year, month)
+def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
+    """Сарын тайлан (cache) + тэмдэглэл, харилцагчийн гар засвар (overlay) → (payload, мөрүүд)."""
     payload = get_report(db, year, month)
     maps = payload.get("maps") or {}
 
@@ -523,6 +580,20 @@ def report(
                     "vat_harhorin": vh, "cnt_harhorin": nh, "diff_harhorin": row["purchase_harhorin"] - vh,
                 })
         out_rows.append(row)
+    return payload, out_rows
+
+
+@router.get("/report")
+def report(
+    year: int = Query(...),
+    month: int = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Нэгтгэсэн тайлан: харилцагч бүрээр худалдан авалт vs Ebarimt шивэлт,
+    хариуцсан ажилтнаар шүүх боломжтой. Файлууд өөрчлөгдөөгүй бол cache-ээс."""
+    _validate_ym(year, month)
+    payload, out_rows = month_rows(db, year, month)
 
     rows = db.query(EbarimtFile).filter(
         EbarimtFile.year == year, EbarimtFile.month == month,
@@ -537,6 +608,119 @@ def report(
         "employees": _build_employees(out_rows),
         "files": files, "year": year, "month": month,
     }
+
+
+def _parse_months(months: str) -> list[int]:
+    try:
+        ms = sorted({int(x) for x in (months or "").replace(" ", "").split(",") if x})
+    except ValueError:
+        raise HTTPException(400, "Сарын жагсаалт буруу.")
+    if any(not 1 <= m <= 12 for m in ms):
+        raise HTTPException(400, "Сар 1–12 байх ёстой.")
+    return ms
+
+
+@router.get("/months")
+def uploaded_months(
+    year: int = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Тухайн онд сар бүр ямар файл оруулсан — нэгтгэсэн тайлангийн сар сонголтод."""
+    _validate_ym(year, 1)
+    kinds: dict[int, list[str]] = {}
+    for r in db.query(EbarimtFile).filter(EbarimtFile.year == year).all():
+        if r.stored_filename and (UPLOAD_DIR / r.stored_filename).exists():
+            kinds.setdefault(r.month, []).append(r.kind)
+    return [{"month": m, "kinds": sorted(ks), "complete": set(ks) >= EBARIMT_KINDS}
+            for m, ks in sorted(kinds.items())]
+
+
+_SUM_FIELDS = ("purchase_orgil", "vat_orgil", "cnt_orgil", "purchase_harhorin", "vat_harhorin", "cnt_harhorin")
+
+
+@router.get("/report-range")
+def report_range(
+    year: int = Query(...),
+    months: str = Query("", description="1,2,3 — хоосон бол тухайн оны Data-тай бүх сар"),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Сонгосон сарууд (эсвэл бүтэн он)-ын нэгтгэсэн тайлан: сар бүрийн тайланг (гар засвартай)
+    харилцагчийн кодоор нэмнэ. Харилцагчийн мэдээлэл — хамгийн сүүлийн сарынх; тэмдэглэлүүд
+    сараар; by_month — сар бүрийн [ХА Оргил, Ebarimt Оргил, ХА Хархорин, Ebarimt Хархорин]."""
+    _validate_ym(year, 1)
+    ms = _parse_months(months) or [x["month"] for x in uploaded_months(year=year, db=db, u=u) if "data" in x["kinds"]]
+    agg: dict[str, dict] = {}
+    used, skipped, missing = [], [], {}
+    for m in ms:
+        payload, rows = month_rows(db, year, m)
+        if payload.get("error"):
+            skipped.append(m)
+            continue
+        used.append(m)
+        if payload.get("missing"):
+            missing[m] = payload["missing"]
+        for r in rows:
+            a = agg.get(r["code"])
+            if a is None:
+                a = agg[r["code"]] = {**r, **{f: 0 for f in _SUM_FIELDS}, "notes": [], "by_month": {}}
+            else:                                              # сүүлийн сарын мэдээлэл давамгайлна
+                a.update({k: r[k] for k in ("employee", "name", "registry", "phone", "tailbar", "defaults", "is_orphan")})
+            for f in _SUM_FIELDS:
+                a[f] += r[f]
+            if (r.get("note") or "").strip():
+                a["notes"].append(f"{m}-р сар: {r['note'].strip()}")
+            a["by_month"][m] = [r["purchase_orgil"], r["vat_orgil"], r["purchase_harhorin"], r["vat_harhorin"]]
+    out = []
+    for a in agg.values():
+        a["diff_orgil"] = a["purchase_orgil"] - a["vat_orgil"]
+        a["diff_harhorin"] = a["purchase_harhorin"] - a["vat_harhorin"]
+        a["note"] = "; ".join(a.pop("notes"))
+        out.append(a)
+    return {
+        "rows": out, "employees": _build_employees(out), "year": year, "months": used,
+        "skipped": skipped, "missing": missing,
+        "error": None if used else "Сонгосон саруудад Data файл (харилцагчийн мэдээлэл) оруулаагүй байна.",
+    }
+
+
+@router.get("/entries")
+def ebarimt_entries(
+    year: int = Query(...),
+    months: str = Query(..., description="1 эсвэл 1,2,3"),
+    code: str = Query(..., max_length=30),
+    which: str = Query("orgil", pattern="^(orgil|harhorin)$"),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Тайлан дээрх Ebarimt (НӨАТ) дүнгийн задаргаа — тухайн харилцагчийн регистр(үүд)-ээр
+    Оргил/Хархорин руу шивсэн баримтууд (EBARIMT/EBARIMT2 файлын мөрүүд), сар бүрээр."""
+    _validate_ym(year, 1)
+    ms = _parse_months(months)
+    if not ms:
+        raise HTTPException(400, "Сар сонгоно уу.")
+    kind = "ebarimt" if which == "orgil" else "ebarimt2"
+    columns: list[str] = []
+    out, registries, no_file = [], set(), []
+    for m in ms:
+        _payload, rows = month_rows(db, year, m)
+        row = next((r for r in rows if r["code"] == code.strip()), None)
+        if row is None:
+            continue
+        regs = set(_split_registry(row.get("registry")))
+        registries |= regs
+        path = _stored_paths(db, year, m).get(kind)
+        if path is None:
+            no_file.append(m)
+            continue
+        if not regs:
+            continue
+        cols, recs = _ebarimt_entries(path)
+        columns += [c for c in cols if c not in columns]
+        out += [{"month": m, **{k: v for k, v in rec.items() if k != "_ttd"}} for rec in recs if rec["_ttd"] in regs]
+    return {"code": code.strip(), "which": which, "year": year, "months": ms, "columns": columns,
+            "registries": sorted(registries), "no_file": no_file, "rows": out}
 
 
 class OverrideIn(BaseModel):

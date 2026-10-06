@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, RefreshCw, AlertCircle, X, Check,
   ReceiptText, FileSpreadsheet, Download, Trash2, Search, Users, Phone,
-  RotateCcw, UserX,
+  RotateCcw, UserX, CalendarRange,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -35,7 +35,12 @@ interface ReportRow {
   is_orphan?: boolean;
   // Гараар засварласан талбарын АНХНЫ (Data файлын) утга — санамжид харуулна
   defaults?: Record<string, string>;
+  // Нэгтгэсэн тайланд: сар бүрийн [ХА Оргил, Ebarimt Оргил, ХА Хархорин, Ebarimt Хархорин]
+  by_month?: Record<string, number[]>;
 }
+
+type Which = "orgil" | "harhorin";
+interface MonthAvail { month: number; kinds: string[]; complete: boolean }
 
 // Data-д байхгүй ч худалдан авалттай харилцагчдын бүлэг (backend-тэй ижил)
 const ORPHAN_EMP = "Data-д байхгүй";
@@ -43,11 +48,26 @@ const ORPHAN_EMP = "Data-д байхгүй";
 interface ReportData {
   rows: ReportRow[];
   employees: { name: string; customers: number }[];
-  files: Record<string, FileInfo | null>;
-  missing: string[];
+  files?: Record<string, FileInfo | null>;
+  // сарын тайланд: дутуу файлын төрлүүд; нэгтгэсэнд: {сар: дутуу төрлүүд}
+  missing: string[] | Record<string, string[]>;
   error: string | null;
   year: number;
-  month: number;
+  month?: number;
+  months?: number[];        // нэгтгэсэн тайланд орсон сарууд
+  skipped?: number[];       // Data файлгүй тул орхисон сарууд
+}
+
+/** «1–3, 5-р сар» — сонгосон саруудыг товчоор. */
+function monthsLabel(ms: number[]) {
+  const parts: string[] = [];
+  for (let i = 0; i < ms.length; i++) {
+    let j = i;
+    while (j + 1 < ms.length && ms[j + 1] === ms[j] + 1) j++;
+    parts.push(j > i ? `${ms[i]}–${ms[j]}` : `${ms[i]}`);
+    i = j;
+  }
+  return parts.length ? `${parts.join(", ")}-р сар` : "сар сонгоогүй";
 }
 
 // Файлын слотууд — хуучин Tailan.xlsm-ийн эх үүсвэрүүд
@@ -197,6 +217,137 @@ function DiffFilterSelect({ value, onChange }: { value: string; onChange: (v: st
   );
 }
 
+// ── Ebarimt (НӨАТ) дүнгийн задаргаа — манай компани руу шивсэн баримтууд ─────────
+interface EntriesData {
+  columns: string[]; rows: Record<string, string | number | null>[];
+  registries: string[]; no_file: number[]; months: number[];
+}
+const AMOUNT_COLS = ["НӨАТ", "Цэвэр дүн", "Нийт дүн"];
+const fmtAmt = (v: unknown) =>
+  typeof v === "number" ? v.toLocaleString("mn-MN", { maximumFractionDigits: 2 }) : (v ?? "") as string;
+
+function EntriesModal({ row, which, year, months, onClose }: {
+  row: ReportRow; which: Which; year: number; months: number[]; onClose: () => void;
+}) {
+  const [data, setData] = useState<EntriesData | null>(null);
+  const [err, setErr] = useState("");
+  const monthsKey = months.join(",");
+  useEffect(() => {
+    let alive = true;
+    api.get("/ebarimt/entries", { params: { year, months: monthsKey, code: row.code, which }, timeout: 120000 })
+      .then(r => { if (alive) setData(r.data); })
+      .catch(e => { if (alive) setErr(e?.response?.data?.detail ?? "Баримт ачааллах амжилтгүй"); });
+    return () => { alive = false; };
+  }, [row.code, which, year, monthsKey]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const orgil = which === "orgil";
+  const purchase = orgil ? row.purchase_orgil : row.purchase_harhorin;
+  const vat = orgil ? row.vat_orgil : row.vat_harhorin;
+  const multi = months.length > 1;
+  const cols = data?.columns ?? [];
+  const sums = Object.fromEntries(AMOUNT_COLS.map(c => [c, (data?.rows ?? []).reduce((s, x) => s + (typeof x[c] === "number" ? (x[c] as number) : 0), 0)]));
+  const perMonth = multi && row.by_month
+    ? Object.entries(row.by_month).map(([m, v]) => ({ m: Number(m), p: v[orgil ? 0 : 2], e: v[orgil ? 1 : 3] })).sort((a, b) => a.m - b.m)
+    : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 sm:p-6" onClick={onClose}>
+      <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-3 sm:px-5">
+          <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-white ${orgil ? "bg-blue-600" : "bg-violet-600"}`}><ReceiptText size={16}/></div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[14px] font-bold text-gray-900">{row.name || row.code} <span className="font-mono text-[12px] font-normal text-gray-400">#{row.code}</span></div>
+            <div className="text-[11.5px] text-gray-500">
+              {orgil ? "Оргил" : "Хархорин"} руу шивсэн Ebarimt (НӨАТ) баримтууд · {year} · {monthsLabel(months)}
+              {data?.registries.length ? <> · Регистр: <span className="font-mono">{data.registries.join(", ")}</span></> : null}
+            </div>
+          </div>
+          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={16}/></button>
+        </div>
+
+        <div className="flex flex-wrap gap-2 px-4 pt-3 sm:px-5">
+          {[["Худалдан авалт", purchase, "text-gray-900"], ["Ebarimt шивэлт", vat, orgil ? "text-blue-700" : "text-violet-700"],
+            ["Зөрүү", purchase - vat, purchase - vat > 0.5 ? "text-rose-600" : purchase - vat < -0.5 ? "text-sky-600" : "text-emerald-600"]].map(([l, v, c]) => (
+            <div key={l as string} className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-1.5">
+              <div className="text-[10.5px] font-semibold text-gray-500">{l as string}</div>
+              <div className={`font-mono text-[15px] font-bold tabular-nums ${c}`}>{Math.abs(v as number) <= 0.5 && l === "Зөрүү" ? "✓ 0" : fmtMnt(v as number)}</div>
+            </div>
+          ))}
+          {data && <div className="self-center text-[12px] text-gray-500">{data.rows.length} баримт</div>}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 sm:px-5">
+          {perMonth.length > 1 && (
+            <div className="mb-3 overflow-x-auto">
+              <table className="text-[11.5px]">
+                <thead><tr className="text-gray-500">
+                  <th className="pr-3 text-left font-semibold">Сар</th>
+                  {perMonth.map(x => <th key={x.m} className="px-2 text-right font-semibold">{x.m}</th>)}
+                </tr></thead>
+                <tbody className="font-mono tabular-nums">
+                  <tr><td className="pr-3 font-sans text-gray-500">ХА</td>{perMonth.map(x => <td key={x.m} className="px-2 text-right">{fmtMnt(x.p)}</td>)}</tr>
+                  <tr><td className="pr-3 font-sans text-gray-500">Ebarimt</td>{perMonth.map(x => <td key={x.m} className="px-2 text-right">{fmtMnt(x.e)}</td>)}</tr>
+                  <tr><td className="pr-3 font-sans text-gray-500">Зөрүү</td>{perMonth.map(x => (
+                    <td key={x.m} className={`px-2 text-right font-semibold ${x.p - x.e > 0.5 ? "text-rose-600" : x.p - x.e < -0.5 ? "text-sky-600" : "text-emerald-600"}`}>
+                      {Math.abs(x.p - x.e) <= 0.5 ? "✓" : fmtMnt(x.p - x.e)}</td>))}</tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+          {err ? (
+            <div className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-700">{err}</div>
+          ) : !data ? (
+            <div className="flex items-center gap-2 py-10 text-[12.5px] text-gray-400"><RefreshCw size={14} className="animate-spin"/>Баримтуудыг уншиж байна…</div>
+          ) : data.rows.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-gray-200 py-10 text-center text-[12.5px] text-gray-500">
+              {data.registries.length
+                ? "Энэ хугацаанд энэ харилцагчийн регистрээр шивсэн баримт алга."
+                : "Регистр бүртгэлгүй тул Ebarimt тулгагдаагүй — хүснэгтийн Регистр нүдэнд ТТД оруулна уу."}
+            </div>
+          ) : (
+            <table className="w-full border-collapse text-[11.5px]">
+              <thead className="sticky top-0 bg-white">
+                <tr className="border-b border-gray-200 text-left text-[10.5px] font-bold uppercase tracking-wider text-gray-500">
+                  <th className="px-2 py-1.5">#</th>
+                  {multi && <th className="px-2 py-1.5">Сар</th>}
+                  {cols.map(c => <th key={c} className={`px-2 py-1.5 ${AMOUNT_COLS.includes(c) ? "text-right" : ""}`}>{c}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.map((x, i) => (
+                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/60">
+                    <td className="px-2 py-1 text-gray-300">{i + 1}</td>
+                    {multi && <td className="px-2 py-1 text-gray-500">{x.month}</td>}
+                    {cols.map(c => (
+                      <td key={c} className={`px-2 py-1 ${AMOUNT_COLS.includes(c) ? "text-right font-mono tabular-nums" : ""} ${c === "ДДТД" ? "font-mono text-[10.5px] text-gray-500" : "text-gray-700"}`}>
+                        {AMOUNT_COLS.includes(c) ? fmtAmt(x[c]) : String(x[c] ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="sticky bottom-0 bg-white">
+                <tr className="border-t border-gray-200 font-bold">
+                  <td className="px-2 py-1.5 text-gray-500" colSpan={1 + (multi ? 1 : 0)}>Нийт</td>
+                  {cols.map(c => <td key={c} className="px-2 py-1.5 text-right font-mono tabular-nums">{AMOUNT_COLS.includes(c) ? fmtAmt(sums[c]) : ""}</td>)}
+                </tr>
+              </tfoot>
+            </table>
+          )}
+          {!!data?.no_file.length && (
+            <div className="mt-2 text-[11.5px] text-amber-700">Ebarimt файл оруулаагүй сар: {monthsLabel(data.no_file)}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Баганын шүүлтүүдийн анхны утга
 const EMPTY_COL_FILTERS = {
   employee: "", code: "", name: "", registry: "", phone: "", note: "",
@@ -226,6 +377,13 @@ export default function EbarimtReportPage() {
   const [uploadingKind, setUploadingKind] = useState<string>("");
   const [showFiles, setShowFiles] = useState(false);
 
+  // Сараар | Нэгтгэсэн (сонгосон сарууд / бүтэн он)
+  const [mode, setMode] = useState<"month" | "range">("month");
+  const [avail, setAvail] = useState<MonthAvail[]>([]);
+  const [rangeMonths, setRangeMonths] = useState<number[]>([]);
+  // Ebarimt (НӨАТ) дүн дээр дарахад — тухайн харилцагчийн шивсэн баримтууд
+  const [entries, setEntries] = useState<{ row: ReportRow; which: Which } | null>(null);
+
   async function loadReport(y = year, m = month) {
     setLoading(true);
     try {
@@ -237,10 +395,53 @@ export default function EbarimtReportPage() {
     } finally { setLoading(false); }
   }
 
-  useEffect(() => { loadReport(year, month); }, [year, month]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function loadRange(y = year, ms = rangeMonths) {
+    if (!ms.length) { setReport(null); return; }
+    setLoading(true);
+    try {
+      const r = await api.get("/ebarimt/report-range", { params: { year: y, months: ms.join(",") }, timeout: 180000 });
+      setReport(r.data);
+      setErr("");
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? "Нэгтгэсэн тайлан ачааллах амжилтгүй");
+    } finally { setLoading(false); }
+  }
+  const reload = () => (mode === "month" ? loadReport() : loadRange());
 
-  // Сар солигдоход шүүлтийг цэвэрлэнэ (ажилтны сонголт хадгална — өдөр тутмын хэрэглээ)
-  useEffect(() => { setSearch(""); setColFilters({ ...EMPTY_COL_FILTERS }); }, [year, month]);
+  useEffect(() => { if (mode === "month") loadReport(year, month); }, [year, month, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Нэгтгэсэн: тухайн оны файлтай саруудыг аваад анхдагчаар Data-тай бүх сарыг сонгоно
+  useEffect(() => {
+    if (mode !== "range") return;
+    let alive = true;
+    api.get("/ebarimt/months", { params: { year } }).then(r => {
+      if (!alive) return;
+      const list: MonthAvail[] = Array.isArray(r.data) ? r.data : [];
+      setAvail(list);
+      setRangeMonths(list.filter(x => x.kinds.includes("data")).map(x => x.month));
+    }).catch(() => { if (alive) { setAvail([]); setRangeMonths([]); } });
+    return () => { alive = false; };
+  }, [mode, year]);
+  useEffect(() => {
+    if (mode !== "range") return;
+    const t = setTimeout(() => loadRange(year, rangeMonths), 250);     // сар дараалан дарахад нэг л удаа ачаална
+    return () => clearTimeout(t);
+  }, [mode, year, rangeMonths]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Сар/горим солигдоход шүүлтийг цэвэрлэнэ (ажилтны сонголт хадгална — өдөр тутмын хэрэглээ)
+  useEffect(() => { setSearch(""); setColFilters({ ...EMPTY_COL_FILTERS }); }, [year, month, mode]);
+
+  function switchMode(m: "month" | "range") {
+    if (m === mode) return;
+    setReport(null);
+    setShowFiles(false);
+    setMode(m);
+  }
+  const hasData = (m: number) => !!avail.find(x => x.month === m)?.kinds.includes("data");
+  const toggleMonth = (m: number) =>
+    setRangeMonths(ms => (ms.includes(m) ? ms.filter(x => x !== m) : [...ms, m].sort((a, b) => a - b)));
+  const pickMonths = (ms: number[]) => setRangeMonths(ms.filter(hasData));
+  const usedMonths = mode === "month" ? [month] : (report?.months ?? rangeMonths);
 
   // Тайлбар хадгалах — DB-д (Data файл дахин оруулахад алга болохгүй)
   async function saveNote(code: string, note: string) {
@@ -259,7 +460,7 @@ export default function EbarimtReportPage() {
   async function saveOverride(code: string, field: string, value: string | null) {
     try {
       await api.put("/ebarimt/customer-override", { code, field, value });
-      await loadReport();
+      await reload();
     } catch { setErr("Засвар хадгалах амжилтгүй"); }
   }
 
@@ -382,17 +583,29 @@ export default function EbarimtReportPage() {
           </div>
         </div>
 
-        {/* Month nav */}
+        {/* Сараар | Нэгтгэсэн */}
+        <div className="flex rounded-xl bg-gray-100 p-0.5 text-[12px] font-semibold">
+          <button onClick={() => switchMode("month")}
+            className={`rounded-lg px-3 py-1.5 transition-colors ${mode === "month" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>
+            Сараар
+          </button>
+          <button onClick={() => switchMode("range")} title="Сонгосон сарууд эсвэл бүтэн оны нэгтгэсэн тайлан"
+            className={`flex items-center gap-1 rounded-lg px-3 py-1.5 transition-colors ${mode === "range" ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>
+            <CalendarRange size={12}/>Нэгтгэсэн
+          </button>
+        </div>
+
+        {/* Month nav (сараар) / Year nav (нэгтгэсэн) */}
         <div className="flex items-center gap-1 rounded-2xl bg-gray-50 p-1 ring-1 ring-gray-100">
-          <button onClick={prevMonth}
+          <button onClick={mode === "month" ? prevMonth : () => setYear(y => y - 1)}
             className="grid h-8 w-8 place-items-center rounded-xl text-gray-400 hover:bg-white hover:text-gray-700 transition-colors">
             <ChevronLeft size={15}/>
           </button>
           <div className="px-2 text-center min-w-[86px]">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 leading-none">{year}</div>
-            <div className="text-[13px] font-bold text-gray-900 leading-tight">{MN_MONTHS[month - 1]}</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 leading-none">{mode === "month" ? year : "Нэгтгэсэн"}</div>
+            <div className="text-[13px] font-bold text-gray-900 leading-tight">{mode === "month" ? MN_MONTHS[month - 1] : `${year} он`}</div>
           </div>
-          <button onClick={nextMonth}
+          <button onClick={mode === "month" ? nextMonth : () => setYear(y => y + 1)}
             className="grid h-8 w-8 place-items-center rounded-xl text-gray-400 hover:bg-white hover:text-gray-700 transition-colors">
             <ChevronRight size={15}/>
           </button>
@@ -400,7 +613,7 @@ export default function EbarimtReportPage() {
 
         <div className="ml-auto flex items-center gap-2">
           {/* Files toggle */}
-          <button onClick={() => setShowFiles(v => !v)}
+          {mode === "month" && <button onClick={() => setShowFiles(v => !v)}
             className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-semibold transition-colors ${
               showFiles
                 ? "bg-[#0071E3] text-white shadow-sm shadow-blue-500/25"
@@ -410,8 +623,8 @@ export default function EbarimtReportPage() {
             }`}>
             <FileSpreadsheet size={13}/>
             Файлууд {uploadedCount}/{FILE_SLOTS.length}
-          </button>
-          <button onClick={() => loadReport()} disabled={loading}
+          </button>}
+          <button onClick={() => reload()} disabled={loading}
             className="grid h-9 w-9 place-items-center rounded-xl border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 disabled:opacity-60 transition-colors"
             title="Шинэчлэх">
             <RefreshCw size={14} className={loading ? "animate-spin" : ""}/>
@@ -432,7 +645,7 @@ export default function EbarimtReportPage() {
       )}
 
       {/* ── File slots (collapsible) ─────────────────────────────── */}
-      {showFiles && (
+      {showFiles && mode === "month" && (
         <div className="shrink-0 border-b border-gray-100 bg-gray-50/50 px-4 py-3">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
             {FILE_SLOTS.map(slot => {
@@ -483,6 +696,49 @@ export default function EbarimtReportPage() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* ── Нэгтгэсэн: сар сонголт ─────────────────────────────── */}
+      {mode === "range" && (
+        <div className="shrink-0 border-b border-gray-100 bg-indigo-50/30 px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-[11.5px] font-semibold text-gray-600">Сарууд:</span>
+            {Array.from({ length: 12 }, (_, i) => i + 1).map(m => {
+              const a = avail.find(x => x.month === m);
+              const has = !!a?.kinds.includes("data");
+              const on = rangeMonths.includes(m);
+              return (
+                <button key={m} onClick={() => toggleMonth(m)} disabled={!has}
+                  title={!a ? "Файл оруулаагүй" : !has ? "Data файл оруулаагүй" : a.complete ? `${m}-р сар — 5/5 файл` : `${m}-р сар — дутуу файл: ${a.kinds.length}/5`}
+                  className={`relative h-7 min-w-[34px] rounded-lg px-2 text-[12px] font-semibold transition-colors ${
+                    on ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/25"
+                    : has ? "bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-indigo-50"
+                    : "cursor-not-allowed bg-transparent text-gray-300"}`}>
+                  {m}
+                  {a && !a.complete && has && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400"/>}
+                </button>
+              );
+            })}
+            <span className="mx-1 h-5 w-px bg-gray-200"/>
+            {([["Бүтэн он", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]], ["I улирал", [1, 2, 3]], ["II", [4, 5, 6]],
+               ["III", [7, 8, 9]], ["IV", [10, 11, 12]]] as [string, number[]][]).map(([l, ms]) => (
+              <button key={l} onClick={() => pickMonths(ms)} disabled={!ms.some(hasData)}
+                className="rounded-lg px-2 py-1 text-[11.5px] font-semibold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:text-gray-300">
+                {l}
+              </button>
+            ))}
+            <span className="ml-auto text-[11.5px] text-gray-500">
+              {year} · <b className="text-gray-800">{monthsLabel(usedMonths)}</b>
+            </span>
+          </div>
+          {!!(report?.skipped?.length || (report?.missing && !Array.isArray(report.missing) && Object.keys(report.missing).length)) && (
+            <div className="mt-1.5 text-[11.5px] text-amber-700">
+              {!!report?.skipped?.length && <>Data файлгүй тул орхисон: {monthsLabel(report.skipped)}. </>}
+              {report?.missing && !Array.isArray(report.missing) && Object.entries(report.missing).map(([m, ks]) =>
+                `${m}-р сар: ${ks.map(k => FILE_SLOTS.find(s => s.kind === k)?.label ?? k).join(", ")} дутуу`).join(" · ")}
+            </div>
+          )}
         </div>
       )}
 
@@ -552,7 +808,7 @@ export default function EbarimtReportPage() {
             <p className="text-[14px] font-semibold text-gray-700">{report.error}</p>
             <p className="mt-0.5 text-[12px] text-gray-400">Дээрх "Файлууд" товчоор сарын эх файлуудаа оруулна уу</p>
           </div>
-          <button onClick={() => setShowFiles(true)}
+          <button onClick={() => { if (mode === "range") switchMode("month"); setShowFiles(true); }}
             className="flex items-center gap-1.5 rounded-xl bg-[#0071E3] px-4 py-2 text-[12.5px] font-semibold text-white hover:bg-blue-600 shadow-sm shadow-blue-500/25">
             <Upload size={13}/>Файл оруулах
           </button>
@@ -660,13 +916,27 @@ export default function EbarimtReportPage() {
                       </div>
                     </td>
                     <td className="border-l border-blue-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700">{fmtMnt(r.purchase_orgil)}</td>
-                    <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700" title={`${r.cnt_orgil} баримт`}>{fmtMnt(r.vat_orgil)}</td>
+                    <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
+                      <button onClick={() => setEntries({ row: r, which: "orgil" })} title={`${r.cnt_orgil} баримт — дарж шивсэн баримтуудыг харах`}
+                        className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-blue-50 hover:text-blue-700 hover:underline">
+                        {fmtMnt(r.vat_orgil)}
+                      </button>
+                    </td>
                     <td className="border-r border-blue-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px]">{diffCell(r.diff_orgil)}</td>
                     <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700">{fmtMnt(r.purchase_harhorin)}</td>
-                    <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700" title={`${r.cnt_harhorin} баримт`}>{fmtMnt(r.vat_harhorin)}</td>
+                    <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
+                      <button onClick={() => setEntries({ row: r, which: "harhorin" })} title={`${r.cnt_harhorin} баримт — дарж шивсэн баримтуудыг харах`}
+                        className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-violet-50 hover:text-violet-700 hover:underline">
+                        {fmtMnt(r.vat_harhorin)}
+                      </button>
+                    </td>
                     <td className="border-r border-violet-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px]">{diffCell(r.diff_harhorin)}</td>
                     <td className="px-1 py-1 min-w-[140px] max-w-[220px]">
-                      <NoteCell value={r.note || ""} onSave={v => saveNote(r.code, v)}/>
+                      {mode === "month" ? <NoteCell value={r.note || ""} onSave={v => saveNote(r.code, v)}/> : (
+                        <div className="truncate px-1.5 py-0.5 text-[11px] text-gray-600" title={r.note || "Тайлбарыг сар сонгож бичнэ"}>
+                          {r.note || <span className="text-gray-300">—</span>}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );
@@ -689,13 +959,16 @@ export default function EbarimtReportPage() {
               </tfoot>
             )}
           </table>
+          {entries && (
+            <EntriesModal row={entries.row} which={entries.which} year={year} months={usedMonths} onClose={() => setEntries(null)}/>
+          )}
           {filtered.length === 0 && (
             <div className="flex flex-col items-center py-14 text-gray-400 gap-2">
               <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gray-50">
                 <Search size={22} className="opacity-40"/>
               </div>
-              <p className="text-[13px] font-semibold text-gray-600">Илэрц олдсонгүй</p>
-              <p className="text-[11px] text-gray-400">Шүүлтээ өөрчилж үзнэ үү</p>
+              <p className="text-[13px] font-semibold text-gray-600">{mode === "range" && !rangeMonths.length ? "Нэгтгэх саруудаа сонгоно уу" : "Илэрц олдсонгүй"}</p>
+              <p className="text-[11px] text-gray-400">{mode === "range" && !rangeMonths.length ? "Дээрх сарууд дээр дарж сонгоно" : "Шүүлтээ өөрчилж үзнэ үү"}</p>
             </div>
           )}
         </div>
