@@ -28,15 +28,21 @@ Endpoint-ууд:
                                       (дүн, бараа мөрүүд) — app/services/income_index
   PUT    /ebarimt/exempt            — НӨАТ чөлөөлөгдөх дүн (он, сар, харилцагч, салбар)
   PUT    /ebarimt/employee          — сонгосон харилцагчдын тухайн сарын ажилтныг нэг дор солих (админ)
+  GET/POST/DELETE /ebarimt/employees — Data-д бүртгэлгүй, гараар нэмсэн ажилтнууд (нэмэх/устгах — админ)
+
+Тайлангийн хариунд: unregistered — Data-д бүртгэлгүй регистрээр шивсэн Ebarimt (ТТД, нэр, дүн);
+мөр бүрийн hist — ажилтан/ХА/Ebarimt утгын өөрчлөлтийн түүх (ebarimt_history, mouse-оор харуулна).
 
 Зөрүү = Худалдан авалт − Манайд шивсэн НӨАТ (Ebarimt) − НӨАТ чөлөөлөгдөх дүн.
 """
 from __future__ import annotations
 
+import itertools
 import os
 import re
 import shutil
 import threading
+from collections import defaultdict
 from typing import Optional
 from datetime import datetime
 from pathlib import Path
@@ -44,13 +50,15 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
 from app.models.ebarimt_file import (
-    EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EbarimtExempt, EbarimtEmployeeAssign, EBARIMT_KINDS,
+    EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EbarimtExempt, EbarimtEmployeeAssign,
+    EbarimtEmployee, EbarimtHistory, EBARIMT_KINDS,
 )
 
 
@@ -248,6 +256,7 @@ def _ebarimt_entries(path: Path) -> tuple[list[str], list[dict]]:
 _report_cache: dict[tuple[int, int], dict] = {}
 _report_lock = threading.Lock()
 _parse_memo: dict[tuple[str, str], tuple[float, object]] = {}
+_payload_ver = itertools.count(1)          # payload дахин бодогдох бүрт шинэ дугаар (түүхийн gate)
 
 
 def _memo(fn, path: Path):
@@ -397,6 +406,7 @@ def get_report(db: Session, year: int, month: int) -> dict:
         payload["purchase_source"] = sources
         payload["missing"] = ([k for k in UPLOAD_KINDS if paths.get(k) is None]
                               + [f"income_{b}" for b in BRANCHES if sources[b]["source"] == "none"])
+        payload["_ver"] = next(_payload_ver)
         _report_cache[key] = {"sig": sig, "payload": payload}
         return payload
 
@@ -413,7 +423,8 @@ def warm_ebarimt_reports() -> None:
         yms = sorted({(r.year, r.month) for r in db.query(EbarimtFile.year, EbarimtFile.month).distinct()
                       if r.year >= this_year - 1})
         for y, m in yms:
-            get_report(db, y, m)
+            payload, rows = month_rows(db, y, m)
+            record_history(db, y, m, payload, rows)                # файл шинэчлэгдсэн бол өөрчлөлтийг бичнэ
             for kind in ("ebarimt", "ebarimt2"):
                 p = _stored_paths(db, y, m).get(kind)
                 if p is not None:
@@ -641,10 +652,12 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
                 row.update({"vat_orgil": vo, "cnt_orgil": no, "vat_harhorin": vh, "cnt_harhorin": nh})
         # Сарын ажилтны хуваарь (админ) — Data/гар засвараас давамгайлна; defaults-д үндсэн утга
         a = assigns.get(r["code"])
-        if a is not None and a.employee and a.employee != row["employee"]:
-            row["defaults"]["employee"] = row["employee"]
-            row["employee"] = a.employee
-            row["emp_assigned"] = True
+        if a is not None and a.employee:
+            row["emp_pinned"] = True                  # энэ сард гараар тогтоосон — Data шинэчлэгдсэн ч хэвээр
+            if a.employee != row["employee"]:
+                row["defaults"]["employee"] = row["employee"]
+                row["employee"] = a.employee
+                row["emp_assigned"] = True
         x = exempts.get(r["code"])
         row["exempt_orgil"] = float(x.orgil or 0) if x else 0.0
         row["exempt_harhorin"] = float(x.harhorin or 0) if x else 0.0
@@ -652,6 +665,171 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
         row["diff_harhorin"] = row["purchase_harhorin"] - row["vat_harhorin"] - row["exempt_harhorin"]
         out_rows.append(row)
     return payload, out_rows
+
+
+# ── Өөрчлөлтийн түүх (ebarimt_history) ─────────────────────────────────────────────────────
+
+HIST_FIELDS = ("emp", "po", "ph", "vo", "vh")
+_DATA_KINDS = ("init", "file", "legacy", "edit")
+_hist_lock = threading.RLock()
+_hist_sig: dict[tuple[int, int], tuple] = {}
+
+
+def _efile_meta(r: EbarimtFile | None) -> dict:
+    if r is None:
+        return {"file": "", "key": "none", "at": None, "by": ""}
+    at = r.uploaded_at
+    return {"file": r.original_filename or r.stored_filename, "at": at, "by": r.uploaded_by_name or "",
+            "key": f"{r.stored_filename}|{at.isoformat() if at else ''}"}
+
+
+def _field_files(db: Session, year: int, month: int, payload: dict) -> dict[str, dict]:
+    """Талбар бүрийн эх файл (нэр, хувилбарын түлхүүр, оруулсан цаг, хэн) — өөрчлөлтийн шалтгаанд."""
+    files = {r.kind: r for r in db.query(EbarimtFile).filter(
+        EbarimtFile.year == year, EbarimtFile.month == month).all()}
+    out = {"emp": _efile_meta(files.get("data")), "vo": _efile_meta(files.get("ebarimt")),
+           "vh": _efile_meta(files.get("ebarimt2"))}
+    for b, f in (("orgil", "po"), ("harhorin", "ph")):
+        src = (payload.get("purchase_source") or {}).get(b) or {}
+        if src.get("source") == "income":
+            fl = src.get("files") or []
+            last = max(fl, key=lambda x: x.get("uploaded_at") or "") if fl else {}
+            at = last.get("uploaded_at")
+            out[f] = {"file": ", ".join(x["filename"] for x in fl), "key": "|".join(x.get("key", "") for x in fl),
+                      "at": datetime.fromisoformat(at) if at else None, "by": last.get("uploaded_by", "")}
+        elif src.get("source") == "legacy":
+            out[f] = _efile_meta(files.get(b))
+        else:
+            out[f] = {"file": "", "key": "none", "at": None, "by": ""}
+    return out
+
+
+def _hist_values(rows: list[dict]) -> dict[str, dict]:
+    """Код бүрийн одоогийн утга. Ажилтан — гар хуваарилалтаас өмнөх (Data) утга; Data-д давхардсан
+    кодын ажилтнуудыг « / »-аар нэгтгэнэ."""
+    vals: dict[str, dict] = {}
+    for r in rows:
+        emp = r["defaults"].get("employee", r["employee"]) if r.get("emp_assigned") else r["employee"]
+        v = vals.get(r["code"])
+        if v is None:
+            vals[r["code"]] = {"emp": emp, "po": r["purchase_orgil"], "ph": r["purchase_harhorin"],
+                               "vo": r["vat_orgil"], "vh": r["vat_harhorin"]}
+        elif emp not in v["emp"].split(" / "):
+            v["emp"] = " / ".join(sorted(v["emp"].split(" / ") + [emp]))
+    return vals
+
+
+def record_history(db: Session, year: int, month: int, payload: dict, rows: list[dict]) -> None:
+    """Тайлангийн одоогийн утгыг түүхийн сүүлийн утгатай харьцуулж, өөрчлөгдсөнийг бичнэ.
+    Шалтгаан: тухайн талбарын эх файл солигдсон бол «file», үгүй бол «edit». Анх удаа — «init»
+    (ХА орлогын файлаас бол өмнө нь хуучин өглөгийн тайлангийн утгыг «legacy»-гаар). Тайлан эсвэл
+    регистрийн засвар өөрчлөгдөөгүй бол юу ч хийхгүй (gate)."""
+    if payload.get("error"):
+        return
+    cnt, last_upd = db.query(func.count(EbarimtCustomerOverride.id),
+                             func.max(EbarimtCustomerOverride.updated_at)).one()
+    sig = (payload.get("_ver"), cnt, last_upd)
+    with _hist_lock:
+        if _hist_sig.get((year, month)) == sig:
+            return
+        meta = _field_files(db, year, month, payload)
+        last: dict[tuple[str, str], EbarimtHistory] = {}
+        for h in db.query(EbarimtHistory).filter(EbarimtHistory.year == year, EbarimtHistory.month == month,
+                                                  EbarimtHistory.kind.in_(_DATA_KINDS)).order_by(EbarimtHistory.id):
+            last[(h.code, h.field)] = h
+        first = not last
+        vals = _hist_values(rows)
+        new: list[EbarimtHistory] = []
+
+        def add(code, f, val, kind, m):
+            h = EbarimtHistory(year=year, month=month, code=code, field=f, kind=kind,
+                               text=val if f == "emp" else None, num=None if f == "emp" else float(val),
+                               file=(m["file"] or "")[:300], file_key=(m["key"] or "")[:300], at=m["at"],
+                               by_name=(m["by"] or "")[:120])
+            new.append(h)
+            last[(code, f)] = h
+
+        if first:
+            # ХА орлогын файл руу шилжихээс өмнөх хуучин өглөгийн тайлангийн утга
+            paths = _stored_paths(db, year, month)
+            for b, f in (("orgil", "po"), ("harhorin", "ph")):
+                if payload["purchase_source"][b]["source"] == "income" and paths.get(b) is not None:
+                    amounts, _ = _memo(_parse_purchases, paths[b])
+                    lm = _efile_meta(db.query(EbarimtFile).filter(EbarimtFile.year == year, EbarimtFile.month == month,
+                                                                 EbarimtFile.kind == b).first())
+                    for code, v in vals.items():
+                        lv = float(amounts.get(code, 0.0))
+                        if abs(lv) > 0.5 or abs(v[f]) > 0.5:
+                            add(code, f, lv, "legacy", lm)
+        for code, v in vals.items():
+            for f in HIST_FIELDS:
+                cur, prev, m = v[f], last.get((code, f)), meta[f]
+                if prev is None:                      # 0 ч гэсэн бичнэ — дараа нь 0 → дүн болсныг харуулахад
+                    add(code, f, cur, "init", m)
+                    continue
+                changed = (cur != (prev.text or "")) if f == "emp" else abs(cur - (prev.num or 0.0)) > 0.5
+                if changed:
+                    add(code, f, cur, "file" if prev.file_key != m["key"] else "edit", m)
+        if first:
+            # Түүх эхлэхээс өмнө гараар сольсон ажилтнууд
+            for a in db.query(EbarimtEmployeeAssign).filter(EbarimtEmployeeAssign.year == year,
+                                                            EbarimtEmployeeAssign.month == month).all():
+                if a.code in vals:
+                    new.append(EbarimtHistory(year=year, month=month, code=a.code, field="emp", kind="manual",
+                                              text=a.employee, at=a.updated_at, by_name=a.updated_by_name or ""))
+        if new:
+            db.add_all(new)
+            db.commit()
+        _hist_sig[(year, month)] = sig
+
+
+def _attach_history(db: Session, year: int, month: int, rows: list[dict]) -> None:
+    """Өөрчлөлттэй (2+ бичлэг) талбаруудын түүхийг мөрөнд row["hist"] болгон хавсаргана."""
+    ev: dict[tuple[str, str], list] = defaultdict(list)
+    for h in db.query(EbarimtHistory).filter(EbarimtHistory.year == year, EbarimtHistory.month == month
+                                             ).order_by(EbarimtHistory.id):
+        ev[(h.code, h.field)].append(h)
+    for r in rows:
+        hist = {}
+        for f in HIST_FIELDS:
+            lst = ev.get((r["code"], f))
+            if lst and len(lst) > 1:
+                hist[f] = [{"v": h.text if f == "emp" else h.num, "k": h.kind, "f": h.file,
+                            "at": h.at.isoformat() if h.at else None, "by": h.by_name} for h in lst]
+        if hist:
+            r["hist"] = hist
+
+
+def _name_col(cols: list[str]) -> str | None:
+    return next((c for c in cols if "нэр" in c.lower()), None)
+
+
+def _unregistered(db: Session, year: int, month: int, payload: dict, rows: list[dict]) -> list[dict]:
+    """Data файлын (гар засвартай) аль ч харилцагчийн регистрт байхгүй ТТД-ээр шивсэн Ebarimt —
+    тайланд тулгагдаагүй дүн. Нэрийг Ebarimt файлын «Харилцагчийн нэр»-ээс."""
+    maps = payload.get("maps") or {}
+    regs: set[str] = set()
+    for r in rows:
+        regs |= set(_split_registry(r.get("registry")))
+    names: dict[str, str] = {}
+    paths = _stored_paths(db, year, month)
+    for kind in ("ebarimt", "ebarimt2"):
+        if paths.get(kind) is not None:
+            cols, recs = _ebarimt_entries(paths[kind])
+            nc = _name_col(cols)
+            for rec in recs:
+                if rec["_ttd"] not in regs and rec["_ttd"] not in names and nc:
+                    names[rec["_ttd"]] = str(rec.get(nc) or "").strip()
+    out: dict[str, dict] = {}
+    for vk, ck, w in (("v1", "c1", "orgil"), ("v2", "c2", "harhorin")):
+        for t, v in (maps.get(vk) or {}).items():
+            if t in regs:
+                continue
+            x = out.setdefault(t, {"ttd": t, "name": names.get(t, ""), "vat_orgil": 0.0, "cnt_orgil": 0,
+                                   "vat_harhorin": 0.0, "cnt_harhorin": 0})
+            x[f"vat_{w}"] += float(v)
+            x[f"cnt_{w}"] += int((maps.get(ck) or {}).get(t, 0))
+    return sorted(out.values(), key=lambda x: -(x["vat_orgil"] + x["vat_harhorin"]))
 
 
 @router.get("/report")
@@ -665,6 +843,8 @@ def report(
     хариуцсан ажилтнаар шүүх боломжтой. Файлууд өөрчлөгдөөгүй бол cache-ээс."""
     _validate_ym(year, month)
     payload, out_rows = month_rows(db, year, month)
+    record_history(db, year, month, payload, out_rows)
+    _attach_history(db, year, month, out_rows)
 
     rows = db.query(EbarimtFile).filter(
         EbarimtFile.year == year, EbarimtFile.month == month,
@@ -674,9 +854,10 @@ def report(
         if r.kind in files:
             files[r.kind] = _file_info(r)
     return {
-        **{k: v for k, v in payload.items() if k != "maps"},
+        **{k: v for k, v in payload.items() if k != "maps" and not k.startswith("_")},
         "rows": out_rows,
         "employees": _build_employees(out_rows),
+        "unregistered": [] if payload.get("error") else _unregistered(db, year, month, payload, out_rows),
         "files": files, "year": year, "month": month,
     }
 
@@ -733,6 +914,7 @@ def report_range(
     _validate_ym(year, 1)
     ms = _parse_months(months) or [x["month"] for x in uploaded_months(year=year, db=db, u=u) if "data" in x["kinds"]]
     agg: dict[str, dict] = {}
+    unreg: dict[str, dict] = {}
     used, skipped, missing = [], [], {}
     for m in ms:
         payload, rows = month_rows(db, year, m)
@@ -740,12 +922,23 @@ def report_range(
             skipped.append(m)
             continue
         used.append(m)
+        record_history(db, year, m, payload, rows)
+        _attach_history(db, year, m, rows)
+        for x in _unregistered(db, year, m, payload, rows):
+            t = unreg.setdefault(x["ttd"], {"ttd": x["ttd"], "name": "", "vat_orgil": 0.0, "cnt_orgil": 0,
+                                            "vat_harhorin": 0.0, "cnt_harhorin": 0, "months": {}})
+            t["name"] = x["name"] or t["name"]
+            for f in ("vat_orgil", "cnt_orgil", "vat_harhorin", "cnt_harhorin"):
+                t[f] += x[f]
+            t["months"][m] = {"vo": x["vat_orgil"], "vh": x["vat_harhorin"]}
         if payload.get("missing"):
             missing[m] = payload["missing"]
         for r in rows:
             a = agg.get(r["code"])
             if a is None:
-                a = agg[r["code"]] = {**r, **{f: 0 for f in _SUM_FIELDS}, "notes": [], "by_month": {}, "_emp": {}}
+                a = agg[r["code"]] = {**r, **{f: 0 for f in _SUM_FIELDS}, "notes": [], "by_month": {}, "_emp": {},
+                                      "hist_m": {}}
+                a.pop("hist", None)
             else:                                              # сүүлийн сарын мэдээлэл давамгайлна
                 a.update({k: r[k] for k in ("employee", "name", "registry", "phone", "tailbar", "defaults", "is_orphan")})
             for f in _SUM_FIELDS:
@@ -755,6 +948,8 @@ def report_range(
             a["by_month"][m] = {"po": r["purchase_orgil"], "vo": r["vat_orgil"], "eo": r["exempt_orgil"],
                                 "ph": r["purchase_harhorin"], "vh": r["vat_harhorin"], "eh": r["exempt_harhorin"]}
             a["_emp"].setdefault(r["employee"], []).append(m)
+            for f, evs in (r.get("hist") or {}).items():               # сар бүрийн өөрчлөлтийн түүх
+                a["hist_m"].setdefault(f, {})[m] = evs
     out = []
     for a in agg.values():
         a["diff_orgil"] = a["purchase_orgil"] - a["vat_orgil"] - a["exempt_orgil"]
@@ -766,6 +961,7 @@ def report_range(
         out.append(a)
     return {
         "rows": out, "employees": _build_employees(out), "year": year, "months": used,
+        "unregistered": sorted(unreg.values(), key=lambda x: -(x["vat_orgil"] + x["vat_harhorin"])),
         "skipped": skipped, "missing": missing,
         "error": None if used else "Сонгосон саруудад Data файл (харилцагчийн мэдээлэл) оруулаагүй байна.",
     }
@@ -775,13 +971,17 @@ def report_range(
 def ebarimt_entries(
     year: int = Query(...),
     months: str = Query(..., description="1 эсвэл 1,2,3"),
-    code: str = Query(..., max_length=30),
+    code: str = Query("", max_length=30),
     which: str = Query("orgil", pattern="^(orgil|harhorin)$"),
+    ttd: str = Query("", max_length=40),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
     """Тайлан дээрх Ebarimt (НӨАТ) дүнгийн задаргаа — тухайн харилцагчийн регистр(үүд)-ээр
-    Оргил/Хархорин руу шивсэн баримтууд (EBARIMT/EBARIMT2 файлын мөрүүд), сар бүрээр."""
+    Оргил/Хархорин руу шивсэн баримтууд (EBARIMT/EBARIMT2 файлын мөрүүд), сар бүрээр.
+    ttd өгвөл харилцагчгүйгээр тэр регистрээр (Data-д бүртгэлгүй регистрийн жагсаалтаас)."""
+    if not code.strip() and not ttd.strip():
+        raise HTTPException(400, "code эсвэл ttd өгнө үү.")
     _validate_ym(year, 1)
     ms = _parse_months(months)
     if not ms:
@@ -790,11 +990,14 @@ def ebarimt_entries(
     columns: list[str] = []
     out, registries, no_file = [], set(), []
     for m in ms:
-        _payload, rows = month_rows(db, year, m)
-        row = next((r for r in rows if r["code"] == code.strip()), None)
-        if row is None:
-            continue
-        regs = set(_split_registry(row.get("registry")))
+        if ttd.strip():
+            regs = {_norm_code(ttd.strip())}
+        else:
+            _payload, rows = month_rows(db, year, m)
+            row = next((r for r in rows if r["code"] == code.strip()), None)
+            if row is None:
+                continue
+            regs = set(_split_registry(row.get("registry")))
         registries |= regs
         path = _stored_paths(db, year, m).get(kind)
         if path is None:
@@ -893,7 +1096,8 @@ def assign_employee(
     u: User = Depends(require_role("admin")),
 ):
     """Сонгосон харилцагчдын ТУХАЙН САРЫН хариуцсан ажилтныг нэг дор солих (зөвхөн админ).
-    employee=None эсвэл Data-ийн ажилтантай ижил бол тэр сарын хуваарийг устгана."""
+    Гараар тогтоосон ажилтан тэр сарын Data файл дахин оруулсан ч өөрчлөгдөхгүй (түүхэнд хадгална).
+    employee=None — гар хуваарийг цуцалж Data файлын ажилтанд буцаана."""
     _validate_ym(body.year, body.month)
     codes = sorted({(c or "").strip() for c in body.codes if (c or "").strip()})
     if not codes:
@@ -909,31 +1113,85 @@ def assign_employee(
     # Хуваарь хийхээс өмнөх (Data/гар засварын) ажилтан
     base = {r["code"]: (r["defaults"].get("employee", r["employee"]) if r.get("emp_assigned") else r["employee"])
             for r in rows}
-    existing = {a.code: a for a in db.query(EbarimtEmployeeAssign).filter(
-        EbarimtEmployeeAssign.year == body.year, EbarimtEmployeeAssign.month == body.month).all()}
     who, now = str(getattr(u, "username", "") or ""), datetime.utcnow()
     changed = reverted = skipped = 0
-    for code in codes:
-        if code not in base:
-            skipped += 1
-            continue
-        a = existing.get(code)
-        if emp is None or emp == base[code]:
-            if a is not None:
-                db.delete(a)
-                reverted += 1
-            continue
-        if a is None:
-            a = EbarimtEmployeeAssign(year=body.year, month=body.month, code=code)
-            db.add(a)
-        if a.employee != emp:
-            changed += 1
-        a.employee, a.updated_by_name, a.updated_at = emp, who, now
-    db.commit()
+    with _hist_lock:
+        record_history(db, body.year, body.month, payload, rows)      # «анх»-ны утгууд түүхэнд байх ёстой
+        existing = {a.code: a for a in db.query(EbarimtEmployeeAssign).filter(
+            EbarimtEmployeeAssign.year == body.year, EbarimtEmployeeAssign.month == body.month).all()}
+        for code in codes:
+            if code not in base:
+                skipped += 1
+                continue
+            a = existing.get(code)
+            if emp is None:
+                if a is not None:
+                    db.delete(a)
+                    reverted += 1
+                    db.add(EbarimtHistory(year=body.year, month=body.month, code=code, field="emp", kind="revert",
+                                          text=base[code], at=now, by_name=who))
+                continue
+            if a is None:
+                a = EbarimtEmployeeAssign(year=body.year, month=body.month, code=code)
+                db.add(a)
+            if a.employee != emp:
+                changed += 1
+                db.add(EbarimtHistory(year=body.year, month=body.month, code=code, field="emp", kind="manual",
+                                      text=emp, at=now, by_name=who))
+            a.employee, a.updated_by_name, a.updated_at = emp, who, now
+        if emp is not None and emp not in set(base.values()) \
+                and not db.query(EbarimtEmployee).filter(EbarimtEmployee.name == emp).first():
+            db.add(EbarimtEmployee(name=emp, created_by_name=who, created_at=now))   # Data-д байхгүй нэр
+        db.commit()
     audit(db, request, u, action="ebarimt_employee_assign", entity_type="ebarimt",
           extra={"year": body.year, "month": body.month, "employee": emp, "codes": len(codes),
                  "changed": changed, "reverted": reverted, "skipped": skipped}, autocommit=True)
     return {"ok": True, "changed": changed, "reverted": reverted, "skipped": skipped}
+
+
+class EmployeeIn(BaseModel):
+    name: str
+
+
+@router.get("/employees")
+def list_employees(
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Data-д бүртгэлгүй, гараар нэмсэн ажилтнууд (Data-гийнх тайлангийн мөрөөс харагдана)."""
+    return [{"name": e.name, "created_by": e.created_by_name or "",
+             "created_at": e.created_at.isoformat() if e.created_at else None}
+            for e in db.query(EbarimtEmployee).order_by(EbarimtEmployee.name).all()]
+
+
+@router.post("/employees")
+def add_employee(
+    body: EmployeeIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),
+):
+    name = (body.name or "").strip()[:120]
+    if not name:
+        raise HTTPException(400, "Ажилтны нэр хоосон байна.")
+    if not db.query(EbarimtEmployee).filter(EbarimtEmployee.name == name).first():
+        db.add(EbarimtEmployee(name=name, created_by_name=str(getattr(u, "username", "") or ""),
+                               created_at=datetime.utcnow()))
+        db.commit()
+    return {"ok": True, "name": name}
+
+
+@router.delete("/employees")
+def delete_employee(
+    name: str = Query(..., max_length=120),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),
+):
+    """Сонголтын жагсаалтаас хасна — өмнө нь хуваарилсан сарууд хэвээр үлдэнэ."""
+    r = db.query(EbarimtEmployee).filter(EbarimtEmployee.name == name.strip()).first()
+    if r:
+        db.delete(r)
+        db.commit()
+    return {"ok": True, "removed": int(bool(r))}
 
 
 class OverrideIn(BaseModel):

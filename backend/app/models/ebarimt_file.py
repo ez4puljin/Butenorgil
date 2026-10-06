@@ -11,7 +11,7 @@
 (mtime cache-тэй) тооцоолно. (жил, сар, төрөл) тус бүрд нэг л идэвхтэй файл —
 дахин оруулбал солигдоно.
 """
-from sqlalchemy import Column, Integer, Float, String, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, Float, String, DateTime, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 
@@ -132,4 +132,43 @@ class EbarimtEmployeeAssign(Base):
 
     __table_args__ = (
         UniqueConstraint("year", "month", "code", name="uq_ebarimt_emp_ym_code"),
+    )
+
+
+class EbarimtEmployee(Base):
+    """Data.xlsx-д бүртгэлгүй, админ гараар нэмсэн ажилтан — сар бүрийн хуваарилалтын сонголтод."""
+    __tablename__ = "ebarimt_employees"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    created_by_name: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class EbarimtHistory(Base):
+    """Харилцагчийн сарын утгуудын түүх — ажилтан (emp), ХА (po/ph), Ebarimt (vo/vh).
+
+    Файл анх оруулах/шинэчлэх (Data, орлогын, Ebarimt), гараар солих бүрт ӨӨРЧЛӨГДСӨН утгыг дараалан
+    бичнэ (id = дараалал). Тайлан дээр mouse аваачихад «Анх А → гараар Б» гэх мэтээр харуулна.
+    kind: init (анх) | file (файл шинэчлэгдсэн) | legacy (хуучин өглөгийн тайлан) |
+          edit (файлгүй өөрчлөлт, ж: регистр засвар) | manual (гараар сольсон) | revert (Data руу буцаасан)
+    """
+    __tablename__ = "ebarimt_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year:  Mapped[int] = mapped_column(Integer, nullable=False)
+    month: Mapped[int] = mapped_column(Integer, nullable=False)
+    code:  Mapped[str] = mapped_column(String(30), nullable=False)
+    field: Mapped[str] = mapped_column(String(8), nullable=False)      # emp | po | ph | vo | vh
+    text = Column(String(200), nullable=True)                           # ажилтан
+    num  = Column(Float, nullable=True)                                 # дүн
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    file: Mapped[str] = mapped_column(String(300), default="")         # эх файлын нэр
+    file_key: Mapped[str] = mapped_column(String(300), default="")     # файлын хувилбар (өөрчлөлтийн шалтгаан)
+    at = Column(DateTime, nullable=True)                                # файл оруулсан / гараар сольсон цаг (UTC)
+    by_name: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_ebarimt_history_ym", "year", "month"),
     )

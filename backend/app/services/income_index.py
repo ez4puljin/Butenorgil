@@ -151,7 +151,8 @@ def _file_recs(db, branch: str, year: int) -> list[tuple[dict, Path]]:
             out.append(({"filename": r.original_filename or r.stored_filename, "month": int(r.month or 0),
                          "size_bytes": int(r.size_bytes or 0), "row_count": int(r.row_count or 0),
                          "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
-                         "uploaded_by": r.uploaded_by_name or ""}, p))
+                         "uploaded_by": r.uploaded_by_name or "",
+                         "key": f"{r.stored_filename}|{r.uploaded_at.isoformat() if r.uploaded_at else ''}"}, p))
     return out
 
 

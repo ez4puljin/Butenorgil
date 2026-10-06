@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, RefreshCw, AlertCircle, X, Check,
   ReceiptText, FileSpreadsheet, Download, Trash2, Search, Users, Phone,
-  RotateCcw, UserX, CalendarRange, ChevronDown, ExternalLink, UserCog,
+  RotateCcw, UserX, CalendarRange, ChevronDown, ExternalLink, UserCog, History, Plus, FileWarning,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
@@ -44,11 +44,25 @@ interface ReportRow {
   emp_assigned?: boolean;
   // Нэгтгэсэн: аль ажилтанд аль сард хуваарилагдсан (олон сартай нь эхэнд)
   emp_months?: { name: string; months: number[] }[];
+  // Энэ сард ажилтныг гараар тогтоосон — Data файл дахин оруулсан ч хэвээр
+  emp_pinned?: boolean;
+  // Өөрчлөлтийн түүх: сараар — талбар бүрийн бичлэгүүд; нэгтгэсэнд — {талбар: {сар: бичлэгүүд}}
+  hist?: Partial<Record<HistField, HistEv[]>>;
+  hist_m?: Partial<Record<HistField, Record<string, HistEv[]>>>;
   // Нэгтгэсэн тайланд: сар бүрийн ХА / Ebarimt / чөлөөлөгдөх × (Оргил, Хархорин)
   by_month?: Record<string, { po: number; vo: number; eo: number; ph: number; vh: number; eh: number }>;
 }
 
 type Which = "orgil" | "harhorin";
+type HistField = "emp" | "po" | "ph" | "vo" | "vh";
+// v — утга (ажилтан эсвэл дүн), k — шалтгаан, f — эх файл, at — цаг (UTC), by — хэн
+interface HistEv { v: string | number | null; k: string; f: string; at: string | null; by: string }
+// Data-д бүртгэлгүй регистрээр шивсэн Ebarimt
+interface UnregRow {
+  ttd: string; name: string;
+  vat_orgil: number; cnt_orgil: number; vat_harhorin: number; cnt_harhorin: number;
+  months?: Record<string, { vo: number; vh: number }>;
+}
 type PurchaseKind = "income" | "legacy" | null;
 interface MonthAvail {
   month: number;
@@ -79,6 +93,7 @@ interface ReportData {
   employees: { name: string; customers: number }[];
   files?: Record<string, FileInfo | null>;
   purchase_source?: Partial<Record<Which, PurchaseSource>>;
+  unregistered?: UnregRow[];
   // сарын тайланд: дутуу файлын төрлүүд; нэгтгэсэнд: {сар: дутуу төрлүүд}
   missing: string[] | Record<string, string[]>;
   error: string | null;
@@ -131,9 +146,44 @@ function fmtMnt(n: number) {
   if (!n) return "—";
   return Math.round(n).toLocaleString("mn-MN");
 }
-function fmtDT(s: string | null) {
+/** Backend-ийн UTC (naive) цагийг орон нутгийн цагаар «YYYY-MM-DD HH:mm». */
+function fmtDT(s: string | null | undefined) {
   if (!s) return "";
-  return s.replace("T", " ").slice(0, 16);
+  const d = new Date(/[zZ]$|[+-]\d\d:?\d\d$/.test(s) ? s : `${s}Z`);
+  if (Number.isNaN(d.getTime())) return s.replace("T", " ").slice(0, 16);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+
+// ── Өөрчлөлтийн түүх (mouse аваачихад) ───────────────────────────────────────
+const HIST_KIND: Record<string, string> = {
+  init: "Анх", file: "Файл шинэчлэгдсэн", legacy: "Хуучин өглөгийн тайлан", edit: "Гар засвар (регистр)",
+  manual: "Гараар сонгосон", revert: "Data файлын ажилтанд буцаасан",
+};
+const HIST_LABEL: Record<HistField, string> = {
+  emp: "Ажилтан", po: "Оргил ХА", ph: "Хархорин ХА", vo: "Оргил Ebarimt", vh: "Хархорин Ebarimt",
+};
+function histLines(evs: HistEv[], emp: boolean): string {
+  return evs.map(e => {
+    const src = [e.f, fmtDT(e.at), e.by].filter(Boolean).join(" · ");
+    return `• ${HIST_KIND[e.k] ?? e.k}: ${emp ? (e.v ?? "") : fmtMnt(Number(e.v) || 0)}${src ? `  (${src})` : ""}`;
+  }).join("\n");
+}
+/** Нүдний tooltip: сараар — бичлэгүүд; нэгтгэсэнд — өөрчлөгдсөн сар бүрээр. */
+function histTip(r: ReportRow, f: HistField, hint = ""): string {
+  const emp = f === "emp";
+  let body = "";
+  if (r.hist?.[f]) body = `${HIST_LABEL[f]} — өөрчлөлтийн түүх:\n${histLines(r.hist[f]!, emp)}`;
+  else if (r.hist_m?.[f]) {
+    body = `${HIST_LABEL[f]} — сар бүрийн өөрчлөлт:\n` + Object.entries(r.hist_m[f]!)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([m, evs]) => `${m}-р сар:\n${histLines(evs, emp)}`).join("\n");
+  }
+  return [body, hint].filter(Boolean).join("\n\n");
+}
+const hasHist = (r: ReportRow, f: HistField) => !!(r.hist?.[f] || r.hist_m?.[f]);
+function HistDot() {
+  return <span className="mr-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 align-middle" title="Өөрчлөлттэй — mouse аваачиж түүхийг харна"/>;
 }
 
 // Гараар бичих тайлбарын нүд — дарж засна, Enter/blur-ээр хадгална
@@ -168,12 +218,14 @@ function NoteCell({ value, onSave }: { value: string; onSave: (v: string) => voi
 
 /** Засварлаж болох нүд — дарж засна. Гараар засварласан бол доор нь
  *  анхны (Data файлын) утгыг санамж болгон харуулж, дарахад буцаана. */
-function EditableCell({ value, defaultValue, placeholder, mono, list, onSave, onRevert }: {
+function EditableCell({ value, defaultValue, placeholder, mono, list, tip, badge, onSave, onRevert }: {
   value: string;
   defaultValue?: string;          // засварласан үед л ирнэ (анхны утга)
   placeholder: string;
   mono?: boolean;
   list?: string;                  // <datalist> id — сонголтын жагсаалт
+  tip?: string;                   // mouse аваачихад (түүх г.м.)
+  badge?: ReactNode;
   onSave: (v: string) => void;
   onRevert: () => void;
 }) {
@@ -196,11 +248,11 @@ function EditableCell({ value, defaultValue, placeholder, mono, list, onSave, on
           onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setDraft(value); setEditing(false); } }}
           className={`w-full rounded border border-blue-400 bg-white px-1 py-0.5 text-[11px] outline-none ring-2 ring-blue-200 ${mono ? "font-mono" : ""}`}/>
       ) : (
-        <div onClick={() => setEditing(true)} title={value || placeholder}
+        <div onClick={() => setEditing(true)} title={tip || value || placeholder}
           className={`cursor-pointer truncate rounded px-1 py-0.5 text-[11px] hover:bg-blue-50 hover:text-blue-700 ${mono ? "font-mono" : ""} ${
             value ? (edited ? "font-semibold text-blue-700" : "text-gray-700") : "text-gray-300 italic"
           }`}>
-          {value || placeholder}
+          {badge}{value || placeholder}
         </div>
       )}
       {edited && (
@@ -219,10 +271,12 @@ function EmpBreakdown({ row }: { row: ReportRow }) {
   const items = row.emp_months?.length ? row.emp_months : [{ name: row.employee, months: [] as number[] }];
   const multi = items.length > 1;
   return (
-    <div title={items.map(x => `${x.name}: ${x.months.length ? monthsLabel(x.months) : "—"}`).join("\n")}
+    <div title={items.map(x => `${x.name}: ${x.months.length ? monthsLabel(x.months) : "—"}`).join("\n")
+      + (row.hist_m?.emp ? `\n\n${histTip(row, "emp")}` : "")}
       className={`py-0.5 pr-1 ${multi ? "border-l-2 border-amber-300 pl-1.5" : "pl-1"}`}>
       {items.map((x, i) => (
         <div key={x.name} className={`flex items-center gap-1 text-[11px] leading-snug ${i === 0 ? "font-semibold text-gray-800" : "text-gray-500"}`}>
+          {i === 0 && row.hist_m?.emp && <History size={9} className="shrink-0 text-amber-500"/>}
           <span className="truncate">{x.name}</span>
           {!!x.months.length && (
             <span className="shrink-0 rounded bg-gray-100 px-1 text-[9.5px] font-semibold tabular-nums text-gray-500">{x.months.length} сар</span>
@@ -405,19 +459,23 @@ function PerMonthTable({ row, which, docs }: { row: ReportRow; which: Which; doc
   );
 }
 
-function EntriesModal({ row, which, year, months, onClose }: {
-  row: ReportRow; which: Which; year: number; months: number[]; onClose: () => void;
+function EntriesModal({ row, ttd, which, year, months, onClose }: {
+  row?: ReportRow;                                  // харилцагчийн регистрүүдээр
+  ttd?: { ttd: string; name: string };              // эсвэл нэг ТТД-ээр (Data-д бүртгэлгүй)
+  which: Which; year: number; months: number[]; onClose: () => void;
 }) {
   const [data, setData] = useState<EntriesData | null>(null);
   const [err, setErr] = useState("");
   const monthsKey = months.join(",");
+  const key = row ? `c:${row.code}` : `t:${ttd?.ttd}`;
   useEffect(() => {
     let alive = true;
-    api.get("/ebarimt/entries", { params: { year, months: monthsKey, code: row.code, which }, timeout: 120000 })
+    const params = { year, months: monthsKey, which, ...(row ? { code: row.code } : { ttd: ttd?.ttd }) };
+    api.get("/ebarimt/entries", { params, timeout: 120000 })
       .then(r => { if (alive) setData(r.data); })
       .catch(e => { if (alive) setErr(e?.response?.data?.detail ?? "Баримт ачааллах амжилтгүй"); });
     return () => { alive = false; };
-  }, [row.code, which, year, monthsKey]);
+  }, [key, which, year, monthsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -435,7 +493,10 @@ function EntriesModal({ row, which, year, months, onClose }: {
         <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-3 sm:px-5">
           <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-white ${orgil ? "bg-blue-600" : "bg-violet-600"}`}><ReceiptText size={16}/></div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[14px] font-bold text-gray-900">{row.name || row.code} <span className="font-mono text-[12px] font-normal text-gray-400">#{row.code}</span></div>
+            <div className="truncate text-[14px] font-bold text-gray-900">
+              {row ? <>{row.name || row.code} <span className="font-mono text-[12px] font-normal text-gray-400">#{row.code}</span></>
+                   : <>{ttd?.name || "Нэргүй"} <span className="font-mono text-[12px] font-normal text-gray-400">ТТД {ttd?.ttd}</span></>}
+            </div>
             <div className="text-[11.5px] text-gray-500">
               {orgil ? "Оргил" : "Хархорин"} руу шивсэн Ebarimt (НӨАТ) баримтууд · {year} · {monthsLabel(months)}
               {data?.registries.length ? <> · Регистр: <span className="font-mono">{data.registries.join(", ")}</span></> : null}
@@ -444,18 +505,25 @@ function EntriesModal({ row, which, year, months, onClose }: {
           <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={16}/></button>
         </div>
 
-        <SummaryStats row={row} which={which}
-          extra={data && <div className="self-center text-[12px] text-gray-500">{data.rows.length} баримт</div>}/>
+        {row ? (
+          <SummaryStats row={row} which={which}
+            extra={data && <div className="self-center text-[12px] text-gray-500">{data.rows.length} баримт</div>}/>
+        ) : (
+          <div className="px-4 pt-3 text-[12px] text-amber-700 sm:px-5">
+            Энэ ТТД Data файлын аль ч харилцагчид бүртгэлгүй тул тайланд тулгагдаагүй{data ? ` · ${data.rows.length} баримт` : ""}.
+          </div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 sm:px-5">
-          {multi && <PerMonthTable row={row} which={which}/>}
+          {multi && row && <PerMonthTable row={row} which={which}/>}
           {err ? (
             <div className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-700">{err}</div>
           ) : !data ? (
             <div className="flex items-center gap-2 py-10 text-[12.5px] text-gray-400"><RefreshCw size={14} className="animate-spin"/>Баримтуудыг уншиж байна…</div>
           ) : data.rows.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-200 py-10 text-center text-[12.5px] text-gray-500">
-              {data.registries.length
+              {!row ? "Энэ хугацаанд энэ регистрээр шивсэн баримт алга."
+                : data.registries.length
                 ? "Энэ хугацаанд энэ харилцагчийн регистрээр шивсэн баримт алга."
                 : "Регистр бүртгэлгүй тул Ebarimt тулгагдаагүй — хүснэгтийн Регистр нүдэнд ТТД оруулна уу."}
             </div>
@@ -492,6 +560,99 @@ function EntriesModal({ row, which, year, months, onClose }: {
           {!!data?.no_file.length && (
             <div className="mt-2 text-[11.5px] text-amber-700">Ebarimt файл оруулаагүй сар: {monthsLabel(data.no_file)}</div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Data-д бүртгэлгүй регистрээр шивсэн Ebarimt ────────────────────────────────
+function UnregisteredModal({ rows, year, months, paused, onClose, onOpen }: {
+  rows: UnregRow[]; year: number; months: number[];
+  paused: boolean;                                   // дээр нь баримтын цонх нээлттэй — Esc-ийг тэр авна
+  onClose: () => void; onOpen: (u: UnregRow, which: Which) => void;
+}) {
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    if (paused) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, paused]);
+  const multi = months.length > 1;
+  const ql = q.trim().toLowerCase();
+  const list = rows.filter(u => !ql || `${u.ttd} ${u.name}`.toLowerCase().includes(ql));
+  const tot = list.reduce((a, u) => ({ vo: a.vo + u.vat_orgil, co: a.co + u.cnt_orgil, vh: a.vh + u.vat_harhorin, ch: a.ch + u.cnt_harhorin }),
+    { vo: 0, co: 0, vh: 0, ch: 0 });
+  const amtBtn = (u: UnregRow, w: Which) => {
+    const v = w === "orgil" ? u.vat_orgil : u.vat_harhorin;
+    return v ? (
+      <button onClick={() => onOpen(u, w)} title="Дарж шивсэн баримтуудыг харах"
+        className={`w-full rounded px-1 py-0.5 text-right underline-offset-2 hover:underline ${w === "orgil" ? "hover:bg-blue-50 hover:text-blue-700" : "hover:bg-violet-50 hover:text-violet-700"}`}>
+        {fmtMnt(v)}
+      </button>
+    ) : <span className="px-1 text-gray-300">—</span>;
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 sm:p-6" onClick={onClose}>
+      <div className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-3 sm:px-5">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-amber-500 text-white"><FileWarning size={16}/></div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[14px] font-bold text-gray-900">Data файлд бүртгэлгүй регистрээр шивсэн НӨАТ</div>
+            <div className="text-[11.5px] text-gray-500">
+              {year} · {monthsLabel(months)} · {rows.length} ТТД — Data файлын (гараар зассан регистр орно) аль ч харилцагчид байхгүй тул тайланд тулгагдаагүй.
+              Харилцагчийн «Регистр» нүдэнд ТТД-г нэмбэл тулгагдана.
+            </div>
+          </div>
+          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={16}/></button>
+        </div>
+        <div className="flex items-center gap-2 px-4 pt-3 sm:px-5">
+          <div className="relative">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400"/>
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="ТТД, нэр…"
+              className="w-56 rounded-xl border border-gray-200 bg-white py-1.5 pl-7 pr-2 text-[12px] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"/>
+          </div>
+          <div className="ml-auto text-[12px] text-gray-500">
+            Нийт <b className="font-mono text-gray-800">{fmtMnt(tot.vo + tot.vh)}</b>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2 sm:px-5">
+          <table className="w-full border-collapse text-[11.5px]">
+            <thead className="sticky top-0 z-10 bg-white">
+              <tr className="border-b border-gray-200 text-left text-[10.5px] font-bold uppercase tracking-wider text-gray-500">
+                <th className="px-2 py-1.5">#</th>
+                <th className="px-2 py-1.5">ТТД</th>
+                <th className="px-2 py-1.5">Нэр (Ebarimt)</th>
+                {multi && <th className="px-2 py-1.5">Сар</th>}
+                <th className="bg-blue-50/40 px-2 py-1.5 text-right text-blue-700">Оргил</th>
+                <th className="bg-violet-50/40 px-2 py-1.5 text-right text-violet-700">Хархорин</th>
+                <th className="px-2 py-1.5 text-right">Нийт</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((u, i) => (
+                <tr key={u.ttd} className="border-b border-gray-50 hover:bg-gray-50/60">
+                  <td className="px-2 py-1 text-gray-300">{i + 1}</td>
+                  <td className="px-2 py-1 font-mono text-gray-600">{u.ttd}</td>
+                  <td className="max-w-[260px] truncate px-2 py-1 text-gray-800" title={u.name}>{u.name || <span className="text-gray-300">—</span>}</td>
+                  {multi && <td className="px-2 py-1 whitespace-nowrap text-gray-500">{monthsLabel(Object.keys(u.months ?? {}).map(Number).sort((a, b) => a - b))}</td>}
+                  <td className="bg-blue-50/20 px-1 py-1 text-right font-mono tabular-nums" title={`${u.cnt_orgil} баримт`}>{amtBtn(u, "orgil")}</td>
+                  <td className="bg-violet-50/20 px-1 py-1 text-right font-mono tabular-nums" title={`${u.cnt_harhorin} баримт`}>{amtBtn(u, "harhorin")}</td>
+                  <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums text-gray-900">{fmtMnt(u.vat_orgil + u.vat_harhorin)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot className="sticky bottom-0 bg-white">
+              <tr className="border-t border-gray-200 font-bold">
+                <td colSpan={multi ? 4 : 3} className="px-2 py-1.5 text-gray-500">Нийт {list.length} ТТД · {tot.co + tot.ch} баримт</td>
+                <td className="px-2 py-1.5 text-right font-mono tabular-nums text-blue-800">{fmtMnt(tot.vo)}</td>
+                <td className="px-2 py-1.5 text-right font-mono tabular-nums text-violet-800">{fmtMnt(tot.vh)}</td>
+                <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtMnt(tot.vo + tot.vh)}</td>
+              </tr>
+            </tfoot>
+          </table>
+          {list.length === 0 && <div className="py-10 text-center text-[12.5px] text-gray-400">Олдсонгүй</div>}
         </div>
       </div>
     </div>
@@ -719,6 +880,12 @@ export default function EbarimtReportPage() {
   const [bulkEmp, setBulkEmp] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [info, setInfo] = useState("");
+  // Data-д бүртгэлгүй, гараар нэмсэн ажилтнууд (сонголтын жагсаалтад)
+  const [regEmps, setRegEmps] = useState<{ name: string; created_by: string }[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [newEmp, setNewEmp] = useState("");
+  const loadRegEmps = () => { api.get("/ebarimt/employees").then(r => setRegEmps(Array.isArray(r.data) ? r.data : [])).catch(() => {}); };
+  useEffect(() => { if (isAdmin) loadRegEmps(); }, [isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
   const infoTimer = useRef<number | undefined>(undefined);
   const flash = (msg: string) => {
     setInfo(msg);
@@ -746,6 +913,9 @@ export default function EbarimtReportPage() {
   const [rangeMonths, setRangeMonths] = useState<number[]>([]);
   // Ebarimt (НӨАТ) дүн дээр дарахад — тухайн харилцагчийн шивсэн баримтууд
   const [entries, setEntries] = useState<{ row: ReportRow; which: Which } | null>(null);
+  // Data-д бүртгэлгүй регистрийн жагсаалт + нэг ТТД-ийн баримтууд
+  const [showUnreg, setShowUnreg] = useState(false);
+  const [ttdEntries, setTtdEntries] = useState<{ u: UnregRow; which: Which } | null>(null);
   // ХА дүн дээр дарахад — орлогын файлын баримтууд → бараа
   const [purchases, setPurchases] = useState<{ row: ReportRow; which: Which } | null>(null);
 
@@ -797,6 +967,7 @@ export default function EbarimtReportPage() {
   useEffect(() => {
     setSearch(""); setColFilters({ ...EMPTY_COL_FILTERS });
     setSel(new Set()); lastSel.current = null;
+    setShowUnreg(false); setTtdEntries(null);
   }, [year, month, mode]);
 
   function switchMode(m: "month" | "range") {
@@ -864,9 +1035,26 @@ export default function EbarimtReportPage() {
           + (d.reverted ? ` · ${d.reverted} нь Data файлынхаа ажилтантай ижил` : "")
         : `${month}-р сар: ${d.reverted ?? 0} харилцагч Data файлын ажилтандаа буцлаа`);
       await reload();
+      loadRegEmps();                                   // шинэ нэр автоматаар бүртгэгдэнэ
     } catch (e: any) {
       setErr(e?.response?.data?.detail ?? "Ажилтан солих амжилтгүй");
     } finally { setBulkBusy(false); }
+  }
+
+  async function addEmployee() {
+    const name = newEmp.trim();
+    if (!name) return;
+    try {
+      await api.post("/ebarimt/employees", { name });
+      loadRegEmps();
+      setBulkEmp(name); setNewEmp(""); setAddOpen(false);
+      flash(`«${name}» ажилтан нэмэгдлээ — сонгоод «Солих» дарна уу`);
+    } catch (e: any) { setErr(e?.response?.data?.detail ?? "Ажилтан нэмэх амжилтгүй"); }
+  }
+  async function removeEmployee(name: string) {
+    if (!confirm(`«${name}»-г сонголтын жагсаалтаас хасах уу? Өмнө нь хуваарилсан сарууд хэвээр үлдэнэ.`)) return;
+    try { await api.delete("/ebarimt/employees", { params: { name } }); loadRegEmps(); }
+    catch (e: any) { setErr(e?.response?.data?.detail ?? "Хасах амжилтгүй"); }
   }
 
   function prevMonth() {
@@ -994,8 +1182,10 @@ export default function EbarimtReportPage() {
     lastSel.current = null;
   }
   // Ажилтны нэрсийн сонголт (datalist)
-  const empNames = [...new Set(rows.flatMap(r => [r.employee, r.defaults?.employee ?? ""]))]
+  const regSet = new Set(regEmps.map(e => e.name));
+  const empNames = [...new Set([...rows.flatMap(r => [r.employee, r.defaults?.employee ?? ""]), ...regSet])]
     .filter(n => n && n !== ORPHAN_EMP && n !== EMPTY_EMP).sort((a, b) => a.localeCompare(b));
+  const unreg = report?.unregistered ?? [];
   // Файлууд n/5: Ebarimt цэсний 3 файл + салбар бүрийн орлогын файл (Файл оруулалт)
   const uploadedCount = report
     ? FILE_SLOTS.filter(s => report.files?.[s.kind]).length
@@ -1076,7 +1266,7 @@ export default function EbarimtReportPage() {
 
         <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.xlsm" className="hidden"
           onChange={e => onFileChosen(e.target.files)}/>
-        <datalist id={EMP_LIST_ID}>{empNames.map(n => <option key={n} value={n}/>)}</datalist>
+        <datalist id={EMP_LIST_ID}>{empNames.map(n => <option key={n} value={n} label={regSet.has(n) ? "гараар нэмсэн" : undefined}/>)}</datalist>
       </div>
 
       {/* Error */}
@@ -1231,6 +1421,14 @@ export default function EbarimtReportPage() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Data-д бүртгэлгүй регистрээр шивсэн Ebarimt */}
+          {unreg.length > 0 && (
+            <button onClick={() => setShowUnreg(true)}
+              title="Data файлын аль ч харилцагчид бүртгэлгүй регистрээр шивсэн НӨАТ — тайланд тулгагдаагүй"
+              className="flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11.5px] font-semibold text-amber-700 hover:bg-amber-100">
+              <FileWarning size={11}/>Бүртгэлгүй регистр ({unreg.length})
+            </button>
+          )}
           {/* Зөвхөн дутуутай */}
           <button onClick={() => setOnlyMissing(v => !v)}
             className={`flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11.5px] font-semibold transition-colors ${
@@ -1263,6 +1461,37 @@ export default function EbarimtReportPage() {
             className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1 font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50">
             {bulkBusy ? <RefreshCw size={12} className="animate-spin"/> : <UserCog size={12}/>}Солих
           </button>
+          <div className="relative">
+            <button onClick={() => setAddOpen(v => !v)} title="Data файлд бүртгэлгүй шинэ ажилтан нэмэх"
+              className={`flex items-center gap-1 rounded-lg border px-2.5 py-1 font-semibold ${addOpen ? "border-indigo-300 bg-white text-indigo-700" : "border-indigo-200 bg-white/70 text-indigo-600 hover:bg-white"}`}>
+              <Plus size={11}/>Шинэ ажилтан
+            </button>
+            {addOpen && (
+              <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-gray-200 bg-white p-2.5 shadow-xl">
+                <div className="mb-1.5 text-[11px] font-semibold text-gray-600">Data файлд бүртгэлгүй ажилтан нэмэх</div>
+                <div className="flex gap-1.5">
+                  <input autoFocus value={newEmp} onChange={e => setNewEmp(e.target.value)} placeholder="Нэр…"
+                    onKeyDown={e => { if (e.key === "Enter") addEmployee(); if (e.key === "Escape") setAddOpen(false); }}
+                    className="min-w-0 flex-1 rounded-lg border border-gray-200 px-2 py-1 text-[12px] outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"/>
+                  <button onClick={addEmployee} disabled={!newEmp.trim()}
+                    className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[11.5px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">Нэмэх</button>
+                </div>
+                {regEmps.length > 0 && (
+                  <div className="mt-2 border-t border-gray-100 pt-1.5">
+                    <div className="mb-1 text-[10.5px] text-gray-400">Гараар нэмсэн ажилтнууд</div>
+                    <div className="max-h-40 space-y-0.5 overflow-auto">
+                      {regEmps.map(e => (
+                        <div key={e.name} className="flex items-center gap-1 rounded px-1 py-0.5 text-[11.5px] hover:bg-gray-50">
+                          <button onClick={() => { setBulkEmp(e.name); setAddOpen(false); }} className="min-w-0 flex-1 truncate text-left text-gray-700 hover:text-indigo-700" title="Сонгох">{e.name}</button>
+                          <button onClick={() => removeEmployee(e.name)} title="Жагсаалтаас хасах" className="text-gray-300 hover:text-rose-500"><X size={11}/></button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <button disabled={bulkBusy} onClick={() => assignEmployee([...sel], null, true)}
             title="Сонгосон харилцагчдыг энэ сарын Data файлын ажилтанд нь буцаана"
             className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1 font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50">
@@ -1378,12 +1607,14 @@ export default function EbarimtReportPage() {
                           defaultValue={r.defaults?.employee}
                           placeholder={r.is_orphan ? "Ажилтан оноох…" : "Ажилтан…"}
                           list={EMP_LIST_ID}
+                          tip={histTip(r, "emp", r.emp_pinned ? "Энэ сард гараар тогтоосон — Data файл дахин оруулсан ч өөрчлөгдөхгүй. Дарж солино." : "Дарж энэ сарын ажилтныг солино.")}
+                          badge={hasHist(r, "emp") ? <History size={9} className="mr-0.5 inline align-[-1px] text-amber-500"/> : undefined}
                           onSave={v => assignEmployee([r.code], v || null, false)}
                           onRevert={() => assignEmployee([r.code], null, false)}/>
                       ) : (
-                        <div className="px-1 py-0.5" title={r.emp_assigned ? `Энэ сард сольсон · Data файлд: ${r.defaults?.employee ?? ""}` : r.employee}>
+                        <div className="px-1 py-0.5" title={histTip(r, "emp", r.emp_assigned ? `Энэ сард сольсон · Data файлд: ${r.defaults?.employee ?? ""}` : "") || r.employee}>
                           <div className={`truncate text-[11px] ${r.emp_assigned ? "font-semibold text-blue-700" : r.is_orphan ? "italic text-gray-400" : "text-gray-700"}`}>
-                            {r.employee}
+                            {hasHist(r, "emp") && <History size={9} className="mr-0.5 inline align-[-1px] text-amber-500"/>}{r.employee}
                           </div>
                           {r.emp_assigned && <div className="truncate text-[9px] text-gray-400">Data: {r.defaults?.employee}</div>}
                         </div>
@@ -1429,15 +1660,15 @@ export default function EbarimtReportPage() {
                       </div>
                     </td>
                     <td className="border-l border-blue-100 px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
-                      <button onClick={() => setPurchases({ row: r, which: "orgil" })} title="Дарж орлогын баримтууд, бараануудыг харах"
+                      <button onClick={() => setPurchases({ row: r, which: "orgil" })} title={histTip(r, "po", "Дарж орлогын баримтууд, бараануудыг харах")}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-blue-50 hover:text-blue-700 hover:underline">
-                        {fmtMnt(r.purchase_orgil)}
+                        {hasHist(r, "po") && <HistDot/>}{fmtMnt(r.purchase_orgil)}
                       </button>
                     </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
-                      <button onClick={() => setEntries({ row: r, which: "orgil" })} title={`${r.cnt_orgil} баримт — дарж шивсэн баримтуудыг харах`}
+                      <button onClick={() => setEntries({ row: r, which: "orgil" })} title={histTip(r, "vo", `${r.cnt_orgil} баримт — дарж шивсэн баримтуудыг харах`)}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-blue-50 hover:text-blue-700 hover:underline">
-                        {fmtMnt(r.vat_orgil)}
+                        {hasHist(r, "vo") && <HistDot/>}{fmtMnt(r.vat_orgil)}
                       </button>
                     </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px] min-w-[84px]">
@@ -1445,15 +1676,15 @@ export default function EbarimtReportPage() {
                     </td>
                     <td className="border-r border-blue-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px]">{diffCell(r.diff_orgil)}</td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
-                      <button onClick={() => setPurchases({ row: r, which: "harhorin" })} title="Дарж орлогын баримтууд, бараануудыг харах"
+                      <button onClick={() => setPurchases({ row: r, which: "harhorin" })} title={histTip(r, "ph", "Дарж орлогын баримтууд, бараануудыг харах")}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-violet-50 hover:text-violet-700 hover:underline">
-                        {fmtMnt(r.purchase_harhorin)}
+                        {hasHist(r, "ph") && <HistDot/>}{fmtMnt(r.purchase_harhorin)}
                       </button>
                     </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
-                      <button onClick={() => setEntries({ row: r, which: "harhorin" })} title={`${r.cnt_harhorin} баримт — дарж шивсэн баримтуудыг харах`}
+                      <button onClick={() => setEntries({ row: r, which: "harhorin" })} title={histTip(r, "vh", `${r.cnt_harhorin} баримт — дарж шивсэн баримтуудыг харах`)}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-violet-50 hover:text-violet-700 hover:underline">
-                        {fmtMnt(r.vat_harhorin)}
+                        {hasHist(r, "vh") && <HistDot/>}{fmtMnt(r.vat_harhorin)}
                       </button>
                     </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px] min-w-[84px]">
@@ -1492,6 +1723,14 @@ export default function EbarimtReportPage() {
           </table>
           {entries && (
             <EntriesModal row={entries.row} which={entries.which} year={year} months={usedMonths} onClose={() => setEntries(null)}/>
+          )}
+          {showUnreg && (
+            <UnregisteredModal rows={unreg} year={year} months={usedMonths} paused={!!ttdEntries}
+              onClose={() => setShowUnreg(false)} onOpen={(u, w) => setTtdEntries({ u, which: w })}/>
+          )}
+          {ttdEntries && (
+            <EntriesModal ttd={{ ttd: ttdEntries.u.ttd, name: ttdEntries.u.name }} which={ttdEntries.which} year={year}
+              months={usedMonths} onClose={() => setTtdEntries(null)}/>
           )}
           {purchases && (
             <PurchasesModal row={purchases.row} which={purchases.which} year={year} months={usedMonths} onClose={() => setPurchases(null)}/>
