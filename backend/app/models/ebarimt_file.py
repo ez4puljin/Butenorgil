@@ -112,3 +112,24 @@ class EbarimtExempt(Base):
     __table_args__ = (
         UniqueConstraint("year", "month", "code", name="uq_ebarimt_exempt_ym_code"),
     )
+
+
+class EbarimtEmployeeAssign(Base):
+    """Харилцагчийн хариуцсан ажилтныг САР БҮРЭЭР солих (зөвхөн админ) — тухайн сарын Data.xlsx-ийн
+    «Нөат» баганаас давамгайлна. Тухайн сарын Data-ийн ажилтантай ижил болговол бичлэгийг устгана.
+    Нэгтгэсэн тайланд харилцагч бүр аль ажилтанд хэдэн сар хуваарилагдсаныг эндээс (сар бүрийн
+    эцсийн ажилтнаар) харуулна."""
+    __tablename__ = "ebarimt_employee_assigns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year:  Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    month: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    code:  Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    employee: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    updated_by_name: Mapped[str] = mapped_column(String(120), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("year", "month", "code", name="uq_ebarimt_emp_ym_code"),
+    )

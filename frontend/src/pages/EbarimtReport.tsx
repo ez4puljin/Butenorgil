@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, RefreshCw, AlertCircle, X, Check,
   ReceiptText, FileSpreadsheet, Download, Trash2, Search, Users, Phone,
-  RotateCcw, UserX, CalendarRange, ChevronDown, ExternalLink,
+  RotateCcw, UserX, CalendarRange, ChevronDown, ExternalLink, UserCog,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
+import { useAuthStore } from "../store/authStore";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,10 @@ interface ReportRow {
   is_orphan?: boolean;
   // Гараар засварласан талбарын АНХНЫ (Data файлын) утга — санамжид харуулна
   defaults?: Record<string, string>;
+  // Сараар: админ энэ сард ажилтныг сольсон (defaults.employee — Data-ийн ажилтан)
+  emp_assigned?: boolean;
+  // Нэгтгэсэн: аль ажилтанд аль сард хуваарилагдсан (олон сартай нь эхэнд)
+  emp_months?: { name: string; months: number[] }[];
   // Нэгтгэсэн тайланд: сар бүрийн ХА / Ebarimt / чөлөөлөгдөх × (Оргил, Хархорин)
   by_month?: Record<string, { po: number; vo: number; eo: number; ph: number; vh: number; eh: number }>;
 }
@@ -66,6 +71,8 @@ interface PurchaseSource {
 
 // Data-д байхгүй ч худалдан авалттай харилцагчдын бүлэг (backend-тэй ижил)
 const ORPHAN_EMP = "Data-д байхгүй";
+const EMPTY_EMP = "(хоосон)";
+const EMP_LIST_ID = "ebarimt-emp-names";
 
 interface ReportData {
   rows: ReportRow[];
@@ -161,11 +168,12 @@ function NoteCell({ value, onSave }: { value: string; onSave: (v: string) => voi
 
 /** Засварлаж болох нүд — дарж засна. Гараар засварласан бол доор нь
  *  анхны (Data файлын) утгыг санамж болгон харуулж, дарахад буцаана. */
-function EditableCell({ value, defaultValue, placeholder, mono, onSave, onRevert }: {
+function EditableCell({ value, defaultValue, placeholder, mono, list, onSave, onRevert }: {
   value: string;
   defaultValue?: string;          // засварласан үед л ирнэ (анхны утга)
   placeholder: string;
   mono?: boolean;
+  list?: string;                  // <datalist> id — сонголтын жагсаалт
   onSave: (v: string) => void;
   onRevert: () => void;
 }) {
@@ -182,7 +190,7 @@ function EditableCell({ value, defaultValue, placeholder, mono, onSave, onRevert
   return (
     <div>
       {editing ? (
-        <input ref={ref} value={draft} placeholder={placeholder}
+        <input ref={ref} value={draft} placeholder={placeholder} list={list}
           onChange={e => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setDraft(value); setEditing(false); } }}
@@ -202,6 +210,25 @@ function EditableCell({ value, defaultValue, placeholder, mono, onSave, onRevert
           <span className="truncate">{defaultValue || "(хоосон)"}</span>
         </button>
       )}
+    </div>
+  );
+}
+
+/** Нэгтгэсэн тайланд — харилцагч аль ажилтанд хэдэн сар хуваарилагдсан (дээр нь олон сартай). */
+function EmpBreakdown({ row }: { row: ReportRow }) {
+  const items = row.emp_months?.length ? row.emp_months : [{ name: row.employee, months: [] as number[] }];
+  const multi = items.length > 1;
+  return (
+    <div title={items.map(x => `${x.name}: ${x.months.length ? monthsLabel(x.months) : "—"}`).join("\n")}
+      className={`py-0.5 pr-1 ${multi ? "border-l-2 border-amber-300 pl-1.5" : "pl-1"}`}>
+      {items.map((x, i) => (
+        <div key={x.name} className={`flex items-center gap-1 text-[11px] leading-snug ${i === 0 ? "font-semibold text-gray-800" : "text-gray-500"}`}>
+          <span className="truncate">{x.name}</span>
+          {!!x.months.length && (
+            <span className="shrink-0 rounded bg-gray-100 px-1 text-[9.5px] font-semibold tabular-nums text-gray-500">{x.months.length} сар</span>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -684,6 +711,21 @@ export default function EbarimtReportPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr]         = useState("");
 
+  // Ажилтан солих (сараар, зөвхөн админ)
+  const { role, baseRole } = useAuthStore();
+  const isAdmin = (baseRole || role) === "admin";
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const lastSel = useRef<number | null>(null);
+  const [bulkEmp, setBulkEmp] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [info, setInfo] = useState("");
+  const infoTimer = useRef<number | undefined>(undefined);
+  const flash = (msg: string) => {
+    setInfo(msg);
+    window.clearTimeout(infoTimer.current);
+    infoTimer.current = window.setTimeout(() => setInfo(""), 4500);
+  };
+
   // Шүүлтүүд
   const [selectedEmp, setSelectedEmp] = useState<string>("all");
   const [search, setSearch]           = useState("");
@@ -752,7 +794,10 @@ export default function EbarimtReportPage() {
   }, [mode, year, rangeMonths]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Сар/горим солигдоход шүүлтийг цэвэрлэнэ (ажилтны сонголт хадгална — өдөр тутмын хэрэглээ)
-  useEffect(() => { setSearch(""); setColFilters({ ...EMPTY_COL_FILTERS }); }, [year, month, mode]);
+  useEffect(() => {
+    setSearch(""); setColFilters({ ...EMPTY_COL_FILTERS });
+    setSel(new Set()); lastSel.current = null;
+  }, [year, month, mode]);
 
   function switchMode(m: "month" | "range") {
     if (m === mode) return;
@@ -801,6 +846,27 @@ export default function EbarimtReportPage() {
       await api.put("/ebarimt/customer-override", { code, field, value });
       await reload();
     } catch { setErr("Засвар хадгалах амжилтгүй"); }
+  }
+
+  // Тухайн сарын ажилтан солих — сонгосон харилцагчид (bulk) эсвэл нэг нүд. employee=null → Data-ийн ажилтан
+  async function assignEmployee(codes: string[], employee: string | null, bulk: boolean) {
+    if (!codes.length) return;
+    if (bulk && !confirm(employee
+      ? `${codes.length} харилцагчийн ${month}-р сарын ажилтныг «${employee}» болгох уу?`
+      : `${codes.length} харилцагчийн ${month}-р сарын ажилтныг Data файлын ажилтанд буцаах уу?`)) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.put("/ebarimt/employee", { year, month, codes, employee });
+      const d = r.data ?? {};
+      if (bulk) { setSel(new Set()); lastSel.current = null; setBulkEmp(""); }
+      flash(employee
+        ? `${month}-р сар: ${d.changed ?? 0} харилцагчийн ажилтан «${employee}» боллоо`
+          + (d.reverted ? ` · ${d.reverted} нь Data файлынхаа ажилтантай ижил` : "")
+        : `${month}-р сар: ${d.reverted ?? 0} харилцагч Data файлын ажилтандаа буцлаа`);
+      await reload();
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? "Ажилтан солих амжилтгүй");
+    } finally { setBulkBusy(false); }
   }
 
   function prevMonth() {
@@ -870,12 +936,13 @@ export default function EbarimtReportPage() {
     !f || (f === "missing" ? v > 0.5 : f === "ok" ? Math.abs(v) <= 0.5 : v < -0.5);
   const txtOk  = (v: string, f: string) => !f || (v || "").toLowerCase().includes(f.toLowerCase());
   const cf = colFilters;
+  const empList = (r: ReportRow) => (r.emp_months?.length ? r.emp_months.map(x => x.name) : [r.employee]);
   const filtered = rows.filter(r => {
-    if (selectedEmp !== "all" && r.employee !== selectedEmp) return false;
+    if (selectedEmp !== "all" && !empList(r).includes(selectedEmp)) return false;
     if (onlyMissing && !(r.diff_orgil > 0.5 || r.diff_harhorin > 0.5)) return false;
     if (q && !(`${r.name} ${r.code} ${r.registry} ${r.phone} ${r.note}`.toLowerCase().includes(q))) return false;
     // Багана тус бүрийн шүүлтүүд
-    if (!txtOk(r.employee, cf.employee)) return false;
+    if (!txtOk(empList(r).join(" "), cf.employee)) return false;
     if (!txtOk(r.code, cf.code)) return false;
     if (!txtOk(`${r.name} ${r.tailbar}`, cf.name)) return false;
     if (!txtOk(r.registry, cf.registry)) return false;
@@ -899,6 +966,36 @@ export default function EbarimtReportPage() {
   }), { po: 0, vo: 0, eo: 0, ph: 0, vh: 0, eh: 0 });
 
   const missingCount = rows.filter(r => r.diff_orgil > 0.5 || r.diff_harhorin > 0.5).length;
+
+  // Сонголт (сараар, админ): Shift+дарж мужаар
+  const canSelect = isAdmin && mode === "month" && !!report && !report.error;
+  const filteredCodes = new Set(filtered.map(r => r.code));
+  const allSel = filtered.length > 0 && filtered.every(r => sel.has(r.code));
+  const someSel = filtered.some(r => sel.has(r.code));
+  const hiddenSel = [...sel].filter(c => !filteredCodes.has(c)).length;
+  function toggleSel(i: number, code: string, shift: boolean) {
+    const on = !sel.has(code);
+    setSel(prev => {
+      const n = new Set(prev);
+      if (shift && lastSel.current !== null) {
+        const [a, b] = [Math.min(lastSel.current, i), Math.max(lastSel.current, i)];
+        for (let k = a; k <= b; k++) { const c = filtered[k]?.code; if (c) { if (on) n.add(c); else n.delete(c); } }
+      } else if (on) n.add(code); else n.delete(code);
+      return n;
+    });
+    lastSel.current = i;
+  }
+  function toggleAll() {
+    setSel(prev => {
+      const n = new Set(prev);
+      filtered.forEach(r => { if (allSel) n.delete(r.code); else n.add(r.code); });
+      return n;
+    });
+    lastSel.current = null;
+  }
+  // Ажилтны нэрсийн сонголт (datalist)
+  const empNames = [...new Set(rows.flatMap(r => [r.employee, r.defaults?.employee ?? ""]))]
+    .filter(n => n && n !== ORPHAN_EMP && n !== EMPTY_EMP).sort((a, b) => a.localeCompare(b));
   // Файлууд n/5: Ebarimt цэсний 3 файл + салбар бүрийн орлогын файл (Файл оруулалт)
   const uploadedCount = report
     ? FILE_SLOTS.filter(s => report.files?.[s.kind]).length
@@ -979,6 +1076,7 @@ export default function EbarimtReportPage() {
 
         <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.xlsm" className="hidden"
           onChange={e => onFileChosen(e.target.files)}/>
+        <datalist id={EMP_LIST_ID}>{empNames.map(n => <option key={n} value={n}/>)}</datalist>
       </div>
 
       {/* Error */}
@@ -987,6 +1085,13 @@ export default function EbarimtReportPage() {
           <AlertCircle size={13} className="shrink-0"/>
           {err}
           <button onClick={() => setErr("")} className="ml-auto"><X size={12}/></button>
+        </div>
+      )}
+      {info && (
+        <div className="mx-4 mt-2 flex shrink-0 items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-700">
+          <Check size={13} className="shrink-0"/>
+          {info}
+          <button onClick={() => setInfo("")} className="ml-auto"><X size={12}/></button>
         </div>
       )}
 
@@ -1145,6 +1250,29 @@ export default function EbarimtReportPage() {
         </div>
       </div>
 
+      {/* ── Сонгосон харилцагчдын ажилтныг нэг дор солих (админ) ── */}
+      {canSelect && sel.size > 0 && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-indigo-100 bg-indigo-50/70 px-4 py-2 text-[12px]">
+          <span className="font-semibold text-indigo-800">{sel.size} харилцагч сонгосон</span>
+          {hiddenSel > 0 && <span className="text-amber-700">({hiddenSel} нь шүүлтээс гадуур)</span>}
+          <span className="text-gray-500">→ {month}-р сарын ажилтан:</span>
+          <input list={EMP_LIST_ID} value={bulkEmp} onChange={e => setBulkEmp(e.target.value)} placeholder="Ажилтан сонгох…"
+            onKeyDown={e => { if (e.key === "Enter" && bulkEmp.trim() && !bulkBusy) assignEmployee([...sel], bulkEmp.trim(), true); }}
+            className="w-44 rounded-lg border border-indigo-200 bg-white px-2 py-1 text-[12px] outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"/>
+          <button disabled={!bulkEmp.trim() || bulkBusy} onClick={() => assignEmployee([...sel], bulkEmp.trim(), true)}
+            className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1 font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50">
+            {bulkBusy ? <RefreshCw size={12} className="animate-spin"/> : <UserCog size={12}/>}Солих
+          </button>
+          <button disabled={bulkBusy} onClick={() => assignEmployee([...sel], null, true)}
+            title="Сонгосон харилцагчдыг энэ сарын Data файлын ажилтанд нь буцаана"
+            className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1 font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+            <RotateCcw size={11}/>Data файлын ажилтанд буцаах
+          </button>
+          <button onClick={() => { setSel(new Set()); lastSel.current = null; }}
+            className="ml-auto text-[11.5px] font-medium text-gray-500 hover:text-gray-800">Сонголт цуцлах</button>
+        </div>
+      )}
+
       {/* ── Table ────────────────────────────────────────────────── */}
       {loading && !report ? (
         <div className="flex flex-1 items-center justify-center text-gray-400">
@@ -1169,8 +1297,18 @@ export default function EbarimtReportPage() {
           <table className="w-full border-collapse text-[12px]">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_#f3f4f6]">
               <tr>
-                <th className="px-2 pt-2.5 pb-1 text-center text-[10px] font-bold uppercase tracking-wider text-gray-400">#</th>
-                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Ажилтан</th>
+                <th className="px-2 pt-2.5 pb-1 text-center text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                  {canSelect ? (
+                    <input type="checkbox" checked={allSel} onChange={toggleAll}
+                      ref={el => { if (el) el.indeterminate = someSel && !allSel; }}
+                      title={allSel ? "Сонголтыг цуцлах" : `Харагдаж буй ${filtered.length} харилцагчийг сонгох — ажилтныг нэг дор солихоор (Shift+дарж мужаар)`}
+                      className="h-3.5 w-3.5 cursor-pointer accent-indigo-600"/>
+                  ) : "#"}
+                </th>
+                <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500"
+                  title={mode === "range" ? "Харилцагч аль ажилтанд хэдэн сар хуваарилагдсан" : isAdmin ? "Дарж энэ сарын ажилтныг солино" : undefined}>
+                  Ажилтан{mode === "range" ? " · сар" : ""}
+                </th>
                 <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Код</th>
                 <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Харилцагч</th>
                 <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Регистр</th>
@@ -1218,18 +1356,38 @@ export default function EbarimtReportPage() {
                 return (
                   <tr key={`${r.code}-${i}`}
                     className={`border-b border-gray-50 transition-colors ${
-                      r.is_orphan ? "bg-amber-50/40 hover:bg-amber-50/70"
+                      canSelect && sel.has(r.code) ? "bg-indigo-50/80 hover:bg-indigo-50"
+                      : r.is_orphan ? "bg-amber-50/40 hover:bg-amber-50/70"
                       : hasMissing ? "bg-rose-50/30 hover:bg-rose-50/60"
                       : "hover:bg-gray-50/60"
                     }`}>
-                    <td className="px-2 py-1.5 text-center text-[10px] text-gray-300">{i + 1}</td>
+                    <td className="px-2 py-1.5 text-center text-[10px] text-gray-300">
+                      {canSelect ? (
+                        <label className="flex cursor-pointer items-center justify-center gap-1">
+                          <input type="checkbox" checked={sel.has(r.code)} onChange={() => {}}
+                            onClick={e => toggleSel(i, r.code, e.shiftKey)}
+                            className="h-3.5 w-3.5 cursor-pointer accent-indigo-600"/>
+                          <span className="tabular-nums">{i + 1}</span>
+                        </label>
+                      ) : i + 1}
+                    </td>
                     <td className="px-1 py-1 min-w-[112px]">
-                      <EditableCell
-                        value={r.employee === ORPHAN_EMP ? "" : r.employee}
-                        defaultValue={r.defaults?.employee}
-                        placeholder={r.is_orphan ? "Ажилтан оноох…" : "Ажилтан…"}
-                        onSave={v => saveOverride(r.code, "employee", v)}
-                        onRevert={() => saveOverride(r.code, "employee", null)}/>
+                      {mode === "range" ? <EmpBreakdown row={r}/> : isAdmin ? (
+                        <EditableCell
+                          value={r.employee === ORPHAN_EMP ? "" : r.employee}
+                          defaultValue={r.defaults?.employee}
+                          placeholder={r.is_orphan ? "Ажилтан оноох…" : "Ажилтан…"}
+                          list={EMP_LIST_ID}
+                          onSave={v => assignEmployee([r.code], v || null, false)}
+                          onRevert={() => assignEmployee([r.code], null, false)}/>
+                      ) : (
+                        <div className="px-1 py-0.5" title={r.emp_assigned ? `Энэ сард сольсон · Data файлд: ${r.defaults?.employee ?? ""}` : r.employee}>
+                          <div className={`truncate text-[11px] ${r.emp_assigned ? "font-semibold text-blue-700" : r.is_orphan ? "italic text-gray-400" : "text-gray-700"}`}>
+                            {r.employee}
+                          </div>
+                          {r.emp_assigned && <div className="truncate text-[9px] text-gray-400">Data: {r.defaults?.employee}</div>}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px] text-gray-500">
                       {r.is_orphan && (

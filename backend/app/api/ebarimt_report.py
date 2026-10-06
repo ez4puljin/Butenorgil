@@ -27,6 +27,7 @@ Endpoint-ууд:
   GET    /ebarimt/purchases         — ?year&months&code&which → ХА-ийн задаргаа: орлогын файлын баримтууд
                                       (дүн, бараа мөрүүд) — app/services/income_index
   PUT    /ebarimt/exempt            — НӨАТ чөлөөлөгдөх дүн (он, сар, харилцагч, салбар)
+  PUT    /ebarimt/employee          — сонгосон харилцагчдын тухайн сарын ажилтныг нэг дор солих (админ)
 
 Зөрүү = Худалдан авалт − Манайд шивсэн НӨАТ (Ebarimt) − НӨАТ чөлөөлөгдөх дүн.
 """
@@ -49,7 +50,7 @@ from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
 from app.models.ebarimt_file import (
-    EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EbarimtExempt, EBARIMT_KINDS,
+    EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EbarimtExempt, EbarimtEmployeeAssign, EBARIMT_KINDS,
 )
 
 
@@ -358,10 +359,13 @@ def _compute_report(paths: dict[str, Path | None],
 
 
 def _build_employees(rows: list[dict]) -> list[dict]:
-    """Ажилтан бүрийн харилцагчийн тоо. Data-д байхгүй бүлэг үргэлж сүүлд."""
+    """Ажилтан бүрийн харилцагчийн тоо. Data-д байхгүй бүлэг үргэлж сүүлд. Нэгтгэсэн тайланд
+    (emp_months) харилцагч аль нэг сард тэр ажилтанд хуваарилагдсан бол тоологдоно."""
     counts: dict[str, int] = {}
     for r in rows:
-        counts[r["employee"]] = counts.get(r["employee"], 0) + 1
+        names = {x["name"] for x in r["emp_months"]} if r.get("emp_months") else {r["employee"]}
+        for n in names:
+            counts[n] = counts.get(n, 0) + 1
     return [
         {"name": k, "customers": v}
         for k, v in sorted(
@@ -609,6 +613,8 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
     ovr = {o.code: o for o in db.query(EbarimtCustomerOverride).all()}
     exempts = {x.code: x for x in db.query(EbarimtExempt).filter(
         EbarimtExempt.year == year, EbarimtExempt.month == month).all()}
+    assigns = {a.code: a for a in db.query(EbarimtEmployeeAssign).filter(
+        EbarimtEmployeeAssign.year == year, EbarimtEmployeeAssign.month == month).all()}
 
     out_rows = []
     for r in payload["rows"]:
@@ -633,6 +639,12 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
                 vo, no = _vat_for(regs, maps.get("v1", {}), maps.get("c1", {}))
                 vh, nh = _vat_for(regs, maps.get("v2", {}), maps.get("c2", {}))
                 row.update({"vat_orgil": vo, "cnt_orgil": no, "vat_harhorin": vh, "cnt_harhorin": nh})
+        # Сарын ажилтны хуваарь (админ) — Data/гар засвараас давамгайлна; defaults-д үндсэн утга
+        a = assigns.get(r["code"])
+        if a is not None and a.employee and a.employee != row["employee"]:
+            row["defaults"]["employee"] = row["employee"]
+            row["employee"] = a.employee
+            row["emp_assigned"] = True
         x = exempts.get(r["code"])
         row["exempt_orgil"] = float(x.orgil or 0) if x else 0.0
         row["exempt_harhorin"] = float(x.harhorin or 0) if x else 0.0
@@ -733,7 +745,7 @@ def report_range(
         for r in rows:
             a = agg.get(r["code"])
             if a is None:
-                a = agg[r["code"]] = {**r, **{f: 0 for f in _SUM_FIELDS}, "notes": [], "by_month": {}}
+                a = agg[r["code"]] = {**r, **{f: 0 for f in _SUM_FIELDS}, "notes": [], "by_month": {}, "_emp": {}}
             else:                                              # сүүлийн сарын мэдээлэл давамгайлна
                 a.update({k: r[k] for k in ("employee", "name", "registry", "phone", "tailbar", "defaults", "is_orphan")})
             for f in _SUM_FIELDS:
@@ -742,11 +754,15 @@ def report_range(
                 a["notes"].append(f"{m}-р сар: {r['note'].strip()}")
             a["by_month"][m] = {"po": r["purchase_orgil"], "vo": r["vat_orgil"], "eo": r["exempt_orgil"],
                                 "ph": r["purchase_harhorin"], "vh": r["vat_harhorin"], "eh": r["exempt_harhorin"]}
+            a["_emp"].setdefault(r["employee"], []).append(m)
     out = []
     for a in agg.values():
         a["diff_orgil"] = a["purchase_orgil"] - a["vat_orgil"] - a["exempt_orgil"]
         a["diff_harhorin"] = a["purchase_harhorin"] - a["vat_harhorin"] - a["exempt_harhorin"]
         a["note"] = "; ".join(a.pop("notes"))
+        # Харилцагч аль ажилтанд хэдэн сар хуваарилагдсан — олон сартайг эхэнд
+        a["emp_months"] = sorted(({"name": k, "months": sorted(set(v))} for k, v in a.pop("_emp").items()),
+                                 key=lambda x: (-len(x["months"]), -max(x["months"])))
         out.append(a)
     return {
         "rows": out, "employees": _build_employees(out), "year": year, "months": used,
@@ -862,6 +878,64 @@ def save_exempt(
     return {"ok": True, "which": body.which, "amount": amount}
 
 
+class EmployeeAssignIn(BaseModel):
+    year: int
+    month: int
+    codes: list[str]
+    employee: Optional[str] = None      # None → тухайн сарын Data-ийн ажилтанд буцаана
+
+
+@router.put("/employee")
+def assign_employee(
+    body: EmployeeAssignIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),
+):
+    """Сонгосон харилцагчдын ТУХАЙН САРЫН хариуцсан ажилтныг нэг дор солих (зөвхөн админ).
+    employee=None эсвэл Data-ийн ажилтантай ижил бол тэр сарын хуваарийг устгана."""
+    _validate_ym(body.year, body.month)
+    codes = sorted({(c or "").strip() for c in body.codes if (c or "").strip()})
+    if not codes:
+        raise HTTPException(400, "Харилцагч сонгоогүй байна.")
+    if len(codes) > 5000:
+        raise HTTPException(400, "Хэт олон харилцагч.")
+    emp = None if body.employee is None else body.employee.strip()[:120]
+    if emp == "":
+        raise HTTPException(400, "Ажилтны нэр хоосон байна.")
+    payload, rows = month_rows(db, body.year, body.month)
+    if payload.get("error"):
+        raise HTTPException(400, payload["error"])
+    # Хуваарь хийхээс өмнөх (Data/гар засварын) ажилтан
+    base = {r["code"]: (r["defaults"].get("employee", r["employee"]) if r.get("emp_assigned") else r["employee"])
+            for r in rows}
+    existing = {a.code: a for a in db.query(EbarimtEmployeeAssign).filter(
+        EbarimtEmployeeAssign.year == body.year, EbarimtEmployeeAssign.month == body.month).all()}
+    who, now = str(getattr(u, "username", "") or ""), datetime.utcnow()
+    changed = reverted = skipped = 0
+    for code in codes:
+        if code not in base:
+            skipped += 1
+            continue
+        a = existing.get(code)
+        if emp is None or emp == base[code]:
+            if a is not None:
+                db.delete(a)
+                reverted += 1
+            continue
+        if a is None:
+            a = EbarimtEmployeeAssign(year=body.year, month=body.month, code=code)
+            db.add(a)
+        if a.employee != emp:
+            changed += 1
+        a.employee, a.updated_by_name, a.updated_at = emp, who, now
+    db.commit()
+    audit(db, request, u, action="ebarimt_employee_assign", entity_type="ebarimt",
+          extra={"year": body.year, "month": body.month, "employee": emp, "codes": len(codes),
+                 "changed": changed, "reverted": reverted, "skipped": skipped}, autocommit=True)
+    return {"ok": True, "changed": changed, "reverted": reverted, "skipped": skipped}
+
+
 class OverrideIn(BaseModel):
     code:  str
     field: str            # employee | registry | phone | tailbar
@@ -879,8 +953,10 @@ def save_override(
     code = (body.code or "").strip()
     if not code:
         raise HTTPException(400, "code хоосон байна.")
-    if body.field not in ("employee", "registry", "phone", "tailbar"):
-        raise HTTPException(400, "Зөвхөн Ажилтан/Регистр/Утас/Тайлбар засна.")
+    if body.field == "employee":
+        raise HTTPException(400, "Ажилтныг сар бүрээр солино (зөвхөн админ).")
+    if body.field not in ("registry", "phone", "tailbar"):
+        raise HTTPException(400, "Зөвхөн Регистр/Утас/Тайлбар засна.")
 
     r = db.query(EbarimtCustomerOverride).filter(
         EbarimtCustomerOverride.code == code,
