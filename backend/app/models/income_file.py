@@ -40,3 +40,30 @@ class IncomeFile(Base):
         UniqueConstraint("year", "month", name="uq_income_file_year_month"),
         Index("ix_income_file_year_month", "year", "month"),
     )
+
+
+class BranchIncomeFile(Base):
+    """Салбарын (одоогоор Хархорин) орлогын файл — сар бүрээр, (салбар, он, сар)-д нэг файл.
+
+    Үндсэн (Оргил) IncomeFile-аас ТУСДАА хадгална: буусан барааны PDF, хөдөлгөөнгүй тайлан,
+    tag шалгалт зэрэг нь зөвхөн үндсэн компанийн орлогыг ашиглана; салбарын файл барааны
+    сүүлийн үнийг шинэчлэхгүй. Ebarimt тайлангийн «Хархорин ХА»-ийн задаргаанд ашиглагдана."""
+    __tablename__ = "branch_income_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    branch: Mapped[str] = mapped_column(String(20), nullable=False)       # harhorin
+    year:  Mapped[int] = mapped_column(Integer, nullable=False)
+    month: Mapped[int] = mapped_column(Integer, nullable=False)           # 1..12
+
+    original_filename: Mapped[str] = mapped_column(String(300), default="")
+    stored_filename:   Mapped[str] = mapped_column(String(300), default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    row_count:  Mapped[int] = mapped_column(Integer, default=0)
+
+    uploaded_by_id:   Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_by_name: Mapped[str] = mapped_column(String(120), default="")
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("branch", "year", "month", name="uq_branch_income_file"),
+    )

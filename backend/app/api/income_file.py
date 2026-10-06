@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
-from app.models.income_file import IncomeFile
+from app.models.income_file import BranchIncomeFile, IncomeFile
 from app.services.refresh_prices_from_income_report import refresh_prices_from_income_report
 
 
@@ -150,6 +150,8 @@ def import_file(
         autocommit=True,
     )
 
+    from app.services import income_index
+    income_index.warm_async()                                     # Ebarimt ХА задаргааны индекс
     return {"ok": True, "year": year, "month": month, "filename": orig_name,
             "size_bytes": size_bytes, "row_count": row_count,
             "price_update": price_update}
@@ -225,4 +227,138 @@ def delete_slot(
         extra={"year": int(year), "month": int(month or 0)},
         autocommit=True,
     )
+    return {"ok": True, "removed": 1}
+
+
+# ── Салбарын (Хархорин) орлогын файл — сар бүрээр, үндсэн файлаас тусдаа ─────────
+# Бусад тайланд (буусан бараа, хөдөлгөөнгүй г.м.) орохгүй, барааны үнэ шинэчлэхгүй —
+# зөвхөн Ebarimt тайлангийн «Хархорин ХА»-ийн задаргаанд ашиглагдана.
+
+BRANCHES = {"harhorin": "Хархорин салбар"}
+BRANCH_DIR = Path("app/data/uploads/income_branch")
+
+
+def _branch_ok(branch: str) -> str:
+    if branch not in BRANCHES:
+        raise HTTPException(400, f"Салбар буруу: {branch}")
+    return branch
+
+
+def _branch_info(r: BranchIncomeFile) -> dict:
+    return {
+        "filename": r.original_filename, "size_bytes": r.size_bytes or 0, "row_count": r.row_count or 0,
+        "price_updated": 0, "uploaded_at": (r.uploaded_at.isoformat() if r.uploaded_at else None),
+        "uploaded_by": r.uploaded_by_name or "",
+    }
+
+
+def _fast_row_count(path: Path) -> int:
+    """calamine — pandas/openpyxl-ээс ~15× хурдан (6.8мянган мөр: 0.4с vs 5.8с); алдвал хуучин аргаар."""
+    try:
+        from python_calamine import CalamineWorkbook
+        wb = CalamineWorkbook.from_path(str(path))
+        return int(wb.get_sheet_by_name(wb.sheet_names[0]).height)
+    except Exception:
+        return _safe_row_count(path)
+
+
+@router.post("/branch/import")
+def import_branch_file(
+    request: Request,
+    branch: str = Form(...),
+    year: int = Form(...),
+    month: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Салбарын сарын орлогын файл — шалгуургүй хэвээр хадгална, (салбар, он, сар)-д байсныг солино."""
+    _branch_ok(branch)
+    year, month = int(year), int(month)
+    if not (2000 <= year <= 2100) or not (1 <= month <= 12):
+        raise HTTPException(400, "Он/сар буруу (сар 1..12).")
+    orig_name = (file.filename or "upload").replace("\\", "_").replace("/", "_")
+    ext = os.path.splitext(orig_name)[1] or ".xlsx"
+    stored_name = f"{branch}_income_{year}_{month:02d}{ext}"
+    BRANCH_DIR.mkdir(parents=True, exist_ok=True)
+    prev = db.query(BranchIncomeFile).filter(BranchIncomeFile.branch == branch, BranchIncomeFile.year == year,
+                                             BranchIncomeFile.month == month).first()
+    if prev and prev.stored_filename and prev.stored_filename != stored_name:
+        (BRANCH_DIR / prev.stored_filename).unlink(missing_ok=True)
+    saved_path = BRANCH_DIR / stored_name
+    try:
+        with open(saved_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    finally:
+        file.file.close()
+    size_bytes = saved_path.stat().st_size if saved_path.exists() else 0
+    row_count = _fast_row_count(saved_path)
+    r = prev or BranchIncomeFile(branch=branch, year=year, month=month)
+    if not prev:
+        db.add(r)
+    r.original_filename, r.stored_filename = orig_name, stored_name
+    r.size_bytes, r.row_count = size_bytes, row_count
+    r.uploaded_by_id = int(getattr(u, "id", 0) or 0)
+    r.uploaded_by_name = str(getattr(u, "username", "") or "")
+    r.uploaded_at = datetime.utcnow()
+    db.commit()
+    audit(db, request, u, action="branch_income_file_import", entity_type="branch_income_file",
+          extra={"branch": branch, "year": year, "month": month, "filename": orig_name,
+                 "size_bytes": size_bytes, "row_count": row_count}, autocommit=True)
+    from app.services import income_index
+    income_index.warm_async()
+    return {"ok": True, "branch": branch, "year": year, "month": month, "filename": orig_name,
+            "size_bytes": size_bytes, "row_count": row_count, "price_update": {}}
+
+
+@router.get("/branch/slots")
+def list_branch_slots(
+    branch: str = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    _branch_ok(branch)
+    rows = db.query(BranchIncomeFile).filter(BranchIncomeFile.branch == branch).all()
+    out = [{"year": int(r.year), "month": int(r.month), "file": _branch_info(r)} for r in rows]
+    out.sort(key=lambda x: (x["year"], x["month"]), reverse=True)
+    return {"monthly_from_year": MONTHLY_FROM_YEAR, "branch": branch, "label": BRANCHES[branch], "slots": out}
+
+
+@router.get("/branch/download")
+def download_branch_file(
+    branch: str = Query(...),
+    year: int = Query(...),
+    month: int = Query(...),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    _branch_ok(branch)
+    r = db.query(BranchIncomeFile).filter(BranchIncomeFile.branch == branch, BranchIncomeFile.year == int(year),
+                                          BranchIncomeFile.month == int(month)).first()
+    if not r or not r.stored_filename or not (BRANCH_DIR / r.stored_filename).exists():
+        raise HTTPException(404, "Файл олдсонгүй.")
+    return FileResponse(path=str(BRANCH_DIR / r.stored_filename), filename=r.original_filename or r.stored_filename,
+                        media_type="application/octet-stream")
+
+
+@router.delete("/branch/{branch}/{year}/{month}")
+def delete_branch_slot(
+    branch: str,
+    year: int,
+    month: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin")),
+):
+    _branch_ok(branch)
+    r = db.query(BranchIncomeFile).filter(BranchIncomeFile.branch == branch, BranchIncomeFile.year == int(year),
+                                          BranchIncomeFile.month == int(month)).first()
+    if not r:
+        return {"ok": True, "removed": 0}
+    if r.stored_filename:
+        (BRANCH_DIR / r.stored_filename).unlink(missing_ok=True)
+    db.delete(r)
+    db.commit()
+    audit(db, request, u, action="branch_income_file_delete", entity_type="branch_income_file",
+          extra={"branch": branch, "year": int(year), "month": int(month)}, autocommit=True)
     return {"ok": True, "removed": 1}

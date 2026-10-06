@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft, UploadCloud, RefreshCw, Check, AlertCircle, Receipt, Trash2,
   Download, X, FileSpreadsheet,
@@ -20,6 +20,14 @@ type SlotInfo = {
   month: number;          // 0 = бүтэн он, 1..12 = сар
   file: FileInfo | null;
 };
+
+// Оргил — үндсэн орлогын файл (/income-files/*); салбар — сар бүрийн тусдаа файл (/income-files/branch/*),
+// зөвхөн Ebarimt тайлангийн «Хархорин ХА»-ийн задаргаанд ашиглагдана.
+type Branch = "orgil" | "harhorin";
+const BRANCH_TABS: { id: Branch; label: string }[] = [
+  { id: "orgil", label: "Оргил (үндсэн)" },
+  { id: "harhorin", label: "Хархорин салбар" },
+];
 
 const MONTH_NAMES = ["1-р сар", "2-р сар", "3-р сар", "4-р сар", "5-р сар", "6-р сар",
   "7-р сар", "8-р сар", "9-р сар", "10-р сар", "11-р сар", "12-р сар"];
@@ -41,6 +49,17 @@ export default function IncomeFileImport() {
   const now = new Date();
   const curYear = now.getFullYear();
 
+  const [params, setParams] = useSearchParams();
+  const branch: Branch = params.get("branch") === "harhorin" ? "harhorin" : "orgil";
+  const isMain = branch === "orgil";
+  const branchRef = useRef<Branch>(branch);
+  branchRef.current = branch;
+  const setBranch = (b: Branch) => {
+    if (b === branch) return;
+    setSlots([]); setError("");
+    setParams(b === "orgil" ? {} : { branch: b }, { replace: true });
+  };
+
   const [slots, setSlots] = useState<SlotInfo[]>([]);
   // Энэ оноос эхлэн сар бүрээр (backend-ээс ирнэ; анхдагч 2026)
   const [monthlyFrom, setMonthlyFrom] = useState(2026);
@@ -49,54 +68,61 @@ export default function IncomeFileImport() {
   const [notice, setNotice] = useState("");
 
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const targetRef = useRef<{ year: number; month: number } | null>(null);
+  const targetRef = useRef<{ branch: Branch; year: number; month: number } | null>(null);
 
   const loadSlots = async () => {
+    const b = branch;
     try {
-      const r = await api.get("/income-files/slots");
+      const r = b === "orgil"
+        ? await api.get("/income-files/slots")
+        : await api.get("/income-files/branch/slots", { params: { branch: b } });
+      if (branchRef.current !== b) return;                 // хооронд нь салбар сольсон
       // Шинэ хариу {monthly_from_year, slots}; хуучин сервер массив буцаадаг байсан
       const d = r.data;
       if (Array.isArray(d)) setSlots(d.map((x: any) => ({ ...x, month: x.month ?? 0 })));
       else { setSlots(d?.slots ?? []); if (d?.monthly_from_year) setMonthlyFrom(d.monthly_from_year); }
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? "Жагсаалт татаж чадсангүй.");
+      if (branchRef.current === b) setError(e?.response?.data?.detail ?? "Жагсаалт татаж чадсангүй.");
     }
   };
 
-  useEffect(() => { loadSlots(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadSlots(); }, [branch]);
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(""), 3500); };
 
   const fileOf = (year: number, month = 0) =>
     slots.find((s) => s.year === year && s.month === month)?.file ?? null;
-  const key = (year: number, month: number) => `${year}-${month}`;
-  const label = (year: number, month: number) => (month ? `${year} он ${MONTH_NAMES[month - 1]}` : `${year} он · Бүх орлого`);
+  const key = (year: number, month: number, b: Branch = branch) => `${b}-${year}-${month}`;
+  const label = (year: number, month: number, b: Branch = branch) =>
+    (b === "orgil" ? "" : "Хархорин · ") + (month ? `${year} он ${MONTH_NAMES[month - 1]}` : `${year} он · Бүх орлого`);
 
   const pickFile = (year: number, month = 0) => {
-    targetRef.current = { year, month };
+    targetRef.current = { branch, year, month };
     fileRef.current?.click();
   };
 
   const onFileChosen = async (file: File | undefined) => {
     const t = targetRef.current;
     if (!file || !t) return;
-    const { year, month } = t;
-    setBusy(key(year, month)); setError("");
+    const { branch: b, year, month } = t;
+    setBusy(key(year, month, b)); setError("");
     try {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("year", String(year));
       fd.append("month", String(month));
-      const r = await api.post("/income-files/import", fd);
+      if (b !== "orgil") fd.append("branch", b);
+      const r = await api.post(b === "orgil" ? "/income-files/import" : "/income-files/branch/import", fd);
       const d = r.data ?? {};
       const pu = d.price_update ?? {};
       const priceMsg = pu.error
         ? " · ⚠ үнэ шинэчилж чадсангүй"
         : pu.skipped ? " · үнэ шинэчлээгүй (хуучин сар)"
         : (pu.updated ? ` · ${pu.updated} барааны үнэ шинэчилсэн` : "");
-      flash(`${label(year, month)}: ${d.filename ?? "файл"} хадгалагдлаа` +
+      flash(`${label(year, month, b)}: ${d.filename ?? "файл"} хадгалагдлаа` +
         (d.row_count ? ` (~${d.row_count} мөр)` : "") + priceMsg);
-      await loadSlots();
+      if (branchRef.current === b) await loadSlots();
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? "Файл оруулахад алдаа гарлаа.");
     } finally {
@@ -107,8 +133,8 @@ export default function IncomeFileImport() {
 
   const onDownload = async (year: number, month: number, filename: string) => {
     try {
-      const r = await api.get("/income-files/download", {
-        params: { year, month },
+      const r = await api.get(isMain ? "/income-files/download" : "/income-files/branch/download", {
+        params: isMain ? { year, month } : { branch, year, month },
         responseType: "blob",
       });
       const url = URL.createObjectURL(new Blob([r.data], { type: "application/octet-stream" }));
@@ -127,7 +153,8 @@ export default function IncomeFileImport() {
   const onDelete = async (year: number, month = 0) => {
     if (!confirm(`${label(year, month)} — файл устгах уу?`)) return;
     try {
-      await api.delete(`/income-files/${year}`, { params: { month } });
+      if (isMain) await api.delete(`/income-files/${year}`, { params: { month } });
+      else await api.delete(`/income-files/branch/${branch}/${year}/${month}`);
       flash("Устгалаа.");
       await loadSlots();
     } catch (e: any) {
@@ -173,13 +200,29 @@ export default function IncomeFileImport() {
         </Link>
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Орлогын файл оруулалт</h1>
-          <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">{monthlyFrom} оноос <b>сар бүрээр</b>, өмнөх онуудыг <b>бүтэн оноор</b> оруулна. Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална.</p>
+          {isMain ? (
+            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">{monthlyFrom} оноос <b>сар бүрээр</b>, өмнөх онуудыг <b>бүтэн оноор</b> оруулна. Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална.</p>
+          ) : (
+            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Хархорин салбарын орлогын файлыг <b>сар бүрээр</b> оруулна. Зөвхөн Ebarimt (НӨАТ) тайлангийн <b>«Хархорин ХА»</b>-ийн задаргаанд ашиглагдана — барааны үнэ шинэчлэхгүй.</p>
+          )}
         </div>
       </div>
 
+      {/* ── Салбар ── */}
+      <div className="mt-4 inline-flex rounded-xl bg-[#F5F5F7] p-1">
+        {BRANCH_TABS.map((t) => (
+          <button key={t.id} onClick={() => setBranch(t.id)}
+            className={`rounded-lg px-3.5 py-1.5 text-[13px] font-semibold transition ${
+              branch === t.id ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {/* ── Статист + сэргээх ── */}
-      <div className="mt-4 flex flex-wrap items-center gap-2 text-[12px]">
-        <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-1 font-medium text-rose-700"><Receipt size={12} /> Бүтэн он {totalCount} · сарын файл {monthCount}</span>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px]">
+        <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-1 font-medium text-rose-700"><Receipt size={12} />
+          {isMain ? `Бүтэн он ${totalCount} · сарын файл ${monthCount}` : `Хархорин · сарын файл ${monthCount}`}</span>
         <button onClick={loadSlots} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[12px] text-gray-600 hover:bg-gray-50">
           <RefreshCw size={13} /> Сэргээх
         </button>
@@ -226,8 +269,8 @@ export default function IncomeFileImport() {
         );
       })}
 
-      {/* ── Бүтэн оноор (өмнөх онууд) ── */}
-      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {/* ── Бүтэн оноор (өмнөх онууд) — зөвхөн үндсэн файлд ── */}
+      {isMain && <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {years.filter((y) => y < monthlyFrom).map((y) => {
           const info = fileOf(y);
           return (
@@ -242,7 +285,7 @@ export default function IncomeFileImport() {
             </div>
           );
         })}
-      </div>
+      </div>}
     </motion.div>
   );
 }

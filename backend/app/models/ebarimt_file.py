@@ -11,7 +11,7 @@
 (mtime cache-тэй) тооцоолно. (жил, сар, төрөл) тус бүрд нэг л идэвхтэй файл —
 дахин оруулбал солигдоно.
 """
-from sqlalchemy import Column, Integer, String, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, Float, String, DateTime, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 
@@ -91,3 +91,24 @@ class EbarimtCustomerOverride(Base):
 
     updated_by_name: Mapped[str] = mapped_column(String(120), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class EbarimtExempt(Base):
+    """НӨАТ чөлөөлөгдөх дүн — (он, сар, харилцагчийн код) бүрээр, салбар тус бүрд гараар оруулна.
+    Зөрүү = Худалдан авалт − Манайд шивсэн НӨАТ (Ebarimt) − НӨАТ чөлөөлөгдөх дүн."""
+    __tablename__ = "ebarimt_exempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year:  Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    month: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    code:  Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+
+    orgil    = Column(Float, nullable=False, default=0.0)
+    harhorin = Column(Float, nullable=False, default=0.0)
+
+    updated_by_name: Mapped[str] = mapped_column(String(120), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("year", "month", "code", name="uq_ebarimt_exempt_ym_code"),
+    )

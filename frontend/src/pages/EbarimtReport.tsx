@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, RefreshCw, AlertCircle, X, Check,
   ReceiptText, FileSpreadsheet, Download, Trash2, Search, Users, Phone,
-  RotateCcw, UserX, CalendarRange,
+  RotateCcw, UserX, CalendarRange, ChevronDown,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -31,12 +32,15 @@ interface ReportRow {
   vat_harhorin: number;
   diff_harhorin: number;
   cnt_harhorin: number;
+  // НӨАТ чөлөөлөгдөх дүн (гараар) — Зөрүү = ХА − Ebarimt − чөлөөлөгдөх
+  exempt_orgil: number;
+  exempt_harhorin: number;
   note: string;
   is_orphan?: boolean;
   // Гараар засварласан талбарын АНХНЫ (Data файлын) утга — санамжид харуулна
   defaults?: Record<string, string>;
-  // Нэгтгэсэн тайланд: сар бүрийн [ХА Оргил, Ebarimt Оргил, ХА Хархорин, Ebarimt Хархорин]
-  by_month?: Record<string, number[]>;
+  // Нэгтгэсэн тайланд: сар бүрийн ХА / Ebarimt / чөлөөлөгдөх × (Оргил, Хархорин)
+  by_month?: Record<string, { po: number; vo: number; eo: number; ph: number; vh: number; eh: number }>;
 }
 
 type Which = "orgil" | "harhorin";
@@ -226,6 +230,77 @@ const AMOUNT_COLS = ["НӨАТ", "Цэвэр дүн", "Нийт дүн"];
 const fmtAmt = (v: unknown) =>
   typeof v === "number" ? v.toLocaleString("mn-MN", { maximumFractionDigits: 2 }) : (v ?? "") as string;
 
+/** Салбарын утгууд: ХА, Ebarimt, НӨАТ чөлөөлөгдөх, Зөрүү (= ХА − Ebarimt − чөлөөлөгдөх). */
+function branchVals(row: ReportRow, which: Which) {
+  const o = which === "orgil";
+  const p = o ? row.purchase_orgil : row.purchase_harhorin;
+  const e = o ? row.vat_orgil : row.vat_harhorin;
+  const x = (o ? row.exempt_orgil : row.exempt_harhorin) || 0;
+  return { p, e, x, d: p - e - x };
+}
+const diffTone = (d: number) => (d > 0.5 ? "text-rose-600" : d < -0.5 ? "text-sky-600" : "text-emerald-600");
+// Хүснэгтийн diffCell-тэй ижил: дутуу — дүнгээр, илүү шивсэн — «+дүн», таарсан — ✓
+const fmtDiff = (d: number, zero = "✓") => (d > 0.5 ? fmtMnt(d) : d < -0.5 ? `+${fmtMnt(-d)}` : zero);
+
+function SummaryStats({ row, which, extra }: { row: ReportRow; which: Which; extra?: ReactNode }) {
+  const v = branchVals(row, which);
+  const items: [string, number, string][] = [
+    ["Худалдан авалт", v.p, "text-gray-900"],
+    ["Ebarimt шивэлт", v.e, which === "orgil" ? "text-blue-700" : "text-violet-700"],
+  ];
+  if (v.x) items.push(["НӨАТ чөлөөлөгдөх", v.x, "text-amber-700"]);
+  items.push(["Зөрүү", v.d, diffTone(v.d)]);
+  return (
+    <div className="flex flex-wrap gap-2 px-4 pt-3 sm:px-5">
+      {items.map(([l, val, c]) => (
+        <div key={l} className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-1.5">
+          <div className="text-[10.5px] font-semibold text-gray-500">{l}</div>
+          <div className={`font-mono text-[15px] font-bold tabular-nums ${c}`}>{l === "Зөрүү" ? fmtDiff(val, "✓ 0") : fmtMnt(val)}</div>
+        </div>
+      ))}
+      {extra}
+    </div>
+  );
+}
+
+/** Нэгтгэсэн тайланд — аль сард зөрүү гарсныг харуулна. docs — сар бүрийн орлогын баримтын нийлбэр
+ *  (null = тэр сарын орлогын файл оруулаагүй); ХА-аас зөрсөн сар шараар тодорно. */
+function PerMonthTable({ row, which, docs }: { row: ReportRow; which: Which; docs?: Record<number, number | null> }) {
+  const o = which === "orgil";
+  const pm = Object.entries(row.by_month ?? {})
+    .map(([m, v]) => ({ m: Number(m), p: o ? v.po : v.ph, e: o ? v.vo : v.vh, x: o ? v.eo : v.eh }))
+    .sort((a, b) => a.m - b.m);
+  if (pm.length < 2) return null;
+  const hasX = pm.some(x => x.x);
+  return (
+    <div className="mb-3 overflow-x-auto">
+      <table className="text-[11.5px]">
+        <thead><tr className="text-gray-500">
+          <th className="pr-3 text-left font-semibold">Сар</th>
+          {pm.map(x => <th key={x.m} className="px-2 text-right font-semibold">{x.m}</th>)}
+        </tr></thead>
+        <tbody className="font-mono tabular-nums">
+          <tr><td className="pr-3 font-sans text-gray-500">ХА</td>{pm.map(x => <td key={x.m} className="px-2 text-right">{fmtMnt(x.p)}</td>)}</tr>
+          {docs && <tr><td className="pr-3 font-sans text-gray-500">Орлогын баримт</td>{pm.map(x => {
+            const v = docs[x.m];
+            if (v === undefined) return <td key={x.m}/>;
+            if (v === null) return <td key={x.m} className="px-2 text-right font-sans text-[10.5px] text-amber-600">файлгүй</td>;
+            const off = Math.abs(x.p - v) > 0.5;
+            return <td key={x.m} title={off ? `ХА-аас зөрүү: ${fmtMnt(x.p - v)}` : "ХА-тай таарсан"}
+              className={`px-2 text-right ${off ? "font-semibold text-amber-700" : "text-gray-400"}`}>{fmtMnt(v)}</td>;
+          })}</tr>}
+          <tr><td className="pr-3 font-sans text-gray-500">Ebarimt</td>{pm.map(x => <td key={x.m} className="px-2 text-right">{fmtMnt(x.e)}</td>)}</tr>
+          {hasX && <tr><td className="pr-3 font-sans text-gray-500">Чөлөөлөгдөх</td>{pm.map(x => <td key={x.m} className="px-2 text-right text-amber-700">{fmtMnt(x.x)}</td>)}</tr>}
+          <tr><td className="pr-3 font-sans text-gray-500">Зөрүү</td>{pm.map(x => {
+            const d = x.p - x.e - x.x;
+            return <td key={x.m} className={`px-2 text-right font-semibold ${diffTone(d)}`}>{fmtDiff(d)}</td>;
+          })}</tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function EntriesModal({ row, which, year, months, onClose }: {
   row: ReportRow; which: Which; year: number; months: number[]; onClose: () => void;
 }) {
@@ -246,14 +321,9 @@ function EntriesModal({ row, which, year, months, onClose }: {
   }, [onClose]);
 
   const orgil = which === "orgil";
-  const purchase = orgil ? row.purchase_orgil : row.purchase_harhorin;
-  const vat = orgil ? row.vat_orgil : row.vat_harhorin;
   const multi = months.length > 1;
   const cols = data?.columns ?? [];
   const sums = Object.fromEntries(AMOUNT_COLS.map(c => [c, (data?.rows ?? []).reduce((s, x) => s + (typeof x[c] === "number" ? (x[c] as number) : 0), 0)]));
-  const perMonth = multi && row.by_month
-    ? Object.entries(row.by_month).map(([m, v]) => ({ m: Number(m), p: v[orgil ? 0 : 2], e: v[orgil ? 1 : 3] })).sort((a, b) => a.m - b.m)
-    : [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 sm:p-6" onClick={onClose}>
@@ -270,35 +340,11 @@ function EntriesModal({ row, which, year, months, onClose }: {
           <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={16}/></button>
         </div>
 
-        <div className="flex flex-wrap gap-2 px-4 pt-3 sm:px-5">
-          {[["Худалдан авалт", purchase, "text-gray-900"], ["Ebarimt шивэлт", vat, orgil ? "text-blue-700" : "text-violet-700"],
-            ["Зөрүү", purchase - vat, purchase - vat > 0.5 ? "text-rose-600" : purchase - vat < -0.5 ? "text-sky-600" : "text-emerald-600"]].map(([l, v, c]) => (
-            <div key={l as string} className="rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-1.5">
-              <div className="text-[10.5px] font-semibold text-gray-500">{l as string}</div>
-              <div className={`font-mono text-[15px] font-bold tabular-nums ${c}`}>{Math.abs(v as number) <= 0.5 && l === "Зөрүү" ? "✓ 0" : fmtMnt(v as number)}</div>
-            </div>
-          ))}
-          {data && <div className="self-center text-[12px] text-gray-500">{data.rows.length} баримт</div>}
-        </div>
+        <SummaryStats row={row} which={which}
+          extra={data && <div className="self-center text-[12px] text-gray-500">{data.rows.length} баримт</div>}/>
 
         <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 sm:px-5">
-          {perMonth.length > 1 && (
-            <div className="mb-3 overflow-x-auto">
-              <table className="text-[11.5px]">
-                <thead><tr className="text-gray-500">
-                  <th className="pr-3 text-left font-semibold">Сар</th>
-                  {perMonth.map(x => <th key={x.m} className="px-2 text-right font-semibold">{x.m}</th>)}
-                </tr></thead>
-                <tbody className="font-mono tabular-nums">
-                  <tr><td className="pr-3 font-sans text-gray-500">ХА</td>{perMonth.map(x => <td key={x.m} className="px-2 text-right">{fmtMnt(x.p)}</td>)}</tr>
-                  <tr><td className="pr-3 font-sans text-gray-500">Ebarimt</td>{perMonth.map(x => <td key={x.m} className="px-2 text-right">{fmtMnt(x.e)}</td>)}</tr>
-                  <tr><td className="pr-3 font-sans text-gray-500">Зөрүү</td>{perMonth.map(x => (
-                    <td key={x.m} className={`px-2 text-right font-semibold ${x.p - x.e > 0.5 ? "text-rose-600" : x.p - x.e < -0.5 ? "text-sky-600" : "text-emerald-600"}`}>
-                      {Math.abs(x.p - x.e) <= 0.5 ? "✓" : fmtMnt(x.p - x.e)}</td>))}</tr>
-                </tbody>
-              </table>
-            </div>
-          )}
+          {multi && <PerMonthTable row={row} which={which}/>}
           {err ? (
             <div className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-700">{err}</div>
           ) : !data ? (
@@ -348,10 +394,208 @@ function EntriesModal({ row, which, year, months, onClose }: {
   );
 }
 
+// ── ХА (худалдан авалт)-ын задаргаа — Файл оруулалтын орлогын файлын баримтууд ─────
+interface PurchaseDoc {
+  month: number; doc: string; date: string; utga: string; account: string; user: string;
+  supplier: string; amount: number; discount: number; locations: string[];
+  lines: [string, string, string, number, number, number, number][];   // код, нэр, байршил, тоо, нэгж үнэ, дүн, хөнгөлөлт
+}
+const fmtQty = (n: number) => n.toLocaleString("mn-MN", { maximumFractionDigits: 3 });
+
+function PurchasesModal({ row, which, year, months, onClose }: {
+  row: ReportRow; which: Which; year: number; months: number[]; onClose: () => void;
+}) {
+  const [data, setData] = useState<{ documents: PurchaseDoc[]; missing: number[]; total: number } | null>(null);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const monthsKey = months.join(",");
+  useEffect(() => {
+    let alive = true;
+    api.get("/ebarimt/purchases", { params: { year, months: monthsKey, code: row.code, which }, timeout: 120000 })
+      .then(r => { if (alive) setData(r.data); })
+      .catch(e => { if (alive) setErr(e?.response?.data?.detail ?? "Орлогын баримт ачааллах амжилтгүй"); });
+    return () => { alive = false; };
+  }, [row.code, which, year, monthsKey]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const orgil = which === "orgil";
+  const multi = months.length > 1;
+  const purchase = branchVals(row, which).p;
+  const gap = data ? purchase - data.total : 0;
+  const toggle = (k: string) => setOpen(s => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const docs = data?.documents ?? [];
+  const docsByMonth = data ? Object.fromEntries(months.map(m => [m, data.missing.includes(m) ? null
+    : docs.reduce((s, d) => s + (d.month === m ? d.amount : 0), 0)])) as Record<number, number | null> : undefined;
+  const allOpen = docs.length > 0 && docs.every(d => open.has(`${d.month}-${d.doc}`));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 sm:p-6" onClick={onClose}>
+      <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-3 sm:px-5">
+          <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-white ${orgil ? "bg-blue-600" : "bg-violet-600"}`}><FileSpreadsheet size={16}/></div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[14px] font-bold text-gray-900">{row.name || row.code} <span className="font-mono text-[12px] font-normal text-gray-400">#{row.code}</span></div>
+            <div className="text-[11.5px] text-gray-500">
+              {orgil ? "Оргил" : "Хархорин"} — худалдан авалтын задаргаа (орлогын файлын баримтууд) · {year} · {monthsLabel(months)}
+            </div>
+          </div>
+          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={16}/></button>
+        </div>
+
+        <SummaryStats row={row} which={which} extra={data && (
+          <>
+            <div className="rounded-xl border border-gray-100 bg-white px-3 py-1.5">
+              <div className="text-[10.5px] font-semibold text-gray-500">Орлогын баримт ({docs.length})</div>
+              <div className="font-mono text-[15px] font-bold tabular-nums text-gray-900">{fmtMnt(data.total)}</div>
+            </div>
+            {Math.abs(gap) > 0.5 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5" title="ХА (өглөгийн тайлан) ба орлогын файлын баримтуудын зөрүү — үйлчилгээ, бусад кредит гүйлгээ эсвэл орлогын файл дутуу байж болно">
+                <div className="text-[10.5px] font-semibold text-amber-700">Орлогын файлд тусгагдаагүй</div>
+                <div className="font-mono text-[15px] font-bold tabular-nums text-amber-700">{fmtMnt(gap)}</div>
+              </div>
+            )}
+          </>
+        )}/>
+
+        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 sm:px-5">
+          {multi && <PerMonthTable row={row} which={which} docs={docsByMonth}/>}
+          {!!data?.missing.length && (
+            <div className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[11.5px] text-amber-800">
+              Орлогын файл оруулаагүй: {monthsLabel(data.missing)} —{" "}
+              <Link to={orgil ? "/imports/income-file" : "/imports/income-file?branch=harhorin"} className="font-semibold underline underline-offset-2 hover:text-amber-950">
+                Файл оруулалт → Орлогын файл{orgil ? "" : " → Хархорин салбар"}
+              </Link>.
+            </div>
+          )}
+          {err ? (
+            <div className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-700">{err}</div>
+          ) : !data ? (
+            <div className="flex items-center gap-2 py-10 text-[12.5px] text-gray-400"><RefreshCw size={14} className="animate-spin"/>Орлогын баримтуудыг уншиж байна…</div>
+          ) : docs.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-gray-200 py-10 text-center text-[12.5px] text-gray-500">
+              {data.missing.length === months.length ? "Эдгээр сарын орлогын файл оруулаагүй байна." : "Энэ хугацаанд энэ нийлүүлэгчээс орлогын баримт алга."}
+            </div>
+          ) : (
+            <table className="w-full border-collapse text-[11.5px]">
+              <thead className="sticky top-0 z-10 bg-white">
+                <tr className="border-b border-gray-200 text-left text-[10.5px] font-bold uppercase tracking-wider text-gray-500">
+                  <th className="w-7 px-1 py-1.5">
+                    <button onClick={() => setOpen(allOpen ? new Set() : new Set(docs.map(d => `${d.month}-${d.doc}`)))}
+                      title={allOpen ? "Бүгдийг хураах" : "Бүгдийг дэлгэх"} className="grid h-5 w-5 place-items-center rounded text-gray-400 hover:bg-gray-100">
+                      <ChevronDown size={12} className={allOpen ? "" : "-rotate-90"}/>
+                    </button>
+                  </th>
+                  {multi && <th className="px-2 py-1.5">Сар</th>}
+                  <th className="px-2 py-1.5">Огноо</th>
+                  <th className="px-2 py-1.5">Баримтын дугаар</th>
+                  <th className="px-2 py-1.5">Утга</th>
+                  <th className="px-2 py-1.5">Байршил</th>
+                  <th className="px-2 py-1.5 text-right">Мөр</th>
+                  <th className="px-2 py-1.5 text-right">Дүн</th>
+                  <th className="px-2 py-1.5">Оруулсан</th>
+                </tr>
+              </thead>
+              <tbody>
+                {docs.map(d => {
+                  const k = `${d.month}-${d.doc}`;
+                  const isOpen = open.has(k);
+                  return [
+                    <tr key={k} onClick={() => toggle(k)} className={`cursor-pointer border-b border-gray-50 ${isOpen ? "bg-blue-50/50" : "hover:bg-gray-50/70"}`}>
+                      <td className="px-1 py-1 text-gray-400"><ChevronDown size={12} className={isOpen ? "" : "-rotate-90"}/></td>
+                      {multi && <td className="px-2 py-1 text-gray-500">{d.month}</td>}
+                      <td className="px-2 py-1 whitespace-nowrap text-gray-700">{d.date}</td>
+                      <td className="px-2 py-1 whitespace-nowrap font-mono text-gray-700">{d.doc}</td>
+                      <td className="max-w-[220px] truncate px-2 py-1 text-gray-600" title={d.utga}>{d.utga}</td>
+                      <td className="max-w-[180px] truncate px-2 py-1 text-gray-600" title={d.locations.join(", ")}>{d.locations.join(", ")}</td>
+                      <td className="px-2 py-1 text-right text-gray-500">{d.lines.length}</td>
+                      <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums text-gray-900">
+                        <span className="underline-offset-2 hover:underline">{fmtMnt(d.amount)}</span>
+                      </td>
+                      <td className="px-2 py-1 whitespace-nowrap text-gray-500">{d.user}</td>
+                    </tr>,
+                    isOpen && (
+                      <tr key={`${k}-lines`} className="border-b border-blue-100 bg-blue-50/30">
+                        <td/>
+                        <td colSpan={multi ? 8 : 7} className="px-2 pb-2 pt-1">
+                          <table className="w-full text-[11px]">
+                            <thead><tr className="text-left text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                              <th className="px-1.5 py-1">Код</th><th className="px-1.5 py-1">Бараа</th><th className="px-1.5 py-1">Байршил</th>
+                              <th className="px-1.5 py-1 text-right">Тоо</th><th className="px-1.5 py-1 text-right">Нэгж үнэ</th>
+                              <th className="px-1.5 py-1 text-right">Дүн</th>
+                              {d.discount ? <th className="px-1.5 py-1 text-right">Хөнгөлөлт</th> : null}
+                            </tr></thead>
+                            <tbody>
+                              {d.lines.map((l, i) => (
+                                <tr key={i} className="border-t border-blue-100/70">
+                                  <td className="px-1.5 py-0.5 font-mono text-gray-500">{l[0]}</td>
+                                  <td className="px-1.5 py-0.5 text-gray-800">{l[1]}</td>
+                                  <td className="px-1.5 py-0.5 text-gray-500">{l[2]}</td>
+                                  <td className="px-1.5 py-0.5 text-right font-mono tabular-nums">{fmtQty(l[3])}</td>
+                                  <td className="px-1.5 py-0.5 text-right font-mono tabular-nums">{fmtAmt(l[4])}</td>
+                                  <td className="px-1.5 py-0.5 text-right font-mono font-semibold tabular-nums">{fmtAmt(l[5])}</td>
+                                  {d.discount ? <td className="px-1.5 py-0.5 text-right font-mono tabular-nums text-gray-500">{fmtAmt(l[6])}</td> : null}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    ),
+                  ];
+                })}
+              </tbody>
+              <tfoot className="sticky bottom-0 bg-white">
+                <tr className="border-t border-gray-200 font-bold">
+                  <td colSpan={multi ? 6 : 5} className="px-2 py-1.5 text-gray-500">Нийт {docs.length} баримт</td>
+                  <td className="px-2 py-1.5 text-right text-gray-500">{docs.reduce((n, d) => n + d.lines.length, 0)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtMnt(data.total)}</td>
+                  <td/>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** НӨАТ чөлөөлөгдөх дүн — сараар горимд дарж оруулна (Enter/blur хадгална, Esc болино). */
+function ExemptCell({ value, editable, onSave }: { value: number; editable: boolean; onSave: (v: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (editing) ref.current?.select(); }, [editing]);
+  if (!editable) return <span className={value ? "text-amber-700" : "text-gray-300"}>{fmtMnt(value)}</span>;
+  function commit() {
+    setEditing(false);
+    const t = draft.replace(/[\s,]/g, "");
+    const v = t === "" ? 0 : Number(t);
+    if (Number.isFinite(v) && Math.abs(v - (value || 0)) > 0.004) onSave(Math.round(v * 100) / 100);
+  }
+  if (editing) {
+    return (
+      <input ref={ref} value={draft} inputMode="decimal" onChange={e => setDraft(e.target.value)} onBlur={commit}
+        onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+        className="w-full rounded border border-amber-400 bg-white px-1 py-0.5 text-right font-mono text-[11px] outline-none ring-2 ring-amber-200"/>
+    );
+  }
+  return (
+    <div onClick={() => { setDraft(value ? String(value) : ""); setEditing(true); }} title="НӨАТ чөлөөлөгдөх дүн оруулах"
+      className={`cursor-pointer rounded px-1 py-0.5 hover:bg-amber-50 hover:text-amber-700 ${value ? "font-semibold text-amber-700" : "text-gray-300"}`}>
+      {value ? fmtMnt(value) : "—"}
+    </div>
+  );
+}
+
 // Баганын шүүлтүүдийн анхны утга
 const EMPTY_COL_FILTERS = {
   employee: "", code: "", name: "", registry: "", phone: "", note: "",
-  po: "", vo: "", do_: "", ph: "", vh: "", dh: "",
+  po: "", vo: "", eo: "", do_: "", ph: "", vh: "", eh: "", dh: "",
 };
 
 export default function EbarimtReportPage() {
@@ -383,6 +627,8 @@ export default function EbarimtReportPage() {
   const [rangeMonths, setRangeMonths] = useState<number[]>([]);
   // Ebarimt (НӨАТ) дүн дээр дарахад — тухайн харилцагчийн шивсэн баримтууд
   const [entries, setEntries] = useState<{ row: ReportRow; which: Which } | null>(null);
+  // ХА дүн дээр дарахад — орлогын файлын баримтууд → бараа
+  const [purchases, setPurchases] = useState<{ row: ReportRow; which: Which } | null>(null);
 
   async function loadReport(y = year, m = month) {
     setLoading(true);
@@ -452,6 +698,22 @@ export default function EbarimtReportPage() {
         rows: prev.rows.map(x => x.code === code ? { ...x, note: r.data.note ?? note } : x),
       } : prev);
     } catch { setErr("Тайлбар хадгалах амжилтгүй"); }
+  }
+
+  // НӨАТ чөлөөлөгдөх дүн — мөрийг шууд шинэчилж (Зөрүү дахин бодогдоно), дараа нь хадгална
+  async function saveExempt(code: string, which: Which, amount: number) {
+    const k = which === "orgil" ? "exempt_orgil" : "exempt_harhorin";
+    const dk = which === "orgil" ? "diff_orgil" : "diff_harhorin";
+    setReport(prev => prev ? {
+      ...prev,
+      rows: prev.rows.map(x => x.code !== code ? x : { ...x, [k]: amount, [dk]: x[dk] + (x[k] || 0) - amount }),
+    } : prev);
+    try {
+      await api.put("/ebarimt/exempt", { year, month, code, which, amount });
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? "Чөлөөлөгдөх дүн хадгалах амжилтгүй");
+      await reload();
+    }
   }
 
   // Харилцагчийн мэдээллийн гар засвар (Ажилтан/Регистр/Утас/Тайлбар).
@@ -544,18 +806,20 @@ export default function EbarimtReportPage() {
     if (!txtOk(r.note, cf.note)) return false;
     if (!numOk(r.purchase_orgil, cf.po)) return false;
     if (!numOk(r.vat_orgil, cf.vo)) return false;
+    if (!numOk(r.exempt_orgil || 0, cf.eo)) return false;
     if (!diffOk(r.diff_orgil, cf.do_)) return false;
     if (!numOk(r.purchase_harhorin, cf.ph)) return false;
     if (!numOk(r.vat_harhorin, cf.vh)) return false;
+    if (!numOk(r.exempt_harhorin || 0, cf.eh)) return false;
     if (!diffOk(r.diff_harhorin, cf.dh)) return false;
     return true;
   });
   const hasColFilters = Object.values(colFilters).some(v => v !== "");
 
   const tot = filtered.reduce((a, r) => ({
-    po: a.po + r.purchase_orgil, vo: a.vo + r.vat_orgil,
-    ph: a.ph + r.purchase_harhorin, vh: a.vh + r.vat_harhorin,
-  }), { po: 0, vo: 0, ph: 0, vh: 0 });
+    po: a.po + r.purchase_orgil, vo: a.vo + r.vat_orgil, eo: a.eo + (r.exempt_orgil || 0),
+    ph: a.ph + r.purchase_harhorin, vh: a.vh + r.vat_harhorin, eh: a.eh + (r.exempt_harhorin || 0),
+  }), { po: 0, vo: 0, eo: 0, ph: 0, vh: 0, eh: 0 });
 
   const missingCount = rows.filter(r => r.diff_orgil > 0.5 || r.diff_harhorin > 0.5).length;
   const uploadedCount = report ? FILE_SLOTS.filter(s => report.files?.[s.kind]).length : 0;
@@ -826,9 +1090,11 @@ export default function EbarimtReportPage() {
                 <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Утас</th>
                 <th className="border-l border-blue-100 bg-blue-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Оргил ХА</th>
                 <th className="bg-blue-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Оргил Ebarimt</th>
+                <th className="bg-blue-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-amber-700" title="Оргил — НӨАТ чөлөөлөгдөх дүн (Зөрүү = ХА − Ebarimt − чөлөөлөгдөх)">НӨАТ чөлөөлөгдөх</th>
                 <th className="border-r border-blue-100 bg-blue-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-blue-700">Зөрүү</th>
                 <th className="bg-violet-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Хархорин ХА</th>
                 <th className="bg-violet-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Хархорин Ebarimt</th>
+                <th className="bg-violet-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-amber-700" title="Хархорин — НӨАТ чөлөөлөгдөх дүн (Зөрүү = ХА − Ebarimt − чөлөөлөгдөх)">НӨАТ чөлөөлөгдөх</th>
                 <th className="border-r border-violet-100 bg-violet-50/40 px-2 pt-2.5 pb-1 text-right text-[10px] font-bold uppercase tracking-wider text-violet-700">Зөрүү</th>
                 <th className="px-2 pt-2.5 pb-1 text-left text-[10px] font-bold uppercase tracking-wider text-gray-500">Тайлбар</th>
               </tr>
@@ -850,9 +1116,11 @@ export default function EbarimtReportPage() {
                 <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.phone} onChange={setCF("phone")}/></th>
                 <th className="border-l border-blue-100 bg-blue-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.po} onChange={setCF("po")}/></th>
                 <th className="bg-blue-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.vo} onChange={setCF("vo")}/></th>
+                <th className="bg-blue-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.eo} onChange={setCF("eo")}/></th>
                 <th className="border-r border-blue-100 bg-blue-50/40 px-1 pb-1.5"><DiffFilterSelect value={colFilters.do_} onChange={setCF("do_")}/></th>
                 <th className="bg-violet-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.ph} onChange={setCF("ph")}/></th>
                 <th className="bg-violet-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.vh} onChange={setCF("vh")}/></th>
+                <th className="bg-violet-50/40 px-1 pb-1.5"><NumFilterSelect value={colFilters.eh} onChange={setCF("eh")}/></th>
                 <th className="border-r border-violet-100 bg-violet-50/40 px-1 pb-1.5"><DiffFilterSelect value={colFilters.dh} onChange={setCF("dh")}/></th>
                 <th className="px-1 pb-1.5"><ColFilterInput value={colFilters.note} onChange={setCF("note")}/></th>
               </tr>
@@ -915,20 +1183,36 @@ export default function EbarimtReportPage() {
                         </div>
                       </div>
                     </td>
-                    <td className="border-l border-blue-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700">{fmtMnt(r.purchase_orgil)}</td>
+                    <td className="border-l border-blue-100 px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
+                      <button onClick={() => setPurchases({ row: r, which: "orgil" })} title="Дарж орлогын баримтууд, бараануудыг харах"
+                        className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-blue-50 hover:text-blue-700 hover:underline">
+                        {fmtMnt(r.purchase_orgil)}
+                      </button>
+                    </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
                       <button onClick={() => setEntries({ row: r, which: "orgil" })} title={`${r.cnt_orgil} баримт — дарж шивсэн баримтуудыг харах`}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-blue-50 hover:text-blue-700 hover:underline">
                         {fmtMnt(r.vat_orgil)}
                       </button>
                     </td>
+                    <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px] min-w-[84px]">
+                      <ExemptCell value={r.exempt_orgil || 0} editable={mode === "month"} onSave={v => saveExempt(r.code, "orgil", v)}/>
+                    </td>
                     <td className="border-r border-blue-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px]">{diffCell(r.diff_orgil)}</td>
-                    <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] text-gray-700">{fmtMnt(r.purchase_harhorin)}</td>
+                    <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
+                      <button onClick={() => setPurchases({ row: r, which: "harhorin" })} title="Дарж орлогын баримтууд, бараануудыг харах"
+                        className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-violet-50 hover:text-violet-700 hover:underline">
+                        {fmtMnt(r.purchase_harhorin)}
+                      </button>
+                    </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
                       <button onClick={() => setEntries({ row: r, which: "harhorin" })} title={`${r.cnt_harhorin} баримт — дарж шивсэн баримтуудыг харах`}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-violet-50 hover:text-violet-700 hover:underline">
                         {fmtMnt(r.vat_harhorin)}
                       </button>
+                    </td>
+                    <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px] min-w-[84px]">
+                      <ExemptCell value={r.exempt_harhorin || 0} editable={mode === "month"} onSave={v => saveExempt(r.code, "harhorin", v)}/>
                     </td>
                     <td className="border-r border-violet-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px]">{diffCell(r.diff_harhorin)}</td>
                     <td className="px-1 py-1 min-w-[140px] max-w-[220px]">
@@ -950,10 +1234,12 @@ export default function EbarimtReportPage() {
                   </td>
                   <td className="border-l border-blue-100 bg-blue-50/40 px-2 py-2 text-right font-mono tabular-nums text-blue-800">{fmtMnt(tot.po)}</td>
                   <td className="bg-blue-50/40 px-2 py-2 text-right font-mono tabular-nums text-blue-800">{fmtMnt(tot.vo)}</td>
-                  <td className="border-r border-blue-100 bg-blue-50/40 px-2 py-2 text-right font-mono tabular-nums">{diffCell(tot.po - tot.vo)}</td>
+                  <td className="bg-blue-50/40 px-2 py-2 text-right font-mono tabular-nums text-amber-700">{fmtMnt(tot.eo)}</td>
+                  <td className="border-r border-blue-100 bg-blue-50/40 px-2 py-2 text-right font-mono tabular-nums">{diffCell(tot.po - tot.vo - tot.eo)}</td>
                   <td className="bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums text-violet-800">{fmtMnt(tot.ph)}</td>
                   <td className="bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums text-violet-800">{fmtMnt(tot.vh)}</td>
-                  <td className="border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums">{diffCell(tot.ph - tot.vh)}</td>
+                  <td className="bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums text-amber-700">{fmtMnt(tot.eh)}</td>
+                  <td className="border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-right font-mono tabular-nums">{diffCell(tot.ph - tot.vh - tot.eh)}</td>
                   <td/>
                 </tr>
               </tfoot>
@@ -961,6 +1247,9 @@ export default function EbarimtReportPage() {
           </table>
           {entries && (
             <EntriesModal row={entries.row} which={entries.which} year={year} months={usedMonths} onClose={() => setEntries(null)}/>
+          )}
+          {purchases && (
+            <PurchasesModal row={purchases.row} which={purchases.which} year={year} months={usedMonths} onClose={() => setPurchases(null)}/>
           )}
           {filtered.length === 0 && (
             <div className="flex flex-col items-center py-14 text-gray-400 gap-2">

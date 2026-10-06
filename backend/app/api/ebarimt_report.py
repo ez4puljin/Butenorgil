@@ -21,6 +21,11 @@ Endpoint-ууд:
   GET    /ebarimt/report-range      — ?year&months=1,2,3 → сонгосон сарууд/бүтэн оны нэгтгэл
   GET    /ebarimt/entries           — ?year&months&code&which=orgil|harhorin → харилцагчийн шивсэн
                                       Ebarimt (НӨАТ) баримтууд — тайлан дээрх Ebarimt дүнгийн задаргаа
+  GET    /ebarimt/purchases         — ?year&months&code&which → ХА-ийн задаргаа: орлогын файлын баримтууд
+                                      (дүн, бараа мөрүүд) — app/services/income_index
+  PUT    /ebarimt/exempt            — НӨАТ чөлөөлөгдөх дүн (он, сар, харилцагч, салбар)
+
+Зөрүү = Худалдан авалт − Манайд шивсэн НӨАТ (Ebarimt) − НӨАТ чөлөөлөгдөх дүн.
 """
 from __future__ import annotations
 
@@ -41,7 +46,7 @@ from app.api.deps import get_db, require_role
 from app.core.audit import audit
 from app.models.user import User
 from app.models.ebarimt_file import (
-    EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EBARIMT_KINDS,
+    EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EbarimtExempt, EBARIMT_KINDS,
 )
 
 
@@ -351,6 +356,8 @@ def warm_ebarimt_reports() -> None:
     """main-ийн warm loop-оос — энэ болон өмнөх оны оруулсан сар бүрийн тайлан, баримтын задаргааг
     cache-д бэлдэнэ (нэгтгэсэн тайлан, НӨАТ задаргаа анх нээхэд хүлээхгүй). Өөрчлөгдөөгүй бол агшин зуур."""
     from app.core.db import SessionLocal
+    from app.services import income_index
+    income_index.warm()                                           # ХА задаргаа — орлогын файлууд
     db = SessionLocal()
     try:
         this_year = datetime.now().year
@@ -552,6 +559,8 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
         if (n.note or "").strip()
     }
     ovr = {o.code: o for o in db.query(EbarimtCustomerOverride).all()}
+    exempts = {x.code: x for x in db.query(EbarimtExempt).filter(
+        EbarimtExempt.year == year, EbarimtExempt.month == month).all()}
 
     out_rows = []
     for r in payload["rows"]:
@@ -575,10 +584,12 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
                 regs = _split_registry(row["registry"])
                 vo, no = _vat_for(regs, maps.get("v1", {}), maps.get("c1", {}))
                 vh, nh = _vat_for(regs, maps.get("v2", {}), maps.get("c2", {}))
-                row.update({
-                    "vat_orgil": vo, "cnt_orgil": no, "diff_orgil": row["purchase_orgil"] - vo,
-                    "vat_harhorin": vh, "cnt_harhorin": nh, "diff_harhorin": row["purchase_harhorin"] - vh,
-                })
+                row.update({"vat_orgil": vo, "cnt_orgil": no, "vat_harhorin": vh, "cnt_harhorin": nh})
+        x = exempts.get(r["code"])
+        row["exempt_orgil"] = float(x.orgil or 0) if x else 0.0
+        row["exempt_harhorin"] = float(x.harhorin or 0) if x else 0.0
+        row["diff_orgil"] = row["purchase_orgil"] - row["vat_orgil"] - row["exempt_orgil"]
+        row["diff_harhorin"] = row["purchase_harhorin"] - row["vat_harhorin"] - row["exempt_harhorin"]
         out_rows.append(row)
     return payload, out_rows
 
@@ -636,7 +647,8 @@ def uploaded_months(
             for m, ks in sorted(kinds.items())]
 
 
-_SUM_FIELDS = ("purchase_orgil", "vat_orgil", "cnt_orgil", "purchase_harhorin", "vat_harhorin", "cnt_harhorin")
+_SUM_FIELDS = ("purchase_orgil", "vat_orgil", "cnt_orgil", "exempt_orgil",
+               "purchase_harhorin", "vat_harhorin", "cnt_harhorin", "exempt_harhorin")
 
 
 @router.get("/report-range")
@@ -648,7 +660,7 @@ def report_range(
 ):
     """Сонгосон сарууд (эсвэл бүтэн он)-ын нэгтгэсэн тайлан: сар бүрийн тайланг (гар засвартай)
     харилцагчийн кодоор нэмнэ. Харилцагчийн мэдээлэл — хамгийн сүүлийн сарынх; тэмдэглэлүүд
-    сараар; by_month — сар бүрийн [ХА Оргил, Ebarimt Оргил, ХА Хархорин, Ebarimt Хархорин]."""
+    сараар; by_month — сар бүрийн {po, vo, eo, ph, vh, eh} (ХА, Ebarimt, чөлөөлөгдөх × салбар)."""
     _validate_ym(year, 1)
     ms = _parse_months(months) or [x["month"] for x in uploaded_months(year=year, db=db, u=u) if "data" in x["kinds"]]
     agg: dict[str, dict] = {}
@@ -671,11 +683,12 @@ def report_range(
                 a[f] += r[f]
             if (r.get("note") or "").strip():
                 a["notes"].append(f"{m}-р сар: {r['note'].strip()}")
-            a["by_month"][m] = [r["purchase_orgil"], r["vat_orgil"], r["purchase_harhorin"], r["vat_harhorin"]]
+            a["by_month"][m] = {"po": r["purchase_orgil"], "vo": r["vat_orgil"], "eo": r["exempt_orgil"],
+                                "ph": r["purchase_harhorin"], "vh": r["vat_harhorin"], "eh": r["exempt_harhorin"]}
     out = []
     for a in agg.values():
-        a["diff_orgil"] = a["purchase_orgil"] - a["vat_orgil"]
-        a["diff_harhorin"] = a["purchase_harhorin"] - a["vat_harhorin"]
+        a["diff_orgil"] = a["purchase_orgil"] - a["vat_orgil"] - a["exempt_orgil"]
+        a["diff_harhorin"] = a["purchase_harhorin"] - a["vat_harhorin"] - a["exempt_harhorin"]
         a["note"] = "; ".join(a.pop("notes"))
         out.append(a)
     return {
@@ -721,6 +734,75 @@ def ebarimt_entries(
         out += [{"month": m, **{k: v for k, v in rec.items() if k != "_ttd"}} for rec in recs if rec["_ttd"] in regs]
     return {"code": code.strip(), "which": which, "year": year, "months": ms, "columns": columns,
             "registries": sorted(registries), "no_file": no_file, "rows": out}
+
+
+@router.get("/purchases")
+def purchase_documents(
+    year: int = Query(...),
+    months: str = Query(..., description="1 эсвэл 1,2,3"),
+    code: str = Query(..., max_length=30),
+    which: str = Query("orgil", pattern="^(orgil|harhorin)$"),
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """ХА (худалдан авалт)-ын задаргаа: Файл оруулалтын орлогын файлаас тухайн нийлүүлэгчийн баримтууд
+    (дүн, бараа мөрүүд). Оргил — үндсэн орлогын файл, Хархорин — салбарын орлогын файл.
+    missing — орлогын файл оруулаагүй сарууд."""
+    from app.services import income_index
+    _validate_ym(year, 1)
+    ms = _parse_months(months)
+    if not ms:
+        raise HTTPException(400, "Сар сонгоно уу.")
+    docs, missing = [], []
+    for m in ms:
+        got = income_index.documents(db, which, year, m, code.strip())
+        if got is None:
+            missing.append(m)
+            continue
+        docs += [{"month": m, **d} for d in got]
+    return {"code": code.strip(), "which": which, "year": year, "months": ms, "missing": missing,
+            "documents": docs, "total": round(sum(d["amount"] for d in docs), 2)}
+
+
+class ExemptIn(BaseModel):
+    year: int
+    month: int
+    code: str
+    which: str                       # orgil | harhorin
+    amount: Optional[float] = None   # None / 0 → арилгана
+
+
+@router.put("/exempt")
+def save_exempt(
+    body: ExemptIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """НӨАТ чөлөөлөгдөх дүн — Зөрүү = ХА − Ebarimt − чөлөөлөгдөх. Хоёр салбар хоёулаа 0 бол мөрийг устгана."""
+    import math
+    _validate_ym(body.year, body.month)
+    code = (body.code or "").strip()
+    if not code:
+        raise HTTPException(400, "code хоосон байна.")
+    if body.which not in ("orgil", "harhorin"):
+        raise HTTPException(400, "Салбар orgil эсвэл harhorin.")
+    amount = round(float(body.amount or 0), 2)
+    if not math.isfinite(amount) or abs(amount) > 1e12:
+        raise HTTPException(400, "Дүн буруу байна.")
+    r = db.query(EbarimtExempt).filter(EbarimtExempt.year == body.year, EbarimtExempt.month == body.month,
+                                       EbarimtExempt.code == code).first()
+    if r is None:
+        if not amount:
+            return {"ok": True, "which": body.which, "amount": 0.0}
+        r = EbarimtExempt(year=body.year, month=body.month, code=code, orgil=0.0, harhorin=0.0)
+        db.add(r)
+    setattr(r, body.which, amount)
+    r.updated_by_name = str(getattr(u, "username", "") or "")
+    r.updated_at = datetime.utcnow()
+    if not (r.orgil or 0) and not (r.harhorin or 0):
+        db.delete(r)
+    db.commit()
+    return {"ok": True, "which": body.which, "amount": amount}
 
 
 class OverrideIn(BaseModel):
