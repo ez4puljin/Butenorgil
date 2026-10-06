@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, RefreshCw, AlertCircle, X, Check,
   ReceiptText, FileSpreadsheet, Download, Trash2, Search, Users, Phone,
-  RotateCcw, UserX, CalendarRange, ChevronDown,
+  RotateCcw, UserX, CalendarRange, ChevronDown, ExternalLink,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
@@ -44,7 +44,25 @@ interface ReportRow {
 }
 
 type Which = "orgil" | "harhorin";
-interface MonthAvail { month: number; kinds: string[]; complete: boolean }
+type PurchaseKind = "income" | "legacy" | null;
+interface MonthAvail {
+  month: number;
+  kinds: string[];                                     // Ebarimt цэсэнд оруулсан файлууд
+  purchase?: Partial<Record<Which, PurchaseKind>>;     // ХА-ийн эх сурвалж салбар бүрээр
+  complete: boolean;
+}
+
+// ХА-ийн эх сурвалж — Файл оруулалтын орлогын файл (тэр сард байхгүй бол хуучин өглөгийн тайлан)
+interface IncomeFileMeta {
+  filename: string; month: number; size_bytes: number; row_count: number;
+  uploaded_at: string | null; uploaded_by: string;
+}
+interface PurchaseSource {
+  source: "income" | "legacy" | "none";
+  files?: IncomeFileMeta[];
+  docs?: number; lines?: number; total?: number;
+  date_from?: string | null; date_to?: string | null;
+}
 
 // Data-д байхгүй ч худалдан авалттай харилцагчдын бүлэг (backend-тэй ижил)
 const ORPHAN_EMP = "Data-д байхгүй";
@@ -53,6 +71,7 @@ interface ReportData {
   rows: ReportRow[];
   employees: { name: string; customers: number }[];
   files?: Record<string, FileInfo | null>;
+  purchase_source?: Partial<Record<Which, PurchaseSource>>;
   // сарын тайланд: дутуу файлын төрлүүд; нэгтгэсэнд: {сар: дутуу төрлүүд}
   missing: string[] | Record<string, string[]>;
   error: string | null;
@@ -74,14 +93,29 @@ function monthsLabel(ms: number[]) {
   return parts.length ? `${parts.join(", ")}-р сар` : "сар сонгоогүй";
 }
 
-// Файлын слотууд — хуучин Tailan.xlsm-ийн эх үүсвэрүүд
+// Ebarimt цэсэнд оруулдаг файлууд — хуучин Tailan.xlsm-ийн эх үүсвэрүүд
 const FILE_SLOTS: { kind: string; label: string; hint: string }[] = [
   { kind: "data",     label: "Data",                     hint: "Харилцагчдын мэдээлэл (Код, Нэр, Регистр, Нөат=ажилтан)" },
-  { kind: "orgil",    label: "Оргил худалдан авалт",     hint: "Эрхэтээс татсан Оргилын өглөгийн тайлан (.xls)" },
-  { kind: "harhorin", label: "Хархорин худалдан авалт",  hint: "Эрхэтээс татсан Хархорины өглөгийн тайлан (.xls)" },
   { kind: "ebarimt",  label: "Ebarimt (Оргил)",          hint: "Оргил руу шивсэн Ebarimt-аас татсан файл" },
   { kind: "ebarimt2", label: "Ebarimt (Хархорин)",       hint: "Хархорин руу шивсэн Ebarimt-аас татсан файл" },
 ];
+// Худалдан авалт — энд оруулахгүй, Файл оруулалтын орлогын файлаас автоматаар бодогдоно
+const PURCHASE_CARDS: { which: Which; label: string; path: string; link: string }[] = [
+  { which: "orgil",    label: "Оргил худалдан авалт",    path: "Файл оруулалт → Орлогын файл",                     link: "/imports/income-file" },
+  { which: "harhorin", label: "Хархорин худалдан авалт", path: "Файл оруулалт → Орлогын файл → Хархорин салбар", link: "/imports/income-file?branch=harhorin" },
+];
+const KIND_LABEL: Record<string, string> = {
+  ...Object.fromEntries(FILE_SLOTS.map(x => [x.kind, x.label])),
+  income_orgil: "Оргил орлогын файл", income_harhorin: "Хархорин орлогын файл",
+};
+/** Сарын дутуу эх сурвалжууд — сар сонголтын tooltip-д. */
+function monthMissing(a: MonthAvail): string[] {
+  return [
+    ...FILE_SLOTS.filter(x => !a.kinds.includes(x.kind)).map(x => x.label),
+    ...PURCHASE_CARDS.filter(c => a.purchase?.[c.which] !== "income")
+      .map(c => KIND_LABEL[`income_${c.which}`] + (a.purchase?.[c.which] === "legacy" ? " (одоохондоо хуучин өглөгийн тайлангаар)" : "")),
+  ];
+}
 
 const MN_MONTHS = ["1-р сар","2-р сар","3-р сар","4-р сар","5-р сар","6-р сар",
                    "7-р сар","8-р сар","9-р сар","10-р сар","11-р сар","12-р сар"];
@@ -229,6 +263,49 @@ interface EntriesData {
 const AMOUNT_COLS = ["НӨАТ", "Цэвэр дүн", "Нийт дүн"];
 const fmtAmt = (v: unknown) =>
   typeof v === "number" ? v.toLocaleString("mn-MN", { maximumFractionDigits: 2 }) : (v ?? "") as string;
+
+/** Файлын самбар дахь «худалдан авалт» карт — Файл оруулалтын орлогын файлын мэдээлэл. */
+function PurchaseSourceCard({ card, src, legacy }: {
+  card: (typeof PURCHASE_CARDS)[number]; src?: PurchaseSource; legacy?: FileInfo | null;
+}) {
+  const ok = src?.source === "income";
+  const files = src?.files ?? [];
+  const last = [...files].sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""))[0];
+  return (
+    <div className={`flex flex-col rounded-xl border p-2.5 ${ok ? "border-emerald-200 bg-emerald-50/50" : "border-amber-200 bg-amber-50/60"}`}>
+      <div className="flex-1">
+      <div className="text-[11.5px] font-bold text-gray-800 leading-tight">{card.label}</div>
+      <div className="text-[9.5px] text-gray-400 leading-tight">{card.path}</div>
+      {ok ? (
+        <>
+          {files.map(f => (
+            <div key={f.filename} className="mt-0.5 truncate text-[10px] text-emerald-700" title={f.filename}>
+              <Check size={9} className="inline mr-0.5"/>{f.filename}{f.month ? "" : " · бүтэн он"}
+            </div>
+          ))}
+          <div className="text-[9.5px] text-gray-500">
+            {src?.docs} баримт · {src?.lines} мөр{src?.date_from ? ` · ${src.date_from.slice(5)} – ${(src.date_to ?? "").slice(5)}` : ""}
+          </div>
+          <div className="text-[9.5px] text-gray-500">Нийт <b className="font-mono text-gray-700">{fmtMnt(src?.total ?? 0)}</b></div>
+          {last && <div className="text-[9.5px] text-gray-400">{fmtDT(last.uploaded_at)}{last.uploaded_by ? ` · ${last.uploaded_by}` : ""}</div>}
+        </>
+      ) : (
+        <div className="mt-0.5 text-[10px] leading-snug text-amber-800">
+          Энэ сарын орлогын файл оруулаагүй{src?.source === "legacy"
+            ? <> — одоохондоо хуучин өглөгийн тайлангаар{legacy?.filename ? <> (<span className="font-medium">{legacy.filename}</span>)</> : null}.</>
+            : " — ХА тооцогдохгүй."}
+        </div>
+      )}
+      </div>
+      <Link to={card.link}
+        className={`mt-1.5 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1 text-[10.5px] font-semibold transition-colors ${
+          ok ? "border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50"
+             : "bg-amber-500 text-white hover:bg-amber-600"}`}>
+        <ExternalLink size={10}/>{ok ? "Файл оруулалт" : "Орлогын файл оруулах"}
+      </Link>
+    </div>
+  );
+}
 
 /** Салбарын утгууд: ХА, Ebarimt, НӨАТ чөлөөлөгдөх, Зөрүү (= ХА − Ebarimt − чөлөөлөгдөх). */
 function branchVals(row: ReportRow, which: Which) {
@@ -822,7 +899,12 @@ export default function EbarimtReportPage() {
   }), { po: 0, vo: 0, eo: 0, ph: 0, vh: 0, eh: 0 });
 
   const missingCount = rows.filter(r => r.diff_orgil > 0.5 || r.diff_harhorin > 0.5).length;
-  const uploadedCount = report ? FILE_SLOTS.filter(s => report.files?.[s.kind]).length : 0;
+  // Файлууд n/5: Ebarimt цэсний 3 файл + салбар бүрийн орлогын файл (Файл оруулалт)
+  const uploadedCount = report
+    ? FILE_SLOTS.filter(s => report.files?.[s.kind]).length
+      + PURCHASE_CARDS.filter(c => report.purchase_source?.[c.which]?.source === "income").length
+    : 0;
+  const totalSlots = FILE_SLOTS.length + PURCHASE_CARDS.length;
 
   function diffCell(v: number) {
     if (v > 0.5)  return <span className="font-bold text-rose-600">{fmtMnt(v)}</span>;
@@ -881,12 +963,12 @@ export default function EbarimtReportPage() {
             className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-semibold transition-colors ${
               showFiles
                 ? "bg-[#0071E3] text-white shadow-sm shadow-blue-500/25"
-                : uploadedCount < FILE_SLOTS.length
+                : uploadedCount < totalSlots
                   ? "border border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
                   : "border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
             }`}>
             <FileSpreadsheet size={13}/>
-            Файлууд {uploadedCount}/{FILE_SLOTS.length}
+            Файлууд {uploadedCount}/{totalSlots}
           </button>}
           <button onClick={() => reload()} disabled={loading}
             className="grid h-9 w-9 place-items-center rounded-xl border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 disabled:opacity-60 transition-colors"
@@ -912,7 +994,12 @@ export default function EbarimtReportPage() {
       {showFiles && mode === "month" && (
         <div className="shrink-0 border-b border-gray-100 bg-gray-50/50 px-4 py-3">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
-            {FILE_SLOTS.map(slot => {
+            {[FILE_SLOTS[0], ...PURCHASE_CARDS, ...FILE_SLOTS.slice(1)].map(item => {
+              if ("which" in item) {
+                return <PurchaseSourceCard key={item.which} card={item}
+                  src={report?.purchase_source?.[item.which]} legacy={report?.files?.[item.which]}/>;
+              }
+              const slot = item;
               const info = report?.files?.[slot.kind] ?? null;
               const busy = uploadingKind === slot.kind;
               return (
@@ -974,7 +1061,7 @@ export default function EbarimtReportPage() {
               const on = rangeMonths.includes(m);
               return (
                 <button key={m} onClick={() => toggleMonth(m)} disabled={!has}
-                  title={!a ? "Файл оруулаагүй" : !has ? "Data файл оруулаагүй" : a.complete ? `${m}-р сар — 5/5 файл` : `${m}-р сар — дутуу файл: ${a.kinds.length}/5`}
+                  title={!a ? "Файл оруулаагүй" : !has ? "Data файл оруулаагүй" : a.complete ? `${m}-р сар — бүх файл бүрэн` : `${m}-р сар — дутуу: ${monthMissing(a).join(", ")}`}
                   className={`relative h-7 min-w-[34px] rounded-lg px-2 text-[12px] font-semibold transition-colors ${
                     on ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/25"
                     : has ? "bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-indigo-50"
@@ -1000,7 +1087,7 @@ export default function EbarimtReportPage() {
             <div className="mt-1.5 text-[11.5px] text-amber-700">
               {!!report?.skipped?.length && <>Data файлгүй тул орхисон: {monthsLabel(report.skipped)}. </>}
               {report?.missing && !Array.isArray(report.missing) && Object.entries(report.missing).map(([m, ks]) =>
-                `${m}-р сар: ${ks.map(k => FILE_SLOTS.find(s => s.kind === k)?.label ?? k).join(", ")} дутуу`).join(" · ")}
+                `${m}-р сар: ${ks.map(k => KIND_LABEL[k] ?? k).join(", ")} дутуу`).join(" · ")}
             </div>
           )}
         </div>

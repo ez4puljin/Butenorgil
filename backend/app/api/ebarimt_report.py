@@ -1,10 +1,13 @@
-"""Ebarimt тайлан — сар бүрийн 5 эх файлыг нэгтгэж харилцагч бүрээр
+"""Ebarimt тайлан — сар бүрийн эх файлуудыг нэгтгэж харилцагч бүрээр
 худалдан авалт vs Ebarimt шивэлтийг тооцно (хуучин Tailan.xlsm VBA-ийн орлуулалт).
 
 Тооцооллын дүрэм (2026-06 сарын жинхэнэ өгөгдлөөр Tailan.xlsm-тэй 523/524 мөр
 яг тулгаж баталсан; 1 зөрсөн мөр нь VBA-ийн Регистр тусгаарлагч таниагүй алдаа
 байсныг энд зөв болгосон):
-  • Худалдан авалт  = orgil/harhorin.xls-ийн "Гүйлгээ Кредит" багана (Кодоор)
+  • Худалдан авалт  = Файл оруулалтын орлогын файл (Оргил — үндсэн, Хархорин — салбарын) дахь
+                      нийлүүлэгчийн тухайн сарын орлогын нийлбэр (Кодоор) — app/services/income_index.
+                      2026-10-06-аас Ebarimt цэсэнд orgil/harhorin.xls (өглөгийн тайлан, "Гүйлгээ
+                      Кредит") оруулахаа больсон; хуучин файл нь орлогын файлгүй сард л ашиглагдана.
   • Ebarimt шивэлт  = EBARIMT/EBARIMT2.xlsx-ийн "Нийт дүн" нийлбэр
                       (Харилцагчийн ТТД = Data-ийн Регистр; олон регистрийг
                        ';' ',' '.' зай зэргээр тусгаарлаж болно)
@@ -12,8 +15,8 @@
                       харилцагчдаа шүүж хардаг
 
 Endpoint-ууд:
-  POST   /ebarimt/import            — multipart (year, month, kind, file)
-  GET    /ebarimt/slots             — ?year&month → 5 төрлийн төлөв
+  POST   /ebarimt/import            — multipart (year, month, kind=data|ebarimt|ebarimt2, file)
+  GET    /ebarimt/slots             — ?year&month → файлын төрлүүдийн төлөв
   GET    /ebarimt/download          — ?year&month&kind → түүхий файл татах
   DELETE /ebarimt/{year}/{month}/{kind}
   GET    /ebarimt/report            — ?year&month → нэгтгэсэн тайлан (mtime cache)
@@ -54,6 +57,11 @@ router = APIRouter(prefix="/ebarimt", tags=["ebarimt"])
 
 UPLOAD_DIR = Path("app/data/uploads/ebarimt")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Ebarimt цэсэнд оруулдаг файлууд. orgil/harhorin (өглөгийн тайлан) — хуучин, оруулахаа больсон:
+# ХА нь Файл оруулалтын орлогын файлаас бодогдоно (хуучин файлыг орлогын файлгүй сард л ашиглана).
+UPLOAD_KINDS = ("data", "ebarimt", "ebarimt2")
+BRANCHES = ("orgil", "harhorin")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -238,6 +246,19 @@ def _ebarimt_entries(path: Path) -> tuple[list[str], list[dict]]:
 
 _report_cache: dict[tuple[int, int], dict] = {}
 _report_lock = threading.Lock()
+_parse_memo: dict[tuple[str, str], tuple[float, object]] = {}
+
+
+def _memo(fn, path: Path):
+    """Файлын parse-ийг (функц, зам, mtime)-аар санана — орлогын файл өөрчлөгдөж тайлан дахин
+    бодогдоход Data/Ebarimt-ийг (pandas, хэдэн секунд) дахин уншихгүй."""
+    key, mtime = (fn.__name__, str(path)), path.stat().st_mtime
+    hit = _parse_memo.get(key)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    val = fn(path)
+    _parse_memo[key] = (mtime, val)
+    return val
 
 
 def _stored_paths(db: Session, year: int, month: int) -> dict[str, Path | None]:
@@ -261,16 +282,33 @@ def _vat_for(regs: list[str], vmap: dict[str, float], cmap: dict[str, int]) -> t
     return float(sum(vmap.get(t, 0.0) for t in regs)), int(sum(cmap.get(t, 0) for t in regs))
 
 
-def _compute_report(paths: dict[str, Path | None]) -> dict:
+def _purchase_source(db: Session, paths: dict[str, Path | None], year: int, month: int,
+                     branch: str) -> tuple[dict[str, float], dict[str, str], dict]:
+    """ХА-ийн эх сурвалж: Файл оруулалтын орлогын файл → (тэр сард байхгүй бол) хуучин өглөгийн
+    тайлан (orgil/harhorin.xls) → хоосон. Буцаах: ({код: ХА}, {код: нэр}, UI-д харуулах мэдээлэл)."""
+    from app.services import income_index
+    s = income_index.month_summary(db, branch, year, month)
+    if s is not None:
+        return s["amounts"], s["names"], {
+            "source": "income", **{k: s[k] for k in ("files", "docs", "lines", "total", "date_from", "date_to")}}
+    legacy = paths.get(branch)
+    if legacy is not None:
+        amounts, names = _memo(_parse_purchases, legacy)
+        return amounts, names, {"source": "legacy", "total": round(sum(amounts.values()), 2)}
+    return {}, {}, {"source": "none"}
+
+
+def _compute_report(paths: dict[str, Path | None],
+                    purchases: dict[str, tuple[dict[str, float], dict[str, str]]]) -> dict:
     if paths.get("data") is None:
         return {"rows": [], "employees": [], "maps": None,
                 "error": "Data файл (харилцагчийн мэдээлэл) оруулаагүй байна."}
 
-    customers = _parse_data(paths["data"])  # type: ignore[arg-type]
-    o_map, o_names = _parse_purchases(paths["orgil"]) if paths.get("orgil") else ({}, {})
-    h_map, h_names = _parse_purchases(paths["harhorin"]) if paths.get("harhorin") else ({}, {})
-    v1, c1 = _parse_ebarimt(paths["ebarimt"]) if paths.get("ebarimt") else ({}, {})
-    v2, c2 = _parse_ebarimt(paths["ebarimt2"]) if paths.get("ebarimt2") else ({}, {})
+    customers = _memo(_parse_data, paths["data"])  # type: ignore[arg-type]
+    o_map, o_names = purchases["orgil"]
+    h_map, h_names = purchases["harhorin"]
+    v1, c1 = _memo(_parse_ebarimt, paths["ebarimt"]) if paths.get("ebarimt") else ({}, {})
+    v2, c2 = _memo(_parse_ebarimt, paths["ebarimt2"]) if paths.get("ebarimt2") else ({}, {})
 
     def mk_row(code, name, registry, regs, phone, tailbar, emp, is_orphan=False):
         po = float(o_map.get(code, 0.0))
@@ -334,20 +372,27 @@ def _build_employees(rows: list[dict]) -> list[dict]:
 
 
 def get_report(db: Session, year: int, month: int) -> dict:
-    """Тайланг mtime cache-тэйгээр буцаана — файлууд өөрчлөгдөөгүй бол
-    дахин parse хийхгүй (агшин зуур)."""
+    """Тайланг mtime cache-тэйгээр буцаана — Ebarimt цэсний файлууд болон тухайн оны орлогын
+    файлууд өөрчлөгдөөгүй бол дахин бодохгүй (агшин зуур)."""
+    from app.services import income_index
     paths = _stored_paths(db, year, month)
     sig = tuple(
         (k, str(p), p.stat().st_mtime if p else 0)
         for k, p in sorted(paths.items(), key=lambda x: x[0])
-    )
+    ) + (income_index.signature(db, year),)
     key = (year, month)
     with _report_lock:
         cached = _report_cache.get(key)
         if cached and cached["sig"] == sig:
             return cached["payload"]
-        payload = _compute_report(paths)
-        payload["missing"] = [k for k, p in paths.items() if p is None]
+        purchases, sources = {}, {}
+        for b in BRANCHES:
+            amounts, names, info = _purchase_source(db, paths, year, month, b)
+            purchases[b], sources[b] = (amounts, names), info
+        payload = _compute_report(paths, purchases)
+        payload["purchase_source"] = sources
+        payload["missing"] = ([k for k in UPLOAD_KINDS if paths.get(k) is None]
+                              + [f"income_{b}" for b in BRANCHES if sources[b]["source"] == "none"])
         _report_cache[key] = {"sig": sig, "payload": payload}
         return payload
 
@@ -393,8 +438,11 @@ def import_file(
     """Файлыг шалгуургүйгээр хэвээр нь хадгална. (жил, сар, төрөл)-д өмнө нь
     файл байсан бол солино."""
     _validate_ym(year, month)
-    if kind not in EBARIMT_KINDS:
-        raise HTTPException(400, f"kind нь {sorted(EBARIMT_KINDS)}-ийн нэг байх ёстой.")
+    if kind in BRANCHES:
+        raise HTTPException(400, "Худалдан авалтыг Файл оруулалт → Орлогын файлаас автоматаар бодно — "
+                                 "энд оруулах шаардлагагүй.")
+    if kind not in UPLOAD_KINDS:
+        raise HTTPException(400, f"kind нь {list(UPLOAD_KINDS)}-ийн нэг байх ёстой.")
 
     orig_name = (file.filename or "upload").replace("\\", "_").replace("/", "_")
     ext = os.path.splitext(orig_name)[1] or ".xlsx"
@@ -637,14 +685,23 @@ def uploaded_months(
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
-    """Тухайн онд сар бүр ямар файл оруулсан — нэгтгэсэн тайлангийн сар сонголтод."""
+    """Тухайн онд сар бүр ямар файл оруулсан — нэгтгэсэн тайлангийн сар сонголтод.
+    kinds — Ebarimt цэсэнд оруулсан файлууд; purchase — салбар бүрийн ХА-ийн эх сурвалж
+    (income = орлогын файл, legacy = хуучин өглөгийн тайлан, None = байхгүй)."""
+    from app.services import income_index
     _validate_ym(year, 1)
     kinds: dict[int, list[str]] = {}
     for r in db.query(EbarimtFile).filter(EbarimtFile.year == year).all():
         if r.stored_filename and (UPLOAD_DIR / r.stored_filename).exists():
             kinds.setdefault(r.month, []).append(r.kind)
-    return [{"month": m, "kinds": sorted(ks), "complete": set(ks) >= EBARIMT_KINDS}
-            for m, ks in sorted(kinds.items())]
+    out = []
+    for m, ks in sorted(kinds.items()):
+        purchase = {b: ("income" if income_index.covers(db, b, year, m) else "legacy" if b in ks else None)
+                    for b in BRANCHES}
+        up = sorted(k for k in ks if k in UPLOAD_KINDS)
+        out.append({"month": m, "kinds": up, "purchase": purchase,
+                    "complete": set(up) >= set(UPLOAD_KINDS) and all(v == "income" for v in purchase.values())})
+    return out
 
 
 _SUM_FIELDS = ("purchase_orgil", "vat_orgil", "cnt_orgil", "exempt_orgil",

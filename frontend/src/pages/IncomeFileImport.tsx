@@ -201,9 +201,9 @@ export default function IncomeFileImport() {
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Орлогын файл оруулалт</h1>
           {isMain ? (
-            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">{monthlyFrom} оноос <b>сар бүрээр</b>, өмнөх онуудыг <b>бүтэн оноор</b> оруулна. Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална.</p>
+            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">{monthlyFrom} оноос <b>сар бүрээр</b>, өмнөх онуудыг <b>бүтэн оноор</b> оруулна. Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална. Ebarimt (НӨАТ) тайлангийн <b>«Оргил ХА»</b> эндээс бодогдоно.</p>
           ) : (
-            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Хархорин салбарын орлогын файлыг <b>сар бүрээр</b> оруулна. Зөвхөн Ebarimt (НӨАТ) тайлангийн <b>«Хархорин ХА»</b>-ийн задаргаанд ашиглагдана — барааны үнэ шинэчлэхгүй.</p>
+            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Хархорин салбарын орлогын файлыг <b>сар бүрээр</b> оруулна. Ebarimt (НӨАТ) тайлангийн <b>«Хархорин ХА»</b> эндээс бодогдоно — барааны үнэ шинэчлэхгүй, бусад тайланд орохгүй.</p>
           )}
         </div>
       </div>
