@@ -661,6 +661,21 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
 }
 
 // ── Data-д бүртгэлгүй регистрээр шивсэн Ebarimt ────────────────────────────────
+/** Бүртгэлгүй регистрээр шивсэн НӨАТ: нийт = холбогдоогүй үлдэгдэл + харилцагчид холбосон (салбар бүрээр, баримтын тоотой). */
+function unregSummary(rows: UnregRow[], links: ReceiptLink[]) {
+  const live = links.filter(l => !l.stale);
+  const rest = {
+    o: rows.reduce((a, u) => a + u.vat_orgil, 0), h: rows.reduce((a, u) => a + u.vat_harhorin, 0),
+    n: rows.reduce((a, u) => a + u.cnt_orgil + u.cnt_harhorin, 0),
+  };
+  const linked = {
+    o: live.reduce((a, l) => a + (l.which === "orgil" ? l.amount : 0), 0),
+    h: live.reduce((a, l) => a + (l.which === "harhorin" ? l.amount : 0), 0),
+    n: live.length,
+  };
+  return { gross: { o: rest.o + linked.o, h: rest.h + linked.h, n: rest.n + linked.n }, linked, rest };
+}
+
 function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose, onOpen, onUnlink }: {
   rows: UnregRow[]; links: ReceiptLink[]; year: number; months: number[];
   paused: boolean;                                   // дээр нь баримтын цонх нээлттэй — Esc-ийг тэр авна
@@ -682,6 +697,7 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
   const ltot = llist.reduce((a, l) => a + (l.stale ? 0 : l.amount), 0);
   const tot = list.reduce((a, u) => ({ vo: a.vo + u.vat_orgil, co: a.co + u.cnt_orgil, vh: a.vh + u.vat_harhorin, ch: a.ch + u.cnt_harhorin }),
     { vo: 0, co: 0, vh: 0, ch: 0 });
+  const sum = unregSummary(rows, links);
   const amtBtn = (u: UnregRow, w: Which) => {
     const v = w === "orgil" ? u.vat_orgil : u.vat_harhorin;
     return v ? (
@@ -700,10 +716,32 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
             <div className="text-[14px] font-bold text-gray-900">Data файлд бүртгэлгүй регистрээр шивсэн НӨАТ</div>
             <div className="text-[11.5px] text-gray-500">
               {year} · {monthsLabel(months)} · {rows.length} ТТД — Data файлын (гараар зассан регистр орно) аль ч харилцагчид байхгүй тул тайланд тулгагдаагүй.
-              Харилцагчийн «Регистр» нүдэнд ТТД-г нэмбэл тулгагдана.
+              Харилцагчийн «Регистр» нүдэнд ТТД-г нэмбэл, эсвэл дүн дээр дарж баримт бүрийг харилцагчид холбовол тулгагдана.
             </div>
           </div>
           <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={16}/></button>
+        </div>
+        {/* Бүртгэлгүй регистрээр шивсэн НӨАТ нийт − Харилцагчид холбосон = Холбогдоогүй үлдэгдэл */}
+        <div className="flex flex-wrap items-stretch gap-1.5 px-4 pt-3 sm:px-5">
+          {([
+            ["Бүртгэлгүй регистрээр шивсэн НӨАТ нийт", sum.gross, "text-gray-900", "border-gray-200 bg-gray-50/70"],
+            ["Харилцагчид холбосон нийт", sum.linked, "text-amber-700", "border-amber-200 bg-amber-50/60"],
+            ["Холбогдоогүй үлдэгдэл", sum.rest, sum.rest.o + sum.rest.h > 0.5 ? "text-rose-600" : "text-emerald-600",
+              sum.rest.o + sum.rest.h > 0.5 ? "border-rose-200 bg-rose-50/50" : "border-emerald-200 bg-emerald-50/50"],
+          ] as [string, { o: number; h: number; n: number }, string, string][]).map(([label, v, tone, box], i) => (
+            <div key={label} className="flex items-center gap-1.5">
+              {i > 0 && <span className="text-[18px] font-light text-gray-400">{i === 1 ? "−" : "="}</span>}
+              <div className={`rounded-xl border px-3 py-1.5 ${box}`}>
+                <div className="text-[10.5px] font-semibold text-gray-500">{label}</div>
+                <div className={`font-mono text-[16px] font-bold tabular-nums ${tone}`}>
+                  {i === 2 && v.o + v.h <= 0.5 ? "✓ 0" : fmtMnt(v.o + v.h)}
+                </div>
+                <div className="text-[10px] text-gray-500">
+                  <span className="text-blue-700">Оргил {fmtMnt(v.o)}</span> · <span className="text-violet-700">Хархорин {fmtMnt(v.h)}</span> · {v.n} баримт
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
         <div className="flex flex-wrap items-center gap-2 px-4 pt-3 sm:px-5">
           <div className="flex rounded-xl bg-gray-100 p-0.5 text-[12px] font-semibold">
@@ -721,9 +759,11 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
             <input value={q} onChange={e => setQ(e.target.value)} placeholder={tab === "unreg" ? "ТТД, нэр…" : "ТТД, нэр, харилцагч…"}
               className="w-56 rounded-xl border border-gray-200 bg-white py-1.5 pl-7 pr-2 text-[12px] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"/>
           </div>
-          <div className="ml-auto text-[12px] text-gray-500">
-            Нийт <b className="font-mono text-gray-800">{fmtMnt(tab === "unreg" ? tot.vo + tot.vh : ltot)}</b>
-          </div>
+          {!!ql && (
+            <div className="ml-auto text-[12px] text-gray-500">
+              Хайлтад <b className="font-mono text-gray-800">{fmtMnt(tab === "unreg" ? tot.vo + tot.vh : ltot)}</b>
+            </div>
+          )}
         </div>
         {tab === "links" ? (
           <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2 sm:px-5">
@@ -1597,7 +1637,12 @@ export default function EbarimtReportPage() {
           {/* Data-д бүртгэлгүй регистрээр шивсэн Ebarimt */}
           {(unreg.length > 0 || receiptLinks.length > 0) && (
             <button onClick={() => setShowUnreg(true)}
-              title="Data файлын аль ч харилцагчид бүртгэлгүй регистрээр шивсэн НӨАТ — тайланд тулгагдаагүй"
+              title={(() => {
+                const t = unregSummary(unreg, receiptLinks);
+                return "Data файлын аль ч харилцагчид бүртгэлгүй регистрээр шивсэн НӨАТ\n"
+                  + `Нийт: ${fmtMnt(t.gross.o + t.gross.h)}\nХарилцагчид холбосон: ${fmtMnt(t.linked.o + t.linked.h)}\n`
+                  + `Холбогдоогүй үлдэгдэл: ${fmtMnt(t.rest.o + t.rest.h)}`;
+              })()}
               className="flex items-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11.5px] font-semibold text-amber-700 hover:bg-amber-100">
               <FileWarning size={11}/>Бүртгэлгүй регистр ({unreg.length})
             </button>
