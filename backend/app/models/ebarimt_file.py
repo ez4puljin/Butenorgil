@@ -172,3 +172,30 @@ class EbarimtHistory(Base):
     __table_args__ = (
         Index("ix_ebarimt_history_ym", "year", "month"),
     )
+
+
+class EbarimtReceiptLink(Base):
+    """Data-д бүртгэлгүй регистрээр шивсэн Ebarimt баримтыг (ДДТД-ээр) харилцагчид гараар холбох.
+
+    Холбосон баримтын «Нийт дүн» тухайн харилцагчийн Ebarimt дүнд нэмэгдэж, регистрээр тулгах
+    дүнгээс хасагдана — тэр регистр хожим Data/гар засвараар бүртгэгдсэн ч давхар тоологдохгүй
+    (холбоос давамгайлна). Ebarimt файл дахин оруулахад баримт (ДДТД) байсаар байвал хэвээр,
+    алга бол тоологдохгүй (stale)."""
+    __tablename__ = "ebarimt_receipt_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year:  Mapped[int] = mapped_column(Integer, nullable=False)
+    month: Mapped[int] = mapped_column(Integer, nullable=False)
+    which: Mapped[str] = mapped_column(String(10), nullable=False)      # orgil | harhorin
+    rkey:  Mapped[str] = mapped_column(String(80), nullable=False)      # ДДТД (эсвэл Падаан №|огноо|ТТД|дүн)
+    ttd:   Mapped[str] = mapped_column(String(40), default="")
+    code:  Mapped[str] = mapped_column(String(30), nullable=False)      # харилцагчийн код
+    amount = Column(Float, nullable=True)                               # холбох үеийн «Нийт дүн» (мэдээлэл)
+
+    created_by_name: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("year", "month", "which", "rkey", name="uq_ebarimt_receipt_link"),
+        Index("ix_ebarimt_receipt_link_ym", "year", "month"),
+    )

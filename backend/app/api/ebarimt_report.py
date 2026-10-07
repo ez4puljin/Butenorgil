@@ -29,6 +29,7 @@ Endpoint-ууд:
   PUT    /ebarimt/exempt            — НӨАТ чөлөөлөгдөх дүн (он, сар, харилцагч, салбар)
   PUT    /ebarimt/employee          — сонгосон харилцагчдын тухайн сарын ажилтныг нэг дор солих (админ)
   GET/POST/DELETE /ebarimt/employees — Data-д бүртгэлгүй, гараар нэмсэн ажилтнууд (нэмэх/устгах — админ)
+  PUT    /ebarimt/receipt-link      — бүртгэлгүй регистрийн баримт(ууд)-ыг харилцагчид холбох / салгах
 
 Тайлангийн хариунд: unregistered — Data-д бүртгэлгүй регистрээр шивсэн Ebarimt (ТТД, нэр, дүн);
 мөр бүрийн hist — ажилтан/ХА/Ebarimt утгын өөрчлөлтийн түүх (ebarimt_history, mouse-оор харуулна).
@@ -58,7 +59,7 @@ from app.core.audit import audit
 from app.models.user import User
 from app.models.ebarimt_file import (
     EbarimtFile, EbarimtNote, EbarimtCustomerOverride, EbarimtExempt, EbarimtEmployeeAssign,
-    EbarimtEmployee, EbarimtHistory, EBARIMT_KINDS,
+    EbarimtEmployee, EbarimtHistory, EbarimtReceiptLink, EBARIMT_KINDS,
 )
 
 
@@ -249,6 +250,85 @@ def _ebarimt_entries(path: Path) -> tuple[list[str], list[dict]]:
     with _report_lock:
         _entries_cache[key] = (mtime, cols, rows)
     return cols, rows
+
+
+def _receipt_cols(cols: list[str]) -> dict:
+    """Ebarimt файлын баганууд: ДДТД, Падаан №, Нийт дүн, Огноо, Харилцагчийн нэр."""
+    return {"ddtd": next((c for c in cols if "ДДТД" in c), None),
+            "padaan": next((c for c in cols if "Падаан" in c), None),
+            "amt": next((c for c in cols if "Нийт дүн" in c), cols[7] if len(cols) > 7 else None),
+            "date": next((c for c in cols if "Огноо" in c), None),
+            "name": next((c for c in cols if "нэр" in c.lower()), None)}
+
+
+def _rkey(rec: dict, rc: dict) -> str:
+    """Баримтын тогтвортой түлхүүр — ДДТД (давхардаагүй дугаар); байхгүй бол Падаан №|огноо|ТТД|дүн."""
+    d = str(rec.get(rc["ddtd"]) or "").strip() if rc["ddtd"] else ""
+    if d and d.lower() != "nan":
+        return d[:80]
+    return f"P{rec.get(rc['padaan'])}|{rec.get(rc['date'])}|{rec['_ttd']}|{rec.get(rc['amt'])}"[:80]
+
+
+def _num0(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+_rindex_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _receipt_index(path: Path) -> dict[str, dict]:
+    """Ebarimt файлын баримтууд → {түлхүүр: {ttd, amt, padaan, date, name}} (mtime cache)."""
+    key, mtime = str(path), path.stat().st_mtime
+    hit = _rindex_cache.get(key)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    cols, recs = _ebarimt_entries(path)
+    rc = _receipt_cols(cols)
+    idx = {}
+    for rec in recs:
+        idx[_rkey(rec, rc)] = {"ttd": rec["_ttd"], "amt": _num0(rec.get(rc["amt"])) if rc["amt"] else 0.0,
+                               "padaan": rec.get(rc["padaan"]) if rc["padaan"] else "",
+                               "date": rec.get(rc["date"]) if rc["date"] else "",
+                               "name": str(rec.get(rc["name"]) or "").strip() if rc["name"] else ""}
+    _rindex_cache[key] = (mtime, idx)
+    return idx
+
+
+def _link_state(db: Session, year: int, month: int, payload: dict) -> dict:
+    """Тухайн сарын баримтын холбоосууд → adj: регистрээр тулгах map-аас холбосон баримтыг хассан,
+    extra: харилцагч бүрт нэмэх дүн/тоо, resolved: холбоосуудын жагсаалт (файлд алга бол stale)."""
+    st: dict = {"active": False, "adj": None, "extra": {}, "resolved": []}
+    if payload.get("error"):
+        return st
+    links = db.query(EbarimtReceiptLink).filter(EbarimtReceiptLink.year == year,
+                                                EbarimtReceiptLink.month == month).all()
+    if not links:
+        return st
+    maps = payload.get("maps") or {}
+    adj = {k: dict(maps.get(k) or {}) for k in ("v1", "c1", "v2", "c2")}
+    paths = _stored_paths(db, year, month)
+    idx = {w: (_receipt_index(paths[k]) if paths.get(k) is not None else {})
+           for w, k in (("orgil", "ebarimt"), ("harhorin", "ebarimt2"))}
+    for L in links:
+        rec = idx.get(L.which, {}).get(L.rkey)
+        item = {"month": month, "which": L.which, "rkey": L.rkey, "ttd": L.ttd or "", "code": L.code,
+                "amount": float(L.amount or 0), "padaan": "", "date": "", "name": "", "stale": rec is None,
+                "by": L.created_by_name or "", "at": L.created_at.isoformat() if L.created_at else None}
+        if rec is not None:
+            vk, ck = ("v1", "c1") if L.which == "orgil" else ("v2", "c2")
+            adj[vk][rec["ttd"]] = adj[vk].get(rec["ttd"], 0.0) - rec["amt"]
+            adj[ck][rec["ttd"]] = adj[ck].get(rec["ttd"], 0) - 1
+            ex = st["extra"].setdefault(L.code, {"orgil": [0.0, 0], "harhorin": [0.0, 0]})
+            ex[L.which][0] += rec["amt"]
+            ex[L.which][1] += 1
+            item.update({"ttd": rec["ttd"], "amount": rec["amt"], "padaan": rec["padaan"], "date": rec["date"],
+                         "name": rec["name"]})
+        st["resolved"].append(item)
+    st.update(active=True, adj=adj)
+    return st
 
 
 # ── Report computation (mtime cache) ─────────────────────────────────────────
@@ -626,10 +706,13 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
         EbarimtExempt.year == year, EbarimtExempt.month == month).all()}
     assigns = {a.code: a for a in db.query(EbarimtEmployeeAssign).filter(
         EbarimtEmployeeAssign.year == year, EbarimtEmployeeAssign.month == month).all()}
+    # Бүртгэлгүй регистрийн баримтыг харилцагчид холбосон бол Ebarimt-ийг бүх мөрөнд дахин тооцоолно
+    ls = _link_state(db, year, month, payload)
+    vmap = ls["adj"] if ls["active"] else maps
 
     out_rows = []
     for r in payload["rows"]:
-        row = {**r, "note": notes.get(r["code"], ""), "defaults": {}}
+        row = {**r, "note": notes.get(r["code"], ""), "defaults": {}, "link_orgil": 0.0, "link_harhorin": 0.0}
         o = ovr.get(r["code"])
         if o is not None:
             for fld, attr in (("employee", "employee"), ("registry", "registry"),
@@ -644,12 +727,17 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
             # Ажилтан хоосон болговол шошгыг сэргээнэ
             if not (row["employee"] or "").strip():
                 row["employee"] = ORPHAN_EMP if r.get("is_orphan") else EMPTY_EMP
-            # Регистр өөрчлөгдсөн бол Ebarimt дүнг дахин тооцоолно
-            if "registry" in row["defaults"]:
-                regs = _split_registry(row["registry"])
-                vo, no = _vat_for(regs, maps.get("v1", {}), maps.get("c1", {}))
-                vh, nh = _vat_for(regs, maps.get("v2", {}), maps.get("c2", {}))
-                row.update({"vat_orgil": vo, "cnt_orgil": no, "vat_harhorin": vh, "cnt_harhorin": nh})
+        # Регистр өөрчлөгдсөн эсвэл баримт холбоос байвал Ebarimt дүнг дахин тооцоолно
+        if "registry" in row["defaults"] or ls["active"]:
+            regs = _split_registry(row["registry"])
+            vo, no = _vat_for(regs, vmap.get("v1", {}), vmap.get("c1", {}))
+            vh, nh = _vat_for(regs, vmap.get("v2", {}), vmap.get("c2", {}))
+            ex = ls["extra"].get(r["code"])
+            if ex:
+                vo, no = vo + ex["orgil"][0], no + ex["orgil"][1]
+                vh, nh = vh + ex["harhorin"][0], nh + ex["harhorin"][1]
+                row["link_orgil"], row["link_harhorin"] = ex["orgil"][0], ex["harhorin"][0]
+            row.update({"vat_orgil": vo, "cnt_orgil": no, "vat_harhorin": vh, "cnt_harhorin": nh})
         # Сарын ажилтны хуваарь (админ) — Data/гар засвараас давамгайлна; defaults-д үндсэн утга
         a = assigns.get(r["code"])
         if a is not None and a.employee:
@@ -670,7 +758,7 @@ def month_rows(db: Session, year: int, month: int) -> tuple[dict, list[dict]]:
 # ── Өөрчлөлтийн түүх (ebarimt_history) ─────────────────────────────────────────────────────
 
 HIST_FIELDS = ("emp", "po", "ph", "vo", "vh")
-_DATA_KINDS = ("init", "file", "legacy", "edit")
+_DATA_KINDS = ("init", "file", "legacy", "edit", "link", "unlink")
 _hist_lock = threading.RLock()
 _hist_sig: dict[tuple[int, int], tuple] = {}
 
@@ -719,7 +807,9 @@ def _hist_values(rows: list[dict]) -> dict[str, dict]:
     return vals
 
 
-def record_history(db: Session, year: int, month: int, payload: dict, rows: list[dict]) -> None:
+def record_history(db: Session, year: int, month: int, payload: dict, rows: list[dict],
+                   edit_kind: str = "edit", edit_file: str = "", edit_by: str = "",
+                   edit_at: datetime | None = None) -> None:
     """Тайлангийн одоогийн утгыг түүхийн сүүлийн утгатай харьцуулж, өөрчлөгдсөнийг бичнэ.
     Шалтгаан: тухайн талбарын эх файл солигдсон бол «file», үгүй бол «edit». Анх удаа — «init»
     (ХА орлогын файлаас бол өмнө нь хуучин өглөгийн тайлангийн утгыг «legacy»-гаар). Тайлан эсвэл
@@ -728,7 +818,9 @@ def record_history(db: Session, year: int, month: int, payload: dict, rows: list
         return
     cnt, last_upd = db.query(func.count(EbarimtCustomerOverride.id),
                              func.max(EbarimtCustomerOverride.updated_at)).one()
-    sig = (payload.get("_ver"), cnt, last_upd)
+    lcnt, lmax = db.query(func.count(EbarimtReceiptLink.id), func.max(EbarimtReceiptLink.created_at)).filter(
+        EbarimtReceiptLink.year == year, EbarimtReceiptLink.month == month).one()
+    sig = (payload.get("_ver"), cnt, last_upd, lcnt, lmax)
     with _hist_lock:
         if _hist_sig.get((year, month)) == sig:
             return
@@ -769,7 +861,17 @@ def record_history(db: Session, year: int, month: int, payload: dict, rows: list
                     continue
                 changed = (cur != (prev.text or "")) if f == "emp" else abs(cur - (prev.num or 0.0)) > 0.5
                 if changed:
-                    add(code, f, cur, "file" if prev.file_key != m["key"] else "edit", m)
+                    if prev.file_key != m["key"]:
+                        add(code, f, cur, "file", m)
+                        continue
+                    # Файл солигдоогүй — гар засвар (регистр) эсвэл баримт холбоос; хэн/хэзээ
+                    o = None
+                    if edit_kind == "edit" and not edit_by:
+                        o = db.query(EbarimtCustomerOverride).filter(EbarimtCustomerOverride.code == code).first()
+                    add(code, f, cur, edit_kind, {
+                        "file": edit_file or m["file"], "key": m["key"],
+                        "at": edit_at or (o.updated_at if o else None) or datetime.utcnow(),
+                        "by": edit_by or (o.updated_by_name if o else "") or ""})
         if first:
             # Түүх эхлэхээс өмнө гараар сольсон ажилтнууд
             for a in db.query(EbarimtEmployeeAssign).filter(EbarimtEmployeeAssign.year == year,
@@ -800,6 +902,15 @@ def _attach_history(db: Session, year: int, month: int, rows: list[dict]) -> Non
             r["hist"] = hist
 
 
+def _receipt_links(db: Session, year: int, month: int, payload: dict, rows: list[dict]) -> list[dict]:
+    """Тухайн сард харилцагчид холбосон бүртгэлгүй регистрийн баримтууд (харилцагчийн нэртэй)."""
+    names = {r["code"]: r["name"] for r in rows}
+    out = _link_state(db, year, month, payload)["resolved"]
+    for x in out:
+        x["cname"] = names.get(x["code"], "")
+    return sorted(out, key=lambda x: (str(x["date"]), x["ttd"]))
+
+
 def _name_col(cols: list[str]) -> str | None:
     return next((c for c in cols if "нэр" in c.lower()), None)
 
@@ -807,7 +918,8 @@ def _name_col(cols: list[str]) -> str | None:
 def _unregistered(db: Session, year: int, month: int, payload: dict, rows: list[dict]) -> list[dict]:
     """Data файлын (гар засвартай) аль ч харилцагчийн регистрт байхгүй ТТД-ээр шивсэн Ebarimt —
     тайланд тулгагдаагүй дүн. Нэрийг Ebarimt файлын «Харилцагчийн нэр»-ээс."""
-    maps = payload.get("maps") or {}
+    ls = _link_state(db, year, month, payload)
+    maps = ls["adj"] if ls["active"] else (payload.get("maps") or {})
     regs: set[str] = set()
     for r in rows:
         regs |= set(_split_registry(r.get("registry")))
@@ -823,8 +935,8 @@ def _unregistered(db: Session, year: int, month: int, payload: dict, rows: list[
     out: dict[str, dict] = {}
     for vk, ck, w in (("v1", "c1", "orgil"), ("v2", "c2", "harhorin")):
         for t, v in (maps.get(vk) or {}).items():
-            if t in regs:
-                continue
+            if t in regs or (int((maps.get(ck) or {}).get(t, 0)) <= 0 and abs(v) < 0.5):
+                continue                                               # бүртгэлтэй / бүх баримтыг холбосон
             x = out.setdefault(t, {"ttd": t, "name": names.get(t, ""), "vat_orgil": 0.0, "cnt_orgil": 0,
                                    "vat_harhorin": 0.0, "cnt_harhorin": 0})
             x[f"vat_{w}"] += float(v)
@@ -858,6 +970,7 @@ def report(
         "rows": out_rows,
         "employees": _build_employees(out_rows),
         "unregistered": [] if payload.get("error") else _unregistered(db, year, month, payload, out_rows),
+        "receipt_links": [] if payload.get("error") else _receipt_links(db, year, month, payload, out_rows),
         "files": files, "year": year, "month": month,
     }
 
@@ -897,8 +1010,8 @@ def uploaded_months(
     return out
 
 
-_SUM_FIELDS = ("purchase_orgil", "vat_orgil", "cnt_orgil", "exempt_orgil",
-               "purchase_harhorin", "vat_harhorin", "cnt_harhorin", "exempt_harhorin")
+_SUM_FIELDS = ("purchase_orgil", "vat_orgil", "cnt_orgil", "exempt_orgil", "link_orgil",
+               "purchase_harhorin", "vat_harhorin", "cnt_harhorin", "exempt_harhorin", "link_harhorin")
 
 
 @router.get("/report-range")
@@ -915,6 +1028,7 @@ def report_range(
     ms = _parse_months(months) or [x["month"] for x in uploaded_months(year=year, db=db, u=u) if "data" in x["kinds"]]
     agg: dict[str, dict] = {}
     unreg: dict[str, dict] = {}
+    links: list[dict] = []
     used, skipped, missing = [], [], {}
     for m in ms:
         payload, rows = month_rows(db, year, m)
@@ -924,6 +1038,7 @@ def report_range(
         used.append(m)
         record_history(db, year, m, payload, rows)
         _attach_history(db, year, m, rows)
+        links += _receipt_links(db, year, m, payload, rows)
         for x in _unregistered(db, year, m, payload, rows):
             t = unreg.setdefault(x["ttd"], {"ttd": x["ttd"], "name": "", "vat_orgil": 0.0, "cnt_orgil": 0,
                                             "vat_harhorin": 0.0, "cnt_harhorin": 0, "months": {}})
@@ -962,6 +1077,7 @@ def report_range(
     return {
         "rows": out, "employees": _build_employees(out), "year": year, "months": used,
         "unregistered": sorted(unreg.values(), key=lambda x: -(x["vat_orgil"] + x["vat_harhorin"])),
+        "receipt_links": links,
         "skipped": skipped, "missing": missing,
         "error": None if used else "Сонгосон саруудад Data файл (харилцагчийн мэдээлэл) оруулаагүй байна.",
     }
@@ -1003,11 +1119,30 @@ def ebarimt_entries(
         if path is None:
             no_file.append(m)
             continue
-        if not regs:
+        links = {L.rkey: L for L in db.query(EbarimtReceiptLink).filter(
+            EbarimtReceiptLink.year == year, EbarimtReceiptLink.month == m, EbarimtReceiptLink.which == which).all()}
+        mine = bool(code.strip()) and any(L.code == code.strip() for L in links.values())
+        if not regs and not mine:
             continue
         cols, recs = _ebarimt_entries(path)
+        rc = _receipt_cols(cols)
+        names = {r["code"]: r["name"] for r in get_report(db, year, m).get("rows", [])} if links else {}
         columns += [c for c in cols if c not in columns]
-        out += [{"month": m, **{k: v for k, v in rec.items() if k != "_ttd"}} for rec in recs if rec["_ttd"] in regs]
+        for rec in recs:
+            rk = _rkey(rec, rc)
+            L = links.get(rk)
+            if code.strip():                       # харилцагчийн задаргаа
+                if L is not None and L.code != code.strip():
+                    continue                       # өөр харилцагчид холбосон
+                if L is None and rec["_ttd"] not in regs:
+                    continue
+            elif rec["_ttd"] not in regs:
+                continue
+            item = {"month": m, "_rkey": rk, "_ttd": rec["_ttd"], **{k: v for k, v in rec.items() if k != "_ttd"}}
+            if L is not None:
+                item["_link"] = {"code": L.code, "name": names.get(L.code, ""), "by": L.created_by_name or "",
+                                 "at": L.created_at.isoformat() if L.created_at else None}
+            out.append(item)
     return {"code": code.strip(), "which": which, "year": year, "months": ms, "columns": columns,
             "registries": sorted(registries), "no_file": no_file, "rows": out}
 
@@ -1147,6 +1282,78 @@ def assign_employee(
           extra={"year": body.year, "month": body.month, "employee": emp, "codes": len(codes),
                  "changed": changed, "reverted": reverted, "skipped": skipped}, autocommit=True)
     return {"ok": True, "changed": changed, "reverted": reverted, "skipped": skipped}
+
+
+class ReceiptLinkIn(BaseModel):
+    year: int
+    month: int
+    which: str                       # orgil | harhorin
+    rkeys: list[str]                 # баримтын түлхүүрүүд (entries-ийн _rkey)
+    code: Optional[str] = None       # None → холбоосыг салгана
+
+
+@router.put("/receipt-link")
+def link_receipts(
+    body: ReceiptLinkIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Бүртгэлгүй регистрийн баримт(ууд)-ыг харилцагчид холбоно — тэр харилцагчийн Ebarimt дүнд
+    нэмэгдэнэ. code=None бол холбоосыг салгана. Өөрчлөлт түүхэнд «link» төрлөөр бичигдэнэ."""
+    _validate_ym(body.year, body.month)
+    if body.which not in BRANCHES:
+        raise HTTPException(400, "Салбар orgil эсвэл harhorin.")
+    rkeys = sorted({(k or "").strip() for k in body.rkeys if (k or "").strip()})
+    if not rkeys:
+        raise HTTPException(400, "Баримт сонгоогүй байна.")
+    if len(rkeys) > 2000:
+        raise HTTPException(400, "Хэт олон баримт.")
+    payload, rows = month_rows(db, body.year, body.month)
+    if payload.get("error"):
+        raise HTTPException(400, payload["error"])
+    code = (body.code or "").strip() or None
+    names = {r["code"]: r["name"] for r in rows}
+    if code is not None and code not in names:
+        raise HTTPException(400, f"{code} кодтой харилцагч {body.month}-р сарын тайланд алга.")
+    path = _stored_paths(db, body.year, body.month).get("ebarimt" if body.which == "orgil" else "ebarimt2")
+    idx = _receipt_index(path) if path is not None else {}
+    who, now = str(getattr(u, "username", "") or ""), datetime.utcnow()
+    linked = unlinked = skipped = 0
+    ttds: set[str] = set()
+    with _hist_lock:
+        record_history(db, body.year, body.month, payload, rows)          # өмнөх төлөв түүхэнд
+        existing = {L.rkey: L for L in db.query(EbarimtReceiptLink).filter(
+            EbarimtReceiptLink.year == body.year, EbarimtReceiptLink.month == body.month,
+            EbarimtReceiptLink.which == body.which).all()}
+        for rk in rkeys:
+            L, rec = existing.get(rk), idx.get(rk)
+            if code is None:
+                if L is not None:
+                    ttds.add(L.ttd or "")
+                    db.delete(L)
+                    unlinked += 1
+                continue
+            if rec is None:
+                skipped += 1
+                continue
+            if L is None:
+                L = EbarimtReceiptLink(year=body.year, month=body.month, which=body.which, rkey=rk)
+                db.add(L)
+            L.code, L.ttd, L.amount = code, rec["ttd"], rec["amt"]
+            L.created_by_name, L.created_at = who, now
+            ttds.add(rec["ttd"])
+            linked += 1
+        db.commit()
+        payload2, rows2 = month_rows(db, body.year, body.month)
+        n = linked or unlinked
+        detail = f"ТТД {', '.join(sorted(t for t in ttds if t))} · {n} баримт"[:300]
+        record_history(db, body.year, body.month, payload2, rows2, edit_kind="link" if code else "unlink",
+                       edit_file=detail, edit_by=who, edit_at=now)
+    audit(db, request, u, action="ebarimt_receipt_link", entity_type="ebarimt",
+          extra={"year": body.year, "month": body.month, "which": body.which, "code": code, "receipts": len(rkeys),
+                 "linked": linked, "unlinked": unlinked, "skipped": skipped}, autocommit=True)
+    return {"ok": True, "linked": linked, "unlinked": unlinked, "skipped": skipped}
 
 
 class EmployeeIn(BaseModel):
