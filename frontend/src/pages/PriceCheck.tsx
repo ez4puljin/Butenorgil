@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Tag, Camera, Loader2, RefreshCw, Keyboard, SearchX, ScanLine, X, Printer,
+  Tag, Camera, Loader2, RefreshCw, Keyboard, SearchX, ScanLine, X, Printer, Wifi, WifiOff,
 } from "lucide-react";
 import { api } from "../lib/api";
 
-/* Заалны таблетад зориулсан үнийн лавлагаа.
+/* Заалны таблетад зориулсан үнийн лавлагаа — онлайн POS (pos.bto.mn)-оос.
    Камер БАЙНГА ажиллана — үйлчлүүлэгч ирээд шууд уншуулна. Тиймээс нийтлэг
    BarcodeScanner (modal) тохирохгүй: тэр нь нэг уншаад хаагддаг.
    Мөн USB/Bluetooth скáннер (гар шиг бичдэг) ажиллана — гар оролтыг сонсоно. */
@@ -19,6 +19,8 @@ interface LookupRes {
   query: string; found: boolean; product: Product | null;
   others: Product[]; error: string;
 }
+// Онлайн POS-той холболт: аль POS-уудаас үнэ асууж байгаа, алдаа
+interface PriceStatus { enabled: boolean; site: string; pos: string[]; error: string }
 
 // Скáннер бүр Enter-ийг өөрөөр илгээдэг (Enter / Return / keyCode 13).
 function isEnter(e: { key: string; keyCode?: number }) {
@@ -56,6 +58,16 @@ export default function PriceCheckPage() {
   const [printing, setPrinting] = useState(false);
   const [printErr, setPrintErr] = useState("");
   const [bulk, setBulk] = useState<BulkInfo | null>(null);
+  const [status, setStatus] = useState<PriceStatus | null>(null);
+
+  // Онлайн POS-той холбогдож байгаа эсэх — алдаатай бол дээр нь анхааруулна
+  const loadStatus = useCallback(() => {
+    api.get("/price-check/status", { timeout: 20000 })
+      .then(r => setStatus(r.data))
+      .catch(() => setStatus({ enabled: false, site: "pos.bto.mn", pos: [], error: "Сервертэй холбогдож чадсангүй" }));
+  }, []);
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+  const statusBad = !!status && (!status.enabled || !!status.error);
 
   const lookup = useCallback(async (code: string) => {
     const c = (code || "").trim();
@@ -219,11 +231,28 @@ export default function PriceCheckPage() {
           <h1 className="text-[15px] font-bold leading-tight tracking-tight text-gray-900">Үнэ харах</h1>
           <p className="text-[11px] leading-tight text-gray-500">Барааны баркодыг камерт уншуулна уу</p>
         </div>
+        {status && (
+          <span title={statusBad ? status.error : `Үнэ: онлайн POS (${status.site}) — ${status.pos.join(", ")}`}
+            className={`hidden shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium sm:flex ${
+              statusBad ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-700"}`}>
+            {statusBad ? <WifiOff size={11}/> : <Wifi size={11}/>}{status.site}
+          </span>
+        )}
         <button onClick={() => setShowManual(v => !v)}
           className="flex shrink-0 items-center gap-1.5 rounded-xl border border-gray-200 px-3 py-1.5 text-[12px] text-gray-600 hover:bg-gray-50">
           <Keyboard size={12}/>Гараар
         </button>
       </div>
+
+      {statusBad && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-rose-100 bg-rose-50 px-4 py-2 text-[12px] text-rose-700">
+          <WifiOff size={13} className="shrink-0"/>
+          <span className="min-w-0 flex-1">Онлайн POS ({status?.site})-оос үнэ авч чадахгүй байна{status?.error ? `: ${status.error}` : "."}</span>
+          <button onClick={loadStatus} className="flex shrink-0 items-center gap-1 rounded-lg border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold hover:bg-rose-100">
+            <RefreshCw size={11}/>Дахин шалгах
+          </button>
+        </div>
+      )}
 
       {showManual && (
         <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 bg-gray-50/70 px-4 py-2.5">
@@ -290,8 +319,8 @@ export default function PriceCheckPage() {
           )}
         </div>
 
-        {/* Үр дүн */}
-        <div className="flex min-h-0 flex-1 flex-col">
+        {/* Үр дүн — босоо дэлгэцэнд агуулгаараа өсөж гүйлгэгдэнэ (үнэ картаас гадагш гарахгүй) */}
+        <div className="flex flex-1 flex-col lg:min-h-0">
           {!res ? (
             <div className="flex h-full min-h-[12rem] flex-col items-center justify-center gap-3 rounded-2xl bg-gray-50 text-gray-400">
               <div className="grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-violet-50 to-fuchsia-50">
@@ -344,9 +373,10 @@ export default function PriceCheckPage() {
               </div>
               {printErr && <p className="mt-1.5 text-center text-[11.5px] text-rose-600">{printErr}</p>}
 
-              {p.barcodes.length > 0 && (
-                <div className="mt-2 border-t border-violet-100 pt-2 text-center font-mono text-[10.5px] text-gray-400">
-                  {p.barcodes.slice(0, 3).join(" · ")}
+              {(p.barcodes.length > 0 || p.source) && (
+                <div className="mt-2 border-t border-violet-100 pt-2 text-center text-[10.5px] text-gray-400">
+                  {p.barcodes.length > 0 && <div className="font-mono">{p.barcodes.slice(0, 3).join(" · ")}</div>}
+                  {p.source && <div className="mt-0.5">Үнэ: {p.source}</div>}
                 </div>
               )}
             </div>
@@ -362,7 +392,7 @@ export default function PriceCheckPage() {
                 <div className="w-full max-w-md">
                   <p className="mb-1.5 text-[11px] font-semibold text-gray-500">Ойролцоо бараанууд:</p>
                   <div className="space-y-1">
-                    {res.others.slice(0, 5).map(o => (
+                    {res.others.slice(0, 8).map(o => (
                       <button key={o._id} onClick={() => lookup(o.code)}
                         className="flex w-full items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-left hover:bg-violet-50">
                         <span className="font-mono text-[11px] text-gray-500">{o.code}</span>

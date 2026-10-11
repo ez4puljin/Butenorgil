@@ -2,6 +2,8 @@
 
     GET /price-check/lookup?q=<баркод | код | нэр>
 
+Эх сурвалж: онлайн POS (pos.bto.mn) — app/services/pos_price.
+
 Эрх: нэвтэрсэн ЛЮБОЙ хэрэглэгч. Заалны таблет дундын бүртгэлээр нэвтэрдэг
 бөгөөд энэ цэс нь үйлчлүүлэгч лангуун дээр аль хэдийн харж байгаа үнийг л
 харуулдаг тул role-оор хязгаарлах шаардлагагүй.
@@ -25,7 +27,7 @@ def lookup(
 ):
     """Баркод/код/нэрээр барааны POS үнийг олно.
 
-    Локал POS-оос шууд уншдаг тул ~30-130 мс. Скан хийсэн баркодыг өөр
+    Онлайн POS-оос ~0.4 сек (60 сек кэштэй). Скан хийсэн баркодыг өөр
     бараатай холихгүйн тулд ЯГ таарсныг (код эсвэл баркод) эрхэмлэнэ —
     нэрээр таарсан бол `found=false`, `others`-д санал болгоно."""
     return pos_price.lookup(q)
@@ -33,9 +35,8 @@ def lookup(
 
 @router.get("/status")
 def status(_: User = Depends(get_current_user)):
-    """Тохиргоо бүрэн эсэх (UI анхааруулга харуулахад)."""
-    from app.services.pos_reconcile import local_urls
-    return {"enabled": pos_price.enabled(), "pos_count": len(local_urls())}
+    """Онлайн POS-той холбогдож байгаа эсэх (UI анхааруулга, эх сурвалж харуулахад)."""
+    return pos_price.status()
 
 
 @router.get("/label", response_class=HTMLResponse)
@@ -45,16 +46,16 @@ def label(
     preview: bool = Query(False, description="Зөвхөн харах — автоматаар хэвлэхгүй"),
     _: User = Depends(get_current_user),
 ):
-    """Үнийн шошго — хэвлэхэд бэлэн HTML.
+    """Үнийн шошго — хэвлэхэд бэлэн HTML (нэр, код, үнэ, бөөний ширхэг/үнэ, огноо).
 
-    Шошгыг erxes-ийн бэлэн загвараас татна (бөөний ширхэг/үнэ нь тэнд
-    бодогддог), дээр нь хэвлэсэн огноо нэмнэ."""
+    Шошгыг өөрсдөө зурна — erxes-ийн хуучин document загвар шинэчлэлтийн дараа
+    ажиллахаа больсон. Бөөний мэдээлэл онлайн POS-ийн pricing-оос."""
     r = pos_price.lookup(q)
     p = r.get("product")
     if not p:
         raise HTTPException(404, "Бараа олдсонгүй.")
     try:
-        return HTMLResponse(pos_label.label_page(p["_id"], copies, auto_print=not preview))
+        return HTMLResponse(pos_label.label_page(p, copies, auto_print=not preview))
     except pos_label.LabelError as e:
         raise HTTPException(502, str(e))
 
@@ -64,15 +65,15 @@ def bulk(
     q: str = Query(..., min_length=1, max_length=80),
     _: User = Depends(get_current_user),
 ):
-    """Бөөний ширхэг/үнэ — шошготой ижил эх сурвалжаас (erxes загвар).
+    """Бөөний ширхэг/үнэ — онлайн POS-ийн pricing (шошготой ижил эх сурвалж).
 
-    Тусдаа зам болгосон шалтгаан: erxes руу 0.6-1.6 сек болдог тул үндсэн
-    үнийг локал POS-оос шууд (~80 мс) харуулаад үүнийг ард нь ачаална."""
+    Тусдаа зам болгосон шалтгаан: шошгоны загвар render хийхэд 0.6-1.6 сек болдог
+    тул үндсэн үнийг эхэлж харуулаад үүнийг ард нь ачаална."""
     p = (pos_price.lookup(q) or {}).get("product")
     if not p:
         raise HTTPException(404, "Бараа олдсонгүй.")
     try:
-        return pos_label.bulk_info(p["_id"])
+        return pos_label.bulk_info(p["_id"], p.get("price"))
     except Exception as e:      # noqa: BLE001 — бөөн мэдээлэл заавал биш
         return {"quantity": "", "price": "", "unit_price": "", "ok": False,
                 "error": str(e)[:120]}

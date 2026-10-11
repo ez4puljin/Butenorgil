@@ -10,7 +10,7 @@
     GET /healthz     → амьд эсэх
 
 ERP-ийн өгөгдлийн сан, чиглүүлэгч, нэвтрэлтийн токенд ОГТ хүрэхгүй —
-`app.services.pos_price` нь зөвхөн локал POS API руу ханддаг.
+`app.services.pos_price` нь зөвхөн онлайн POS (pos.bto.mn → erxes gateway) руу ханддаг.
 
 Ажиллуулах:
     .venv\\Scripts\\python.exe -m uvicorn kiosk_app:app --host 0.0.0.0 --port 8100 \\
@@ -65,7 +65,7 @@ def bulk(q: str = Query(..., min_length=1, max_length=80)):
     if not p:
         return JSONResponse({"ok": False, "quantity": "", "price": ""}, status_code=404)
     try:
-        return pos_label.bulk_info(p["_id"])
+        return pos_label.bulk_info(p["_id"], p.get("price"))
     except Exception as e:      # noqa: BLE001 — kiosk хэзээ ч 500 буцаах ёсгүй
         return JSONResponse({"ok": False, "quantity": "", "price": "",
                              "error": str(e)[:120]})
@@ -84,7 +84,7 @@ def label(q: str = Query(..., min_length=1, max_length=80),
         return HTMLResponse("<p style='font:14px sans-serif;padding:2rem'>"
                             "Бараа олдсонгүй.</p>", status_code=404)
     try:
-        return HTMLResponse(pos_label.label_page(p["_id"], copies, auto_print=not preview))
+        return HTMLResponse(pos_label.label_page(p, copies, auto_print=not preview))
     except Exception as e:      # noqa: BLE001 — kiosk хэзээ ч 500 буцаах ёсгүй
         return HTMLResponse("<p style='font:14px sans-serif;padding:2rem'>"
                             f"Шошго татахад алдаа: {str(e)[:120]}</p>", status_code=502)

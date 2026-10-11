@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # локал POS бүрээс шууд тоо аваад тулгана. env: POS_LOCAL_URLS
     pos_local_urls: str = ("http://192.168.1.254:4030,"
                            "http://192.168.1.254:4031")
+    # ── Үнэ харах — онлайн POS (pos.bto.mn → erxes gateway-ийн posclient) ──
+    # Үнэ асуух POS-уудын нэр (erxes posList дахь), дарааллаар. Токеныг ERP-ийн
+    # админ нэвтрэлтээр posList-оос автоматаар авна. env: POS_PRICE_POS
+    pos_price_pos: str = "Бүтэн Оргил ХХК,Заалны архи"
+    # Токеныг шууд өгөх бол "нэр=токен,нэр=токен" (админ нэвтрэлт хэрэггүй). env: POS_PRICE_TOKENS
+    pos_price_tokens: str = ""
     # ── Үнийн шошго (erxes document template) ────────────────────────────
     # Шошгон дээрх бөөний ширхэг/үнэ нь erxes дотор бодогддог тул шошгыг
     # erxes-ийн бэлэн загвараас татна. Утгууд нь худалдагчийн ашигладаг

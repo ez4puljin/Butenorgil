@@ -1,189 +1,117 @@
-"""Барааны үнийн шошго хэвлэх.
+"""Барааны үнийн шошго ба бөөний үнэ.
 
-Шошгыг ӨӨРӨӨ зурахгүй — erxes-ийн бэлэн document template-ийг ашиглана
-(`GET /gateway/pl:documents/print`). Шалтгаан:
+2026-10-нд erxes шинэчлэгдэж хуучин documents service ажиллахаа больсон
+(`/pl:documents/print` → «Service not found», `documentsDetail` → «Permission required»),
+тиймээс шошгыг ӨӨРСДӨӨ зурна. Талбарууд нь хуучин erxes-ийн «Шошго» загвартай ижил:
+нэр, код, үнэ, бөөний ширхэг, бөөний үнэ, дээр нь хэвлэсэн огноо.
 
-  · Шошгон дээрх **бөөний ширхэг / бөөний үнэ** нь erxes дотор бодогддог
-    (pricing plugin). Локал POS-оос гарахгүй — `subUoms` нь зөвхөн хайрцгийн
-    харьцаа (1/6), `customFieldsData` хоосон, `getPriceInfo` нь None.
-  · Худалдагчид яг энэ загварыг ашиглаж заншсан тул харагдац өөрчлөгдөхгүй.
+Бөөний ширхэг/үнэ — онлайн POS-ийн `getPriceInfo` (app.services.pos_price.price_info):
+касс яг үүгээр бодно, хуучин шошготой таарсан (101007 → 2 ш @ 29,130₮;
+101048 → 2 ш @ 106,300₮).
 
-Бидний нэмэлт зөвхөн хоёр зүйл:
-  1. **Хэвлэсэн огноо** — erxes-ийн `isDate` параметр юу ч өөрчилдөггүй нь
-     туршилтаар тогтоогдсон (isDate="" ба "true" ижил 2574 тэмдэгт), тиймээс
-     огноог өөрсдөө шошго бүрийн дотор оруулна.
-  2. Хуудсыг нээмэгц шууд хэвлэх боодол.
-
-Барааны erxes `_id` нь локал POS-ийн `_id`-тай ИЖИЛ (жишээ: 101007 →
-`unD7Kxsy6rYHqYAoR`) тул нэмэлт хайлт хэрэггүй.
+Дулааны (чек) принтерт зориулав: 80 мм, зөвхөн хар өнгө (саарлыг цэгэн болгож муу хэвлэдэг).
 """
 from __future__ import annotations
 
-import json
-import re
-import urllib.parse
+import html
 from datetime import datetime
 
 from app.core.config import settings
-
-PRINT_PATH = "/pl:documents/print"
-
-# Шошго бүр `…</p></div></div></div></div>` -ээр төгсдөг (олон хувь хэвлэхэд
-# энэ бүтэц яг тэр тоогоор давтагдана — туршилтаар шалгасан).
-_END_RE = re.compile(r"(</p>)(\s*(?:</div>\s*){4})")
 
 
 class LabelError(RuntimeError):
     pass
 
 
-def _base_url() -> str:
-    base = (settings.erxes_url or "").rstrip("/")
-    if base.endswith("/graphql"):
-        base = base[: -len("/graphql")]
-    return base
+def _money(v) -> str:
+    try:
+        return f"{float(v):,.0f}"
+    except (TypeError, ValueError):
+        return ""
 
 
-def fetch_label(product_id: str, copies: int = 1) -> str:
-    """erxes-ээс шошгоны HTML-ийг татна (нэвтэрсэн session-оор)."""
-    from app.services.erxes_client import get_client
-
-    if not product_id:
-        raise LabelError("Барааны id хоосон байна.")
-    q = urllib.parse.urlencode({
-        "_id": settings.erxes_label_template_id,
-        "productIds": json.dumps([{"id": product_id, "c": 1}], separators=(",", ":")),
-        "copies": str(max(1, min(int(copies or 1), 20))),
-        "width": str(settings.erxes_label_width),
-        "branchId": settings.erxes_label_branch_id,
-        "departmentId": settings.erxes_label_department_id,
-        "date": datetime.now().strftime("%a %b %d %Y %H:%M:%S"),
-        "isDate": "true",
-    }, safe='[]{}":,')
-    url = f"{_base_url()}{PRINT_PATH}?{q}"
-
-    s = get_client()._session()
-    r = s.get(url, timeout=90, verify=False)
-    if r.status_code != 200:
-        raise LabelError(f"erxes шошго татахад алдаа ({r.status_code}).")
-    if "<" not in r.text:
-        raise LabelError("erxes хүлээгдээгүй хариу буцаалаа.")
-    return r.text
-
-
-def inject_date(html: str, when: datetime | None = None) -> tuple[str, int]:
-    """Шошго бүрийн доод хэсэгт хэвлэсэн огноо нэмнэ.
-
-    Буцаах: (html, хэдэн шошгонд нэмсэн). 0 бол загварын бүтэц өөрчлөгдсөн
-    гэсэн үг — шошго нь огноогүй ч хэвлэгдэнэ (хэвлэлт зогсоохгүй)."""
-    when = when or datetime.now()
-    stamp = when.strftime("%Y-%m-%d")
-    # Дулааны принтер саарал өнгийг цэгэн болгож муу хэвлэдэг тул хар.
-    tag = (f'<p style="margin:2px 0 0;font-size:10px;color:#000;'
-           f'text-align:right">{stamp}</p>')
-    html2, n = _END_RE.subn(lambda m: m.group(1) + tag + m.group(2), html)
-    return html2, n
-
-
-def label_page(product_id: str, copies: int = 1, auto_print: bool = True,
-               when: datetime | None = None) -> str:
-    """Хэвлэхэд бэлэн бүтэн хуудас."""
-    inner, _ = inject_date(fetch_label(product_id, copies), when)
-    # erxes нь бүтэн баримт биш, хэлтэрхий буцаадаг тул өөрсдөө боож өгнө.
-    # document.write-ээр нээсэн цонхонд load аль хэдийн болсон байж болно —
-    # тиймээс readyState-ийг шалгаж хоёуланг нь барина.
-    auto = ("<script>(function(){function p(){setTimeout(function(){window.print()},300)}if(document.readyState==='complete')p();else window.addEventListener('load',p)})();</script>") if auto_print else ""
-    return (
-        "<!doctype html><html lang='mn'><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>Үнийн шошго</title>"
-        "<style>@page{margin:4mm}body{margin:0}"
-        "@media screen{body{background:#eee;padding:8mm}}"
-        "</style></head><body>" + inner + auto + "</body></html>"
-    )
-
-
-# ── Шошгоны утгыг буцааж унших ──────────────────────────────────────
-# Дэлгэц дээр бөөний үнэ харуулахад ЯГ ТЭР эх сурвалжийг ашиглах ёстой —
-# pricing-ийн логикийг дуурайвал дэлгэц дээрх тоо шошгон дээрхээс зөрч,
-# худалдагч ямар нь зөвийг мэдэхгүй болно.
-#
-# Загварын текстээс өөрөөс нь regex үүсгэнэ ({{ x }} → нэртэй бүлэг).
-# Ингэснээр загварын үг өөрчлөгдвөл дагаж ажиллана.
-_TPL_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
-_tpl_cache: dict = {"at": None, "rx": None}
-_TPL_TTL = 3600
-
-
-def _text(html: str) -> str:
-    """HTML → цэвэр текст (таг хасаж, зайг нэгтгэнэ)."""
-    t = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html or "", flags=re.S | re.I)
-    t = re.sub(r"<[^>]+>", " ", t)
-    t = t.replace("&nbsp;", " ").replace("&amp;", "&")
-    return re.sub(r"\s+", " ", t).strip()
-
-
-def _template_regex():
-    """Загварын агуулгаас regex үүсгэнэ (1 цаг кэштэй)."""
-    now = datetime.now()
-    if (_tpl_cache["rx"] is not None and _tpl_cache["at"]
-            and (now - _tpl_cache["at"]).total_seconds() < _TPL_TTL):
-        return _tpl_cache["rx"]
-
-    from app.services.erxes_client import get_client
-    data = get_client().gql(
-        "query($id:String!){ documentsDetail(_id:$id){ content } }",
-        {"id": settings.erxes_label_template_id})
-    body = _text(((data or {}).get("documentsDetail") or {}).get("content") or "")
-    if not body:
-        raise LabelError("Шошгоны загвар уншигдсангүй.")
-
-    marks = list(_TPL_RE.finditer(body))
-    parts, pos = [], 0
-    for i, m in enumerate(marks):
-        parts.append(re.escape(body[pos:m.start()]).replace(r"\ ", r"\s*"))
-        # Загварын ТӨГСГӨЛД байгаа хувьсагчийн ард таарах текст байхгүй тул
-        # non-greedy бүлэг хоосон таардаг — сүүлийнхийг greedy болгоно.
-        tail = body[m.end():].strip() if i == len(marks) - 1 else "x"
-        parts.append(f"(?P<{m.group(1)}>.*)" if not tail else f"(?P<{m.group(1)}>.*?)")
-        pos = m.end()
-    parts.append(re.escape(body[pos:]).replace(r"\ ", r"\s*"))
-    rx = re.compile("".join(parts), re.S)
-    _tpl_cache.update({"at": now, "rx": rx})
-    return rx
-
-
-def parse_rendered(html: str) -> dict:
-    """Хэвлэгдсэн шошгоноос загварын утгуудыг салгана.
-
-    Олдохгүй бол хоосон dict — дуудагч тал үүнийг заавал тэсвэрлэнэ
-    (бөөний мэдээлэл байхгүй ч үндсэн үнэ харагдана)."""
-    m = _template_regex().search(_text(html))
-    if not m:
-        return {}
-    return {k: (v or "").strip() for k, v in m.groupdict().items()}
+def _qty(v) -> str:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return str(int(f)) if f.is_integer() else f"{f:g}"
 
 
 _bulk_cache: dict = {}
 _BULK_TTL = 300          # сек — үнэ өдөр дунд ховор өөрчлөгддөг
 
 
-def bulk_info(product_id: str) -> dict:
-    """Барааны бөөний ширхэг/үнэ — шошготой ЯГ ижил эх сурвалжаас.
+def bulk_info(product_id: str, unit_price=None) -> dict:
+    """Барааны бөөний ширхэг/үнэ (онлайн POS-ийн pricing).
 
-    Удаан (erxes руу 0.6-1.6 сек) тул дэлгэц дээр үндсэн үнийг локал
-    POS-оос шууд харуулаад, үүнийг ард нь ачаална. Дахин уншуулахад
-    шууд гарахын тулд богино хугацаанд кэшилнэ."""
+    Дэлгэц дээр үндсэн үнийг эхэлж харуулаад, үүнийг ард нь ачаална (~0.4-1 сек).
+    Дахин уншуулахад шууд гарахын тулд богино хугацаанд кэшилнэ."""
+    from app.services import pos_price
     now = datetime.now()
     hit = _bulk_cache.get(product_id)
     if hit and (now - hit[0]).total_seconds() < _BULK_TTL:
         return hit[1]
-    vals = parse_rendered(fetch_label(product_id, copies=1))
+    info = pos_price.price_info(product_id) or {}
     out = {
-        "quantity": vals.get("bulkQuantity") or "",
-        "price": vals.get("bulkPrice") or "",
-        "unit_price": vals.get("price") or "",
-        "ok": bool(vals.get("bulkPrice")),
+        "quantity": _qty(info.get("value")) if info else "",
+        "price": _money(info.get("price")) if info else "",
+        "unit_price": _money(unit_price) if unit_price is not None else "",
+        "ok": bool(info.get("price")),
     }
     _bulk_cache[product_id] = (now, out)
     return out
+
+
+def _one(p: dict, bulk: dict, stamp: str) -> str:
+    e = html.escape
+    bulk_line = (f'<div class="bulk">Бөөний {e(bulk["quantity"])} ш — <b>{e(bulk["price"])}₮</b></div>'
+                 if bulk.get("ok") else "")
+    return (
+        '<div class="lbl">'
+        f'<div class="name">{e(p.get("name") or "")}</div>'
+        f'<div class="code">{e(p.get("code") or "")}</div>'
+        f'<div class="price">{e(_money(p.get("price")))}<span>₮</span></div>'
+        f'{bulk_line}'
+        f'<div class="date">{e(stamp)}</div>'
+        '</div>'
+    )
+
+
+def label_page(product: dict, copies: int = 1, auto_print: bool = True,
+               when: datetime | None = None) -> str:
+    """Хэвлэхэд бэлэн бүтэн хуудас — хувь бүр тусдаа хуудсанд (шошго бүр таслагдана)."""
+    if not product or not product.get("_id"):
+        raise LabelError("Бараа олдсонгүй.")
+    copies = max(1, min(int(copies or 1), 20))
+    try:
+        bulk = bulk_info(product["_id"], product.get("price"))
+    except Exception:  # noqa: BLE001 — бөөний мэдээлэлгүй ч шошго хэвлэгдэнэ
+        bulk = {"ok": False}
+    stamp = (when or datetime.now()).strftime("%Y-%m-%d")
+    width = int(settings.erxes_label_width or 80)
+    body = "".join(_one(product, bulk, stamp) for _ in range(copies))
+    # document.write-ээр нээсэн цонхонд load аль хэдийн болсон байж болно —
+    # тиймээс readyState-ийг шалгаж хоёуланг нь барина.
+    auto = ("<script>(function(){function p(){setTimeout(function(){window.print()},300)}"
+            "if(document.readyState==='complete')p();else window.addEventListener('load',p)})();</script>"
+            if auto_print else "")
+    return (
+        "<!doctype html><html lang='mn'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Үнийн шошго</title><style>"
+        f"@page{{size:{width}mm auto;margin:3mm}}"
+        "*{box-sizing:border-box}"
+        "body{margin:0;font-family:Arial,'Helvetica Neue',sans-serif;color:#000}"
+        f".lbl{{width:{width - 6}mm;padding:1mm 0;break-after:page;page-break-after:always}}"
+        ".lbl:last-child{break-after:auto;page-break-after:auto}"
+        ".name{font-size:15px;font-weight:700;line-height:1.25;max-height:3.75em;overflow:hidden}"
+        ".code{margin-top:1px;font:12px ui-monospace,Consolas,monospace}"
+        ".price{margin-top:4px;font-size:34px;font-weight:900;line-height:1;text-align:center}"
+        ".price span{margin-left:2px;font-size:20px;font-weight:700}"
+        ".bulk{margin-top:4px;font-size:14px;text-align:center}"
+        ".date{margin-top:4px;font-size:10px;text-align:right}"
+        "@media screen{body{background:#eee;padding:8mm}"
+        ".lbl{background:#fff;padding:3mm;margin:0 auto 6mm;box-shadow:0 1px 4px rgba(0,0,0,.15)}}"
+        "</style></head><body>" + body + auto + "</body></html>"
+    )

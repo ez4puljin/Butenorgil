@@ -74,10 +74,14 @@ class ErxesClient:
         if j.get("errors"):
             raise ErxesError(f"erxes нэвтрэх алдаа: {j['errors'][0].get('message', '')[:150]}")
         token = (j.get("data") or {}).get("login")
-        if token:
-            # Токеныг header-ээр ч дамжуулна (cookie аль хэдийн session-д суусан)
-            s.headers["Authorization"] = f"Bearer {token}"
+        # erxes-ийн шинэ хувилбар JWT-г `auth-token` cookie-д тавиад login-оос "loggedIn" гэж
+        # буцаадаг. Тэр үед cookie-г ДАРЖ бичихгүй — өмнө нь "loggedIn"-оор дарж бичээд бүх
+        # хүсэлт «Login required» болж байсан (2026-10, POS sync/тулгалт/шошго зогссон).
+        if token and token != "loggedIn" and token.count(".") == 2:
+            s.headers["Authorization"] = f"Bearer {token}"   # хуучин хувилбар — токен буцаадаг
             s.cookies.set("auth-token", token)
+        elif not s.cookies.get("auth-token"):
+            raise ErxesError("erxes нэвтрэлт амжилтгүй — auth-token cookie ирсэнгүй.")
         self._s = s
 
     def _session(self) -> requests.Session:
