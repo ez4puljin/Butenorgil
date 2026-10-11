@@ -2,14 +2,15 @@
 
 2026-10-нд erxes шинэчлэгдэж хуучин documents service ажиллахаа больсон
 (`/pl:documents/print` → «Service not found», `documentsDetail` → «Permission required»),
-тиймээс шошгыг ӨӨРСДӨӨ зурна. Талбарууд нь хуучин erxes-ийн «Шошго» загвартай ижил:
-нэр, код, үнэ, бөөний ширхэг, бөөний үнэ, дээр нь хэвлэсэн огноо.
+тиймээс шошгыг erxes-ийн хуучин «Шошго» загвараар (id 63e0d1c289900a8db3052d6b,
+core:product) ӨӨРСДӨӨ зурна — HTML/inline style нь тэр загварынх яг хэвээрээ
+(2026-08-29-нд `documentsDetail`-ээс уншсан агуулга), дээр нь erxes-ийн receipt CSS
+(Arial, хар, 11px) ба өмнөх шигээ доод хүрээний баруун доод буланд хэвлэсэн огноо.
+Хувь бүрийг өмнөх шигээ хуудас таслалгүйгээр дараалуулна.
 
 Бөөний ширхэг/үнэ — онлайн POS-ийн `getPriceInfo` (app.services.pos_price.price_info):
 касс яг үүгээр бодно, хуучин шошготой таарсан (101007 → 2 ш @ 29,130₮;
 101048 → 2 ш @ 106,300₮).
-
-Дулааны (чек) принтерт зориулав: 80 мм, зөвхөн хар өнгө (саарлыг цэгэн болгож муу хэвлэдэг).
 """
 from __future__ import annotations
 
@@ -63,24 +64,39 @@ def bulk_info(product_id: str, unit_price=None) -> dict:
     return out
 
 
+# erxes-ийн хуучин «Шошго» загвар ({{ name }} {{ code }} {{ price }} {{ bulkQuantity }}
+# {{ bulkPrice }}) — style-уудыг өөрчлөлгүй хуулсан. {date} — бидний нэмдэг байсан огноо.
+_TEMPLATE = (
+    '<div><div style="border: 2px solid; padding: 3px 3px;border-bottom:none">'
+    '<p style="text-align: center;"><span style="font-size: 16px"><strong>{name}</strong></span></p>'
+    '<p><span style="font-size: 12px"><strong>code</strong></span>: '
+    '<span style="font-size: 14px"><strong>{code} </strong></span></p></div>'
+    '<div style="border: 2px solid; padding: 3px 3px;">'
+    '<p><span style="font-size: 18px">Үнэ :</span>&nbsp; '
+    '<span style="font-size: 22px"><strong>{price} </strong></span></p>'
+    '<p><span style="font-size: 16px">Бөөний ширхэг&nbsp;<strong>{bulk_qty}</strong>'
+    '&nbsp;Бөөний үнэ: </span><span style="font-size: 20px"><strong>{bulk_price}</strong></span></p>'
+    '<p style="margin:2px 0 0;font-size:10px;color:#000;text-align:right">{date}</p>'
+    '</div></div>'
+)
+
+# erxes-ийн print-ийн нэмдэг receipt CSS (шошгонд хамаатай хэсэг)
+_RECEIPT_CSS = ("html {color: #000;font-size: 11px;font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;}"
+                "body {margin: 0;}")
+
+
 def _one(p: dict, bulk: dict, stamp: str) -> str:
     e = html.escape
-    bulk_line = (f'<div class="bulk">Бөөний {e(bulk["quantity"])} ш — <b>{e(bulk["price"])}₮</b></div>'
-                 if bulk.get("ok") else "")
-    return (
-        '<div class="lbl">'
-        f'<div class="name">{e(p.get("name") or "")}</div>'
-        f'<div class="code">{e(p.get("code") or "")}</div>'
-        f'<div class="price">{e(_money(p.get("price")))}<span>₮</span></div>'
-        f'{bulk_line}'
-        f'<div class="date">{e(stamp)}</div>'
-        '</div>'
-    )
+    return _TEMPLATE.format(
+        name=e(p.get("name") or ""), code=e(p.get("code") or ""), price=e(_money(p.get("price"))),
+        bulk_qty=e(bulk.get("quantity") or "") if bulk.get("ok") else "",
+        bulk_price=e(bulk.get("price") or "") if bulk.get("ok") else "",
+        date=e(stamp))
 
 
 def label_page(product: dict, copies: int = 1, auto_print: bool = True,
                when: datetime | None = None) -> str:
-    """Хэвлэхэд бэлэн бүтэн хуудас — хувь бүр тусдаа хуудсанд (шошго бүр таслагдана)."""
+    """Хэвлэхэд бэлэн бүтэн хуудас (өмнөх erxes шошготой ижил харагдац)."""
     if not product or not product.get("_id"):
         raise LabelError("Бараа олдсонгүй.")
     copies = max(1, min(int(copies or 1), 20))
@@ -90,7 +106,7 @@ def label_page(product: dict, copies: int = 1, auto_print: bool = True,
         bulk = {"ok": False}
     stamp = (when or datetime.now()).strftime("%Y-%m-%d")
     width = int(settings.erxes_label_width or 80)
-    body = "".join(_one(product, bulk, stamp) for _ in range(copies))
+    inner = "<div>" + "".join(f"<div>{_one(product, bulk, stamp)}</div>" for _ in range(copies)) + "</div>"
     # document.write-ээр нээсэн цонхонд load аль хэдийн болсон байж болно —
     # тиймээс readyState-ийг шалгаж хоёуланг нь барина.
     auto = ("<script>(function(){function p(){setTimeout(function(){window.print()},300)}"
@@ -99,19 +115,9 @@ def label_page(product: dict, copies: int = 1, auto_print: bool = True,
     return (
         "<!doctype html><html lang='mn'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>Үнийн шошго</title><style>"
-        f"@page{{size:{width}mm auto;margin:3mm}}"
-        "*{box-sizing:border-box}"
-        "body{margin:0;font-family:Arial,'Helvetica Neue',sans-serif;color:#000}"
-        f".lbl{{width:{width - 6}mm;padding:1mm 0;break-after:page;page-break-after:always}}"
-        ".lbl:last-child{break-after:auto;page-break-after:auto}"
-        ".name{font-size:15px;font-weight:700;line-height:1.25;max-height:3.75em;overflow:hidden}"
-        ".code{margin-top:1px;font:12px ui-monospace,Consolas,monospace}"
-        ".price{margin-top:4px;font-size:34px;font-weight:900;line-height:1;text-align:center}"
-        ".price span{margin-left:2px;font-size:20px;font-weight:700}"
-        ".bulk{margin-top:4px;font-size:14px;text-align:center}"
-        ".date{margin-top:4px;font-size:10px;text-align:right}"
-        "@media screen{body{background:#eee;padding:8mm}"
-        ".lbl{background:#fff;padding:3mm;margin:0 auto 6mm;box-shadow:0 1px 4px rgba(0,0,0,.15)}}"
-        "</style></head><body>" + body + auto + "</body></html>"
+        "<title>Үнийн шошго</title>"
+        "<style>@page{margin:4mm}body{margin:0}"
+        f"@media screen{{body{{background:#eee;padding:8mm}}body>div{{max-width:{width}mm;background:#fff}}}}"
+        f"</style><style type=\"text/css\">/*receipt*/{_RECEIPT_CSS}</style>"
+        "</head><body>" + inner + auto + "</body></html>"
     )
