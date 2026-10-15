@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router, digest_router, pos_recon_router, price_check_router, hall_count_router, pallets_router, custom_master_router, brand_orderers_router, po_history_router, arrival_list_router, sales_analytics_router, chrome_extensions_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router, digest_router, pos_recon_router, price_check_router, hall_count_router, pallets_router, custom_master_router, brand_orderers_router, po_history_router, arrival_list_router, sales_analytics_router, chrome_extensions_router, master_count_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -38,6 +38,7 @@ from app.models.movement_file import MovementFile  # noqa: F401 – registers ta
 from app.models.income_file import IncomeFile  # noqa: F401 – registers table
 from app.models.balance_file import BalanceFile  # noqa: F401 – registers table
 from app.models.hall_count import HallCountSession, HallCountItem, HallCountScan  # noqa: F401 – registers tables
+from app.models.master_count import MasterCount, MasterCountLine, MasterCountScan  # noqa: F401 – registers tables
 from app.models.pallet import PalletSalesSettings, PalletTemplate, ProductPallet  # noqa: F401 – registers tables
 from app.models.custom_master import CustomField, CustomRecord  # noqa: F401 – registers tables
 from app.models.brand_orderer import BrandOrderer  # noqa: F401 – registers tables
@@ -1338,6 +1339,7 @@ app.include_router(digest_router)
 app.include_router(pos_recon_router)
 app.include_router(price_check_router)
 app.include_router(hall_count_router)
+app.include_router(master_count_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)
 app.include_router(brand_orderers_router)

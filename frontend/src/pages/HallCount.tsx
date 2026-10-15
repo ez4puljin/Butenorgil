@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   ScanBarcode, Camera, Keyboard, Loader2, RefreshCw, Check, AlertCircle, X, Plus, Minus,
@@ -6,6 +6,7 @@ import {
   Settings2, Upload, SkipForward, ScanLine, Lock, Users, FileSpreadsheet, RotateCcw, ListChecks,
 } from "lucide-react";
 import { api } from "../lib/api";
+import MyCountPanel from "./MyCount";
 import { useAuthStore } from "../store/authStore";
 import {
   getDeviceIdSync, ensureDeviceId, getDeviceLabel, setDeviceLabel, restoreDeviceLabel,
@@ -166,7 +167,37 @@ const STATUS_STYLE: Record<ItemStatus, { label: string; cls: string }> = {
   not_in_list: { label: "Жагсаалтад байхгүй",   cls: "bg-amber-50 text-amber-700 ring-amber-200" },
 };
 
+/* /hall-count: «Заалны тооллого» (дундын, үлдэгдлийн файлаас) | «Миний тооллого» (хувийн, мастерын бараагаар).
+   Горим бүр тусдаа компонент — сонгоогүй нь unmount болж камер нь заавал унтарна. */
+type HcMode = "hall" | "mine";
+const MODE_LS = "hallcount.mode";
+
+function ModeSwitch({ mode, onChange }: { mode: HcMode; onChange: (m: HcMode) => void }) {
+  const btn = (m: HcMode, label: string) => (
+    <button onClick={() => onChange(m)}
+      className={`flex-1 rounded-xl px-3 py-2 text-[13px] font-semibold transition-colors ${
+        mode === m ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex rounded-2xl bg-gray-100 p-1">
+      {btn("hall", "Заалны тооллого")}
+      {btn("mine", "Миний тооллого")}
+    </div>
+  );
+}
+
 export default function HallCountPage() {
+  const [mode, setMode] = useState<HcMode>(() => {
+    try { return localStorage.getItem(MODE_LS) === "mine" ? "mine" : "hall"; } catch { return "hall"; }
+  });
+  const change = (m: HcMode) => { setMode(m); try { localStorage.setItem(MODE_LS, m); } catch { /* ignore */ } };
+  const sw = <ModeSwitch mode={mode} onChange={change}/>;
+  return mode === "mine" ? <MyCountPanel header={sw}/> : <SharedHallCount modeSwitch={sw}/>;
+}
+
+function SharedHallCount({ modeSwitch }: { modeSwitch: ReactNode }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const visible = useVisible(rootRef);
   const { username, nickname, userId } = useAuthStore();
@@ -1007,6 +1038,7 @@ export default function HallCountPage() {
   /* ═══════════════ Layout ═══════════════ */
   return (
     <div ref={rootRef} className="flex flex-col gap-3">
+      {modeSwitch}
       {toast && (
         <div className={`fixed left-3 right-3 top-3 z-[70] flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-medium text-white shadow-lg sm:left-auto sm:right-5 sm:max-w-md ${toast.kind === "err" ? "bg-red-600" : "bg-emerald-600"}`}>
           {toast.kind === "err" ? <AlertCircle size={15} /> : <Check size={15} />}
