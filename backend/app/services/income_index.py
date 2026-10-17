@@ -133,13 +133,11 @@ def _index(path: Path) -> dict:
 
 
 def _file_recs(db, branch: str, year: int) -> list[tuple[dict, Path]]:
-    """Тухайн оны (сарын эсвэл бүтэн оны) орлогын файлууд + мета (Ebarimt-д харуулна).
-    Сарын файлтай онд бүтэн оны файлыг алгасна."""
+    """Тухайн оны орлогын файлууд (сарын болон бүтэн оны) + мета (Ebarimt-д харуулна). Аль сард аль
+    файлыг ашиглахыг _month_files шийднэ — сарын файл тухайн сараа бүтэн оны файлаас давамгайлна."""
     if branch == "orgil":
         from app.models.income_file import IncomeFile
-        rows = db.query(IncomeFile).filter(IncomeFile.year == year).all()
-        has_monthly = any((r.month or 0) > 0 for r in rows)
-        rows, base = [r for r in rows if not (has_monthly and not r.month)], MAIN_DIR
+        rows, base = db.query(IncomeFile).filter(IncomeFile.year == year).all(), MAIN_DIR
     else:
         from app.models.income_file import BranchIncomeFile
         rows = db.query(BranchIncomeFile).filter(BranchIncomeFile.branch == branch, BranchIncomeFile.year == year).all()
@@ -175,10 +173,13 @@ def signature(db, year: int) -> tuple:
 
 def _month_files(db, branch: str, year: int, month: int) -> list[tuple[dict, Path]]:
     """Тухайн сарын ХА-д орох файлууд: тэр сарын слотын файл (агуулгаас үл хамааран — хоосон экспорт
-    бол ХА 0), эсвэл бүтэн оны файл (тэр сарын мөр агуулсан бол). Сарын файл ЗӨВХӨН өөрийн сарын
-    мөрөөр тооцогдоно — олон сарын экспортыг нэг слотод оруулбал хөрш сард давхар тоологдохгүй."""
-    return [(meta, p) for meta, p in _file_recs(db, branch, year)
-            if meta["month"] == month or (meta["month"] == 0 and (year, month) in _index(p))]
+    бол ХА 0); тийм файлгүй бол бүтэн оны файл (тэр сарын мөр агуулсан бол). Сарын файл тухайн сараа
+    бүтэн оны файлаас давамгайлна (2025: 1–11-р сар бүтэн оны файлаас, 12-р сар сарын файлаас) бөгөөд
+    ЗӨВХӨН өөрийн сарын мөрөөр тооцогдоно — олон сарын экспортыг нэг слотод оруулбал хөрш сард давхар
+    тоологдохгүй."""
+    recs = _file_recs(db, branch, year)
+    own = [(meta, p) for meta, p in recs if meta["month"] == month]
+    return own or [(meta, p) for meta, p in recs if meta["month"] == 0 and (year, month) in _index(p)]
 
 
 def covers(db, branch: str, year: int, month: int) -> bool:

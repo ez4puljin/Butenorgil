@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronLeft, ChevronRight, Upload, RefreshCw, AlertCircle, X, Check,
   ReceiptText, FileSpreadsheet, Download, Trash2, Search, Users, Phone,
@@ -42,17 +42,17 @@ interface ReportRow {
   defaults?: Record<string, string>;
   // Сараар: админ энэ сард ажилтныг сольсон (defaults.employee — Data-ийн ажилтан)
   emp_assigned?: boolean;
-  // Нэгтгэсэн: аль ажилтанд аль сард хуваарилагдсан (олон сартай нь эхэнд)
+  // Нэгтгэсэн: аль ажилтанд аль сард хуваарилагдсан (олон сартай нь эхэнд); months — үе (он*100+сар)
   emp_months?: { name: string; months: number[] }[];
   // Энэ сард ажилтныг гараар тогтоосон — Data файл дахин оруулсан ч хэвээр
   emp_pinned?: boolean;
   // Ebarimt дүнгийн дотор — бүртгэлгүй регистрээс энэ харилцагчид холбосон баримтын дүн
   link_orgil?: number;
   link_harhorin?: number;
-  // Өөрчлөлтийн түүх: сараар — талбар бүрийн бичлэгүүд; нэгтгэсэнд — {талбар: {сар: бичлэгүүд}}
+  // Өөрчлөлтийн түүх: сараар — талбар бүрийн бичлэгүүд; нэгтгэсэнд — {талбар: {үе: бичлэгүүд}}
   hist?: Partial<Record<HistField, HistEv[]>>;
   hist_m?: Partial<Record<HistField, Record<string, HistEv[]>>>;
-  // Нэгтгэсэн тайланд: сар бүрийн ХА / Ebarimt / чөлөөлөгдөх × (Оргил, Хархорин)
+  // Нэгтгэсэн тайланд: үе (он*100+сар) бүрийн ХА / Ebarimt / чөлөөлөгдөх × (Оргил, Хархорин)
   by_month?: Record<string, { po: number; vo: number; eo: number; ph: number; vh: number; eh: number }>;
 }
 
@@ -62,7 +62,7 @@ type HistField = "emp" | "po" | "ph" | "vo" | "vh";
 interface HistEv { v: string | number | null; k: string; f: string; at: string | null; by: string }
 // Бүртгэлгүй регистрийн баримтыг харилцагчид холбосон бичлэг
 interface ReceiptLink {
-  month: number; which: Which; rkey: string; ttd: string; code: string; cname?: string;
+  year: number; month: number; period: number; which: Which; rkey: string; ttd: string; code: string; cname?: string;
   amount: number; padaan: string | number; date: string; name: string;
   by: string; at: string | null; stale: boolean;
 }
@@ -72,10 +72,11 @@ const custLabel = (c: CustOpt) => `${c.code} · ${c.name}`;
 interface UnregRow {
   ttd: string; name: string;
   vat_orgil: number; cnt_orgil: number; vat_harhorin: number; cnt_harhorin: number;
-  months?: Record<string, { vo: number; vh: number }>;
+  months?: Record<string, { vo: number; vh: number }>;   // үе (он*100+сар) бүрээр
 }
 type PurchaseKind = "income" | "legacy" | null;
 interface MonthAvail {
+  year: number;
   month: number;
   kinds: string[];                                     // Ebarimt цэсэнд оруулсан файлууд
   purchase?: Partial<Record<Which, PurchaseKind>>;     // ХА-ийн эх сурвалж салбар бүрээр
@@ -106,13 +107,13 @@ interface ReportData {
   purchase_source?: Partial<Record<Which, PurchaseSource>>;
   unregistered?: UnregRow[];
   receipt_links?: ReceiptLink[];
-  // сарын тайланд: дутуу файлын төрлүүд; нэгтгэсэнд: {сар: дутуу төрлүүд}
+  // сарын тайланд: дутуу файлын төрлүүд; нэгтгэсэнд: {үе: дутуу төрлүүд}
   missing: string[] | Record<string, string[]>;
   error: string | null;
   year: number;
   month?: number;
-  months?: number[];        // нэгтгэсэн тайланд орсон сарууд
-  skipped?: number[];       // Data файлгүй тул орхисон сарууд
+  periods?: number[];       // нэгтгэсэн тайланд орсон үеүүд (он*100+сар)
+  skipped?: number[];       // Data файлгүй тул орхисон үеүүд
 }
 
 /** «1–3, 5-р сар» — сонгосон саруудыг товчоор. */
@@ -125,6 +126,34 @@ function monthsLabel(ms: number[]) {
     i = j;
   }
   return parts.length ? `${parts.join(", ")}-р сар` : "сар сонгоогүй";
+}
+
+// Нэгтгэсэн тайлангийн «үе» = он*100+сар (202512 = 2025 оны 12-р сар) — өмнөх оны 12-р сарыг хамт харахад
+const pk = (y: number, m: number) => y * 100 + m;
+const pY = (p: number) => Math.floor(p / 100);
+const pM = (p: number) => p % 100;
+const pNext = (p: number) => (pM(p) === 12 ? pk(pY(p) + 1, 1) : p + 1);
+/** Хүснэгтийн «Сар» баганад: base онд — «3», өөр онд — «2025/12». */
+const pShort = (p: number, base: number) => (pY(p) === base ? String(pM(p)) : `${pY(p)}/${pM(p)}`);
+/** Тайлбарт: base онд — «3-р сар», өөр онд — «2025/12». */
+const pName = (p: number, base: number) => (pY(p) === base ? `${pM(p)}-р сар` : `${pY(p)}/${pM(p)}`);
+/** «2026 · 1–3, 5-р сар» эсвэл «2025/12 – 2026/10»; бүгд base онд бол оныг орхино. */
+function periodsLabel(ps: number[], base?: number) {
+  const s = [...new Set(ps)].sort((a, b) => a - b);
+  if (!s.length) return "сар сонгоогүй";
+  if (s.every(p => pY(p) === pY(s[0]))) {
+    const ml = monthsLabel(s.map(pM));
+    return pY(s[0]) === base ? ml : `${pY(s[0])} · ${ml}`;
+  }
+  const parts: string[] = [];
+  for (let i = 0; i < s.length; i++) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] === pNext(s[j])) j++;
+    const a = `${pY(s[i])}/${pM(s[i])}`;
+    parts.push(j === i ? a : pY(s[j]) === pY(s[i]) ? `${a}–${pM(s[j])}` : `${a} – ${pY(s[j])}/${pM(s[j])}`);
+    i = j;
+  }
+  return parts.join(", ");
 }
 
 // Ebarimt цэсэнд оруулдаг файлууд — хуучин Tailan.xlsm-ийн эх үүсвэрүүд
@@ -151,6 +180,7 @@ function monthMissing(a: MonthAvail): string[] {
   ];
 }
 
+const ALL_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const MN_MONTHS = ["1-р сар","2-р сар","3-р сар","4-р сар","5-р сар","6-р сар",
                    "7-р сар","8-р сар","9-р сар","10-р сар","11-р сар","12-р сар"];
 
@@ -182,15 +212,15 @@ function histLines(evs: HistEv[], emp: boolean): string {
     return `• ${HIST_KIND[e.k] ?? e.k}: ${emp ? (e.v ?? "") : fmtMnt(Number(e.v) || 0)}${src ? `  (${src})` : ""}`;
   }).join("\n");
 }
-/** Нүдний tooltip: сараар — бичлэгүүд; нэгтгэсэнд — өөрчлөгдсөн сар бүрээр. */
-function histTip(r: ReportRow, f: HistField, hint = ""): string {
+/** Нүдний tooltip: сараар — бичлэгүүд; нэгтгэсэнд — өөрчлөгдсөн сар бүрээр (base — харж буй он). */
+function histTip(r: ReportRow, f: HistField, hint = "", base = 0): string {
   const emp = f === "emp";
   let body = "";
   if (r.hist?.[f]) body = `${HIST_LABEL[f]} — өөрчлөлтийн түүх:\n${histLines(r.hist[f]!, emp)}`;
   else if (r.hist_m?.[f]) {
     body = `${HIST_LABEL[f]} — сар бүрийн өөрчлөлт:\n` + Object.entries(r.hist_m[f]!)
       .sort(([a], [b]) => Number(a) - Number(b))
-      .map(([m, evs]) => `${m}-р сар:\n${histLines(evs, emp)}`).join("\n");
+      .map(([p, evs]) => `${pName(Number(p), base)}:\n${histLines(evs, emp)}`).join("\n");
   }
   return [body, hint].filter(Boolean).join("\n\n");
 }
@@ -295,12 +325,12 @@ function CustomerPicker({ listId, resolve, onPick, disabled, placeholder = "Ха
 }
 
 /** Нэгтгэсэн тайланд — харилцагч аль ажилтанд хэдэн сар хуваарилагдсан (дээр нь олон сартай). */
-function EmpBreakdown({ row }: { row: ReportRow }) {
+function EmpBreakdown({ row, base }: { row: ReportRow; base: number }) {
   const items = row.emp_months?.length ? row.emp_months : [{ name: row.employee, months: [] as number[] }];
   const multi = items.length > 1;
   return (
-    <div title={items.map(x => `${x.name}: ${x.months.length ? monthsLabel(x.months) : "—"}`).join("\n")
-      + (row.hist_m?.emp ? `\n\n${histTip(row, "emp")}` : "")}
+    <div title={items.map(x => `${x.name}: ${x.months.length ? periodsLabel(x.months, base) : "—"}`).join("\n")
+      + (row.hist_m?.emp ? `\n\n${histTip(row, "emp", "", base)}` : "")}
       className={`py-0.5 pr-1 ${multi ? "border-l-2 border-amber-300 pl-1.5" : "pl-1"}`}>
       {items.map((x, i) => (
         <div key={x.name} className={`flex items-center gap-1 text-[11px] leading-snug ${i === 0 ? "font-semibold text-gray-800" : "text-gray-500"}`}>
@@ -367,13 +397,13 @@ function DiffFilterSelect({ value, onChange }: { value: string; onChange: (v: st
 // ── Ebarimt (НӨАТ) дүнгийн задаргаа — манай компани руу шивсэн баримтууд ─────────
 // Ebarimt баримт: файлын баганууд + _rkey (баримтын түлхүүр), _ttd, _link (харилцагчид холбосон)
 interface EntryRow {
-  month: number; _rkey: string; _ttd: string;
+  year: number; month: number; period: number; _rkey: string; _ttd: string;
   _link?: { code: string; name: string; by: string; at: string | null };
   [col: string]: unknown;
 }
 interface EntriesData {
   columns: string[]; rows: EntryRow[];
-  registries: string[]; no_file: number[]; months: number[];
+  registries: string[]; no_file: number[]; periods: number[];
 }
 const AMOUNT_COLS = ["НӨАТ", "Цэвэр дүн", "Нийт дүн"];
 const fmtAmt = (v: unknown) =>
@@ -457,7 +487,9 @@ function SummaryStats({ row, which, extra }: { row: ReportRow; which: Which; ext
 
 /** Нэгтгэсэн тайланд — аль сард зөрүү гарсныг харуулна. docs — сар бүрийн орлогын баримтын нийлбэр
  *  (null = тэр сарын орлогын файл оруулаагүй); ХА-аас зөрсөн сар шараар тодорно. */
-function PerMonthTable({ row, which, docs }: { row: ReportRow; which: Which; docs?: Record<number, number | null> }) {
+function PerMonthTable({ row, which, docs, base }: {
+  row: ReportRow; which: Which; docs?: Record<number, number | null>; base: number;
+}) {
   const o = which === "orgil";
   const pm = Object.entries(row.by_month ?? {})
     .map(([m, v]) => ({ m: Number(m), p: o ? v.po : v.ph, e: o ? v.vo : v.vh, x: o ? v.eo : v.eh }))
@@ -469,7 +501,7 @@ function PerMonthTable({ row, which, docs }: { row: ReportRow; which: Which; doc
       <table className="text-[11.5px]">
         <thead><tr className="text-gray-500">
           <th className="pr-3 text-left font-semibold">Сар</th>
-          {pm.map(x => <th key={x.m} className="px-2 text-right font-semibold">{x.m}</th>)}
+          {pm.map(x => <th key={x.m} className="px-2 text-right font-semibold">{pShort(x.m, base)}</th>)}
         </tr></thead>
         <tbody className="font-mono tabular-nums">
           <tr><td className="pr-3 font-sans text-gray-500">ХА</td>{pm.map(x => <td key={x.m} className="px-2 text-right">{fmtMnt(x.p)}</td>)}</tr>
@@ -493,10 +525,10 @@ function PerMonthTable({ row, which, docs }: { row: ReportRow; which: Which; doc
   );
 }
 
-function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit = false, onChanged, onClose }: {
+function EntriesModal({ row, ttd, which, base, periods, customers = [], canEdit = false, onChanged, onClose }: {
   row?: ReportRow;                                  // харилцагчийн регистрүүдээр
   ttd?: { ttd: string; name: string };              // эсвэл нэг ТТД-ээр (Data-д бүртгэлгүй)
-  which: Which; year: number; months: number[];
+  which: Which; base: number; periods: number[];    // base — харж буй он, periods — он*100+сар
   customers?: CustOpt[];                            // баримтыг холбох харилцагчид
   canEdit?: boolean;
   onChanged?: () => void;                           // холбоос өөрчлөгдсөн — тайланг дахин ачаална
@@ -506,16 +538,16 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
   const [err, setErr] = useState("");
   const [ver, setVer] = useState(0);
   const [busy, setBusy] = useState(false);
-  const monthsKey = months.join(",");
+  const periodsKey = periods.join(",");
   const key = row ? `c:${row.code}` : `t:${ttd?.ttd}`;
   useEffect(() => {
     let alive = true;
-    const params = { year, months: monthsKey, which, ...(row ? { code: row.code } : { ttd: ttd?.ttd }) };
+    const params = { year: base, periods: periodsKey, which, ...(row ? { code: row.code } : { ttd: ttd?.ttd }) };
     api.get("/ebarimt/entries", { params, timeout: 120000 })
       .then(r => { if (alive) setData(r.data); })
       .catch(e => { if (alive) setErr(e?.response?.data?.detail ?? "Баримт ачааллах амжилтгүй"); });
     return () => { alive = false; };
-  }, [key, which, year, monthsKey, ver]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, which, periodsKey, ver]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Баримт(ууд)-ыг харилцагчид холбох (code=null — салгах); сар бүрээр илгээнэ
   const custByLabel = new Map(customers.map(c => [custLabel(c), c.code]));
@@ -525,9 +557,9 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
     if (!items.length) return;
     setBusy(true); setErr("");
     try {
-      const byMonth = new Map<number, string[]>();
-      items.forEach(x => byMonth.set(x.month, [...(byMonth.get(x.month) ?? []), x._rkey]));
-      for (const [m, rkeys] of byMonth) await api.put("/ebarimt/receipt-link", { year, month: m, which, rkeys, code });
+      const byP = new Map<number, string[]>();
+      items.forEach(x => byP.set(x.period, [...(byP.get(x.period) ?? []), x._rkey]));
+      for (const [p, rkeys] of byP) await api.put("/ebarimt/receipt-link", { year: pY(p), month: pM(p), which, rkeys, code });
       setVer(v => v + 1);
       onChanged?.();
     } catch (e: any) {
@@ -544,7 +576,7 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
   }, [onClose]);
 
   const orgil = which === "orgil";
-  const multi = months.length > 1;
+  const multi = periods.length > 1;
   const cols = data?.columns ?? [];
   const sums = Object.fromEntries(AMOUNT_COLS.map(c => [c, (data?.rows ?? []).reduce((s, x) => s + (typeof x[c] === "number" ? (x[c] as number) : 0), 0)]));
 
@@ -559,7 +591,7 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
                    : <>{ttd?.name || "Нэргүй"} <span className="font-mono text-[12px] font-normal text-gray-400">ТТД {ttd?.ttd}</span></>}
             </div>
             <div className="text-[11.5px] text-gray-500">
-              {orgil ? "Оргил" : "Хархорин"} руу шивсэн Ebarimt (НӨАТ) баримтууд · {year} · {monthsLabel(months)}
+              {orgil ? "Оргил" : "Хархорин"} руу шивсэн Ebarimt (НӨАТ) баримтууд · {periodsLabel(periods)}
               {data?.registries.length ? <> · Регистр: <span className="font-mono">{data.registries.join(", ")}</span></> : null}
             </div>
           </div>
@@ -590,7 +622,7 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
         )}
 
         <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 sm:px-5">
-          {multi && row && <PerMonthTable row={row} which={which}/>}
+          {multi && row && <PerMonthTable row={row} which={which} base={base}/>}
           {err ? (
             <div className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-700">{err}</div>
           ) : !data ? (
@@ -616,7 +648,7 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
                 {data.rows.map((x, i) => (
                   <tr key={i} className={`border-b border-gray-50 ${x._link ? "bg-amber-50/50 hover:bg-amber-50" : "hover:bg-gray-50/60"}`}>
                     <td className="px-2 py-1 text-gray-300">{i + 1}</td>
-                    {multi && <td className="px-2 py-1 text-gray-500">{x.month}</td>}
+                    {multi && <td className="px-2 py-1 whitespace-nowrap text-gray-500">{pShort(x.period, base)}</td>}
                     {cols.map(c => (
                       <td key={c} className={`px-2 py-1 ${AMOUNT_COLS.includes(c) ? "text-right font-mono tabular-nums" : ""} ${c === "ДДТД" ? "font-mono text-[10.5px] text-gray-500" : "text-gray-700"}`}>
                         {AMOUNT_COLS.includes(c) ? fmtAmt(x[c]) : String(x[c] ?? "")}
@@ -652,7 +684,7 @@ function EntriesModal({ row, ttd, which, year, months, customers = [], canEdit =
             </table>
           )}
           {!!data?.no_file.length && (
-            <div className="mt-2 text-[11.5px] text-amber-700">Ebarimt файл оруулаагүй сар: {monthsLabel(data.no_file)}</div>
+            <div className="mt-2 text-[11.5px] text-amber-700">Ebarimt файл оруулаагүй сар: {periodsLabel(data.no_file, base)}</div>
           )}
         </div>
       </div>
@@ -676,8 +708,8 @@ function unregSummary(rows: UnregRow[], links: ReceiptLink[]) {
   return { gross: { o: rest.o + linked.o, h: rest.h + linked.h, n: rest.n + linked.n }, linked, rest };
 }
 
-function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose, onOpen, onUnlink }: {
-  rows: UnregRow[]; links: ReceiptLink[]; year: number; months: number[];
+function UnregisteredModal({ rows, links, base, periods, paused, canEdit, onClose, onOpen, onUnlink }: {
+  rows: UnregRow[]; links: ReceiptLink[]; base: number; periods: number[];
   paused: boolean;                                   // дээр нь баримтын цонх нээлттэй — Esc-ийг тэр авна
   canEdit: boolean;
   onClose: () => void; onOpen: (u: UnregRow, which: Which) => void; onUnlink: (l: ReceiptLink) => void;
@@ -690,7 +722,7 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, paused]);
-  const multi = months.length > 1;
+  const multi = periods.length > 1;
   const ql = q.trim().toLowerCase();
   const list = rows.filter(u => !ql || `${u.ttd} ${u.name}`.toLowerCase().includes(ql));
   const llist = links.filter(l => !ql || `${l.ttd} ${l.name} ${l.code} ${l.cname ?? ""} ${l.padaan}`.toLowerCase().includes(ql));
@@ -715,7 +747,7 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-bold text-gray-900">Data файлд бүртгэлгүй регистрээр шивсэн НӨАТ</div>
             <div className="text-[11.5px] text-gray-500">
-              {year} · {monthsLabel(months)} · {rows.length} ТТД — Data файлын (гараар зассан регистр орно) аль ч харилцагчид байхгүй тул тайланд тулгагдаагүй.
+              {periodsLabel(periods)} · {rows.length} ТТД — Data файлын (гараар зассан регистр орно) аль ч харилцагчид байхгүй тул тайланд тулгагдаагүй.
               Харилцагчийн «Регистр» нүдэнд ТТД-г нэмбэл, эсвэл дүн дээр дарж баримт бүрийг харилцагчид холбовол тулгагдана.
             </div>
           </div>
@@ -785,9 +817,9 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
               </thead>
               <tbody>
                 {llist.map((l, i) => (
-                  <tr key={`${l.month}-${l.which}-${l.rkey}`} className={`border-b border-gray-50 ${l.stale ? "opacity-60" : "hover:bg-gray-50/60"}`}>
+                  <tr key={`${l.period}-${l.which}-${l.rkey}`} className={`border-b border-gray-50 ${l.stale ? "opacity-60" : "hover:bg-gray-50/60"}`}>
                     <td className="px-2 py-1 text-gray-300">{i + 1}</td>
-                    {multi && <td className="px-2 py-1 text-gray-500">{l.month}</td>}
+                    {multi && <td className="px-2 py-1 whitespace-nowrap text-gray-500">{pShort(l.period, base)}</td>}
                     <td className="px-2 py-1 whitespace-nowrap text-gray-600">{String(l.date ?? "")}</td>
                     <td className="px-2 py-1 font-mono text-gray-600">{l.ttd}</td>
                     <td className="max-w-[200px] truncate px-2 py-1 text-gray-800" title={l.name}>{l.name || "—"}</td>
@@ -835,7 +867,7 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
                   <td className="px-2 py-1 text-gray-300">{i + 1}</td>
                   <td className="px-2 py-1 font-mono text-gray-600">{u.ttd}</td>
                   <td className="max-w-[260px] truncate px-2 py-1 text-gray-800" title={u.name}>{u.name || <span className="text-gray-300">—</span>}</td>
-                  {multi && <td className="px-2 py-1 whitespace-nowrap text-gray-500">{monthsLabel(Object.keys(u.months ?? {}).map(Number).sort((a, b) => a - b))}</td>}
+                  {multi && <td className="px-2 py-1 whitespace-nowrap text-gray-500">{periodsLabel(Object.keys(u.months ?? {}).map(Number), base)}</td>}
                   <td className="bg-blue-50/20 px-1 py-1 text-right font-mono tabular-nums" title={`${u.cnt_orgil} баримт`}>{amtBtn(u, "orgil")}</td>
                   <td className="bg-violet-50/20 px-1 py-1 text-right font-mono tabular-nums" title={`${u.cnt_harhorin} баримт`}>{amtBtn(u, "harhorin")}</td>
                   <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums text-gray-900">{fmtMnt(u.vat_orgil + u.vat_harhorin)}</td>
@@ -861,26 +893,26 @@ function UnregisteredModal({ rows, links, year, months, paused, canEdit, onClose
 
 // ── ХА (худалдан авалт)-ын задаргаа — Файл оруулалтын орлогын файлын баримтууд ─────
 interface PurchaseDoc {
-  month: number; doc: string; date: string; utga: string; account: string; user: string;
+  year: number; month: number; period: number; doc: string; date: string; utga: string; account: string; user: string;
   supplier: string; amount: number; discount: number; locations: string[];
   lines: [string, string, string, number, number, number, number][];   // код, нэр, байршил, тоо, нэгж үнэ, дүн, хөнгөлөлт
 }
 const fmtQty = (n: number) => n.toLocaleString("mn-MN", { maximumFractionDigits: 3 });
 
-function PurchasesModal({ row, which, year, months, onClose }: {
-  row: ReportRow; which: Which; year: number; months: number[]; onClose: () => void;
+function PurchasesModal({ row, which, base, periods, onClose }: {
+  row: ReportRow; which: Which; base: number; periods: number[]; onClose: () => void;
 }) {
   const [data, setData] = useState<{ documents: PurchaseDoc[]; missing: number[]; total: number } | null>(null);
   const [err, setErr] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
-  const monthsKey = months.join(",");
+  const periodsKey = periods.join(",");
   useEffect(() => {
     let alive = true;
-    api.get("/ebarimt/purchases", { params: { year, months: monthsKey, code: row.code, which }, timeout: 120000 })
+    api.get("/ebarimt/purchases", { params: { year: base, periods: periodsKey, code: row.code, which }, timeout: 120000 })
       .then(r => { if (alive) setData(r.data); })
       .catch(e => { if (alive) setErr(e?.response?.data?.detail ?? "Орлогын баримт ачааллах амжилтгүй"); });
     return () => { alive = false; };
-  }, [row.code, which, year, monthsKey]);
+  }, [row.code, which, base, periodsKey]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -888,14 +920,14 @@ function PurchasesModal({ row, which, year, months, onClose }: {
   }, [onClose]);
 
   const orgil = which === "orgil";
-  const multi = months.length > 1;
+  const multi = periods.length > 1;
   const purchase = branchVals(row, which).p;
   const gap = data ? purchase - data.total : 0;
   const toggle = (k: string) => setOpen(s => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
   const docs = data?.documents ?? [];
-  const docsByMonth = data ? Object.fromEntries(months.map(m => [m, data.missing.includes(m) ? null
-    : docs.reduce((s, d) => s + (d.month === m ? d.amount : 0), 0)])) as Record<number, number | null> : undefined;
-  const allOpen = docs.length > 0 && docs.every(d => open.has(`${d.month}-${d.doc}`));
+  const docsByMonth = data ? Object.fromEntries(periods.map(p => [p, data.missing.includes(p) ? null
+    : docs.reduce((s, d) => s + (d.period === p ? d.amount : 0), 0)])) as Record<number, number | null> : undefined;
+  const allOpen = docs.length > 0 && docs.every(d => open.has(`${d.period}-${d.doc}`));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 sm:p-6" onClick={onClose}>
@@ -905,7 +937,7 @@ function PurchasesModal({ row, which, year, months, onClose }: {
           <div className="min-w-0 flex-1">
             <div className="truncate text-[14px] font-bold text-gray-900">{row.name || row.code} <span className="font-mono text-[12px] font-normal text-gray-400">#{row.code}</span></div>
             <div className="text-[11.5px] text-gray-500">
-              {orgil ? "Оргил" : "Хархорин"} — худалдан авалтын задаргаа (орлогын файлын баримтууд) · {year} · {monthsLabel(months)}
+              {orgil ? "Оргил" : "Хархорин"} — худалдан авалтын задаргаа (орлогын файлын баримтууд) · {periodsLabel(periods)}
             </div>
           </div>
           <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={16}/></button>
@@ -927,10 +959,10 @@ function PurchasesModal({ row, which, year, months, onClose }: {
         )}/>
 
         <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 sm:px-5">
-          {multi && <PerMonthTable row={row} which={which} docs={docsByMonth}/>}
+          {multi && <PerMonthTable row={row} which={which} docs={docsByMonth} base={base}/>}
           {!!data?.missing.length && (
             <div className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[11.5px] text-amber-800">
-              Орлогын файл оруулаагүй: {monthsLabel(data.missing)} —{" "}
+              Орлогын файл оруулаагүй: {periodsLabel(data.missing, base)} —{" "}
               <Link to={orgil ? "/imports/income-file" : "/imports/income-file?branch=harhorin"} className="font-semibold underline underline-offset-2 hover:text-amber-950">
                 Файл оруулалт → Орлогын файл{orgil ? "" : " → Хархорин салбар"}
               </Link>.
@@ -942,14 +974,14 @@ function PurchasesModal({ row, which, year, months, onClose }: {
             <div className="flex items-center gap-2 py-10 text-[12.5px] text-gray-400"><RefreshCw size={14} className="animate-spin"/>Орлогын баримтуудыг уншиж байна…</div>
           ) : docs.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-200 py-10 text-center text-[12.5px] text-gray-500">
-              {data.missing.length === months.length ? "Эдгээр сарын орлогын файл оруулаагүй байна." : "Энэ хугацаанд энэ нийлүүлэгчээс орлогын баримт алга."}
+              {data.missing.length === periods.length ? "Эдгээр сарын орлогын файл оруулаагүй байна." : "Энэ хугацаанд энэ нийлүүлэгчээс орлогын баримт алга."}
             </div>
           ) : (
             <table className="w-full border-collapse text-[11.5px]">
               <thead className="sticky top-0 z-10 bg-white">
                 <tr className="border-b border-gray-200 text-left text-[10.5px] font-bold uppercase tracking-wider text-gray-500">
                   <th className="w-7 px-1 py-1.5">
-                    <button onClick={() => setOpen(allOpen ? new Set() : new Set(docs.map(d => `${d.month}-${d.doc}`)))}
+                    <button onClick={() => setOpen(allOpen ? new Set() : new Set(docs.map(d => `${d.period}-${d.doc}`)))}
                       title={allOpen ? "Бүгдийг хураах" : "Бүгдийг дэлгэх"} className="grid h-5 w-5 place-items-center rounded text-gray-400 hover:bg-gray-100">
                       <ChevronDown size={12} className={allOpen ? "" : "-rotate-90"}/>
                     </button>
@@ -966,12 +998,12 @@ function PurchasesModal({ row, which, year, months, onClose }: {
               </thead>
               <tbody>
                 {docs.map(d => {
-                  const k = `${d.month}-${d.doc}`;
+                  const k = `${d.period}-${d.doc}`;
                   const isOpen = open.has(k);
                   return [
                     <tr key={k} onClick={() => toggle(k)} className={`cursor-pointer border-b border-gray-50 ${isOpen ? "bg-blue-50/50" : "hover:bg-gray-50/70"}`}>
                       <td className="px-1 py-1 text-gray-400"><ChevronDown size={12} className={isOpen ? "" : "-rotate-90"}/></td>
-                      {multi && <td className="px-2 py-1 text-gray-500">{d.month}</td>}
+                      {multi && <td className="px-2 py-1 whitespace-nowrap text-gray-500">{pShort(d.period, base)}</td>}
                       <td className="px-2 py-1 whitespace-nowrap text-gray-700">{d.date}</td>
                       <td className="px-2 py-1 whitespace-nowrap font-mono text-gray-700">{d.doc}</td>
                       <td className="max-w-[220px] truncate px-2 py-1 text-gray-600" title={d.utga}>{d.utga}</td>
@@ -1109,10 +1141,10 @@ export default function EbarimtReportPage() {
   const [uploadingKind, setUploadingKind] = useState<string>("");
   const [showFiles, setShowFiles] = useState(false);
 
-  // Сараар | Нэгтгэсэн (сонгосон сарууд / бүтэн он)
+  // Сараар | Нэгтгэсэн (сонгосон сарууд / бүтэн он; өмнөх оны 12-р сарыг хамт — үе = он*100+сар)
   const [mode, setMode] = useState<"month" | "range">("month");
   const [avail, setAvail] = useState<MonthAvail[]>([]);
-  const [rangeMonths, setRangeMonths] = useState<number[]>([]);
+  const [rangePeriods, setRangePeriods] = useState<number[]>([]);
   // Ebarimt (НӨАТ) дүн дээр дарахад — тухайн харилцагчийн шивсэн баримтууд
   const [entries, setEntries] = useState<{ row: ReportRow; which: Which } | null>(null);
   // Data-д бүртгэлгүй регистрийн жагсаалт + нэг ТТД-ийн баримтууд
@@ -1132,11 +1164,11 @@ export default function EbarimtReportPage() {
     } finally { setLoading(false); }
   }
 
-  async function loadRange(y = year, ms = rangeMonths) {
-    if (!ms.length) { setReport(null); return; }
+  async function loadRange(y = year, ps = rangePeriods) {
+    if (!ps.length) { setReport(null); return; }
     setLoading(true);
     try {
-      const r = await api.get("/ebarimt/report-range", { params: { year: y, months: ms.join(",") }, timeout: 180000 });
+      const r = await api.get("/ebarimt/report-range", { params: { year: y, periods: ps.join(",") }, timeout: 180000 });
       setReport(r.data);
       setErr("");
     } catch (e: any) {
@@ -1147,23 +1179,26 @@ export default function EbarimtReportPage() {
 
   useEffect(() => { if (mode === "month") loadReport(year, month); }, [year, month, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Нэгтгэсэн: тухайн оны файлтай саруудыг аваад анхдагчаар Data-тай бүх сарыг сонгоно
+  // Нэгтгэсэн: тухайн оны болон өмнөх оны 12-р сарын (Ebarimt 2025/12-оос эхэлсэн — оны нэгтгэлд хамт
+  // харах) файлтай саруудыг аваад анхдагчаар Data-тай бүгдийг сонгоно
   useEffect(() => {
     if (mode !== "range") return;
     let alive = true;
-    api.get("/ebarimt/months", { params: { year } }).then(r => {
+    const months = (y: number) => api.get("/ebarimt/months", { params: { year: y } })
+      .then(r => (Array.isArray(r.data) ? r.data : []).map((x: MonthAvail) => ({ ...x, year: y })) as MonthAvail[]);
+    Promise.all([months(year - 1), months(year)]).then(([prev, cur]) => {
       if (!alive) return;
-      const list: MonthAvail[] = Array.isArray(r.data) ? r.data : [];
+      const list = [...prev.filter(x => x.month === 12), ...cur];
       setAvail(list);
-      setRangeMonths(list.filter(x => x.kinds.includes("data")).map(x => x.month));
-    }).catch(() => { if (alive) { setAvail([]); setRangeMonths([]); } });
+      setRangePeriods(list.filter(x => x.kinds.includes("data")).map(x => pk(x.year, x.month)));
+    }).catch(() => { if (alive) { setAvail([]); setRangePeriods([]); } });
     return () => { alive = false; };
   }, [mode, year]);
   useEffect(() => {
     if (mode !== "range") return;
-    const t = setTimeout(() => loadRange(year, rangeMonths), 250);     // сар дараалан дарахад нэг л удаа ачаална
+    const t = setTimeout(() => loadRange(year, rangePeriods), 250);    // сар дараалан дарахад нэг л удаа ачаална
     return () => clearTimeout(t);
-  }, [mode, year, rangeMonths]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode, year, rangePeriods]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Сар/горим солигдоход шүүлтийг цэвэрлэнэ (ажилтны сонголт хадгална — өдөр тутмын хэрэглээ)
   useEffect(() => {
@@ -1178,11 +1213,21 @@ export default function EbarimtReportPage() {
     setShowFiles(false);
     setMode(m);
   }
-  const hasData = (m: number) => !!avail.find(x => x.month === m)?.kinds.includes("data");
-  const toggleMonth = (m: number) =>
-    setRangeMonths(ms => (ms.includes(m) ? ms.filter(x => x !== m) : [...ms, m].sort((a, b) => a - b)));
-  const pickMonths = (ms: number[]) => setRangeMonths(ms.filter(hasData));
-  const usedMonths = mode === "month" ? [month] : (report?.months ?? rangeMonths);
+  const availOf = (p: number) => avail.find(x => pk(x.year, x.month) === p);
+  const hasData = (p: number) => !!availOf(p)?.kinds.includes("data");
+  const togglePeriod = (p: number) =>
+    setRangePeriods(ps => (ps.includes(p) ? ps.filter(x => x !== p) : [...ps, p].sort((a, b) => a - b)));
+  const pickPeriods = (ps: number[]) => setRangePeriods(ps.filter(hasData));
+  const prevDec = pk(year - 1, 12);                    // өмнөх оны 12-р сар — энэ оны нэгтгэлд хамт харах боломжтой
+  const yearP = (ms: number[]) => ms.map(m => pk(year, m));
+  const rangePresets: [string, number[], string][] = [
+    ...(hasData(prevDec) ? [[`${year - 1}/12 + ${year}`, [prevDec, ...yearP(ALL_MONTHS)],
+      `Өмнөх оны 12-р сар болон ${year} оны бүх сар`] as [string, number[], string]] : []),
+    ["Бүтэн он", yearP(ALL_MONTHS), `${year} оны бүх сар`], ["I улирал", yearP([1, 2, 3]), `${year} · 1–3-р сар`],
+    ["II", yearP([4, 5, 6]), `${year} · 4–6-р сар`], ["III", yearP([7, 8, 9]), `${year} · 7–9-р сар`],
+    ["IV", yearP([10, 11, 12]), `${year} · 10–12-р сар`],
+  ];
+  const usedPeriods = mode === "month" ? [pk(year, month)] : (report?.periods ?? rangePeriods);
 
   // Тайлбар хадгалах — DB-д (Data файл дахин оруулахад алга болохгүй)
   async function saveNote(code: string, note: string) {
@@ -1395,7 +1440,7 @@ export default function EbarimtReportPage() {
   async function unlinkReceipt(l: ReceiptLink) {
     if (!confirm(`ТТД ${l.ttd}, ${fmtMnt(l.amount)} дүнтэй баримтын холбоосыг салгах уу? (Харилцагч: ${l.cname || l.code})`)) return;
     try {
-      await api.put("/ebarimt/receipt-link", { year, month: l.month, which: l.which, rkeys: [l.rkey], code: null });
+      await api.put("/ebarimt/receipt-link", { year: l.year, month: l.month, which: l.which, rkeys: [l.rkey], code: null });
       await reload();
     } catch (e: any) { setErr(e?.response?.data?.detail ?? "Салгах амжилтгүй"); }
   }
@@ -1563,39 +1608,43 @@ export default function EbarimtReportPage() {
         <div className="shrink-0 border-b border-gray-100 bg-indigo-50/30 px-4 py-2.5">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-1 text-[11.5px] font-semibold text-gray-600">Сарууд:</span>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map(m => {
-              const a = avail.find(x => x.month === m);
+            {[...(hasData(prevDec) ? [prevDec] : []), ...yearP(ALL_MONTHS)].map(p => {
+              const a = availOf(p);
               const has = !!a?.kinds.includes("data");
-              const on = rangeMonths.includes(m);
+              const on = rangePeriods.includes(p);
+              const other = pY(p) !== year;                 // өмнөх оны 12-р сар
+              const nm = pName(p, year) + (other ? " (өмнөх он — энэ оны нэгтгэлд хамт)" : "");
               return (
-                <button key={m} onClick={() => toggleMonth(m)} disabled={!has}
-                  title={!a ? "Файл оруулаагүй" : !has ? "Data файл оруулаагүй" : a.complete ? `${m}-р сар — бүх файл бүрэн` : `${m}-р сар — дутуу: ${monthMissing(a).join(", ")}`}
-                  className={`relative h-7 min-w-[34px] rounded-lg px-2 text-[12px] font-semibold transition-colors ${
-                    on ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/25"
-                    : has ? "bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-indigo-50"
-                    : "cursor-not-allowed bg-transparent text-gray-300"}`}>
-                  {m}
-                  {a && !a.complete && has && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400"/>}
-                </button>
+                <Fragment key={p}>
+                  <button onClick={() => togglePeriod(p)} disabled={!has}
+                    title={!a ? "Файл оруулаагүй" : !has ? "Data файл оруулаагүй" : a.complete ? `${nm} — бүх файл бүрэн` : `${nm} — дутуу: ${monthMissing(a).join(", ")}`}
+                    className={`relative h-7 min-w-[34px] rounded-lg px-2 text-[12px] font-semibold transition-colors ${
+                      on ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/25"
+                      : has ? "bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-indigo-50"
+                      : "cursor-not-allowed bg-transparent text-gray-300"}`}>
+                    {pShort(p, year)}
+                    {a && !a.complete && has && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400"/>}
+                  </button>
+                  {other && <span className="mx-0.5 h-5 w-px bg-gray-200"/>}
+                </Fragment>
               );
             })}
             <span className="mx-1 h-5 w-px bg-gray-200"/>
-            {([["Бүтэн он", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]], ["I улирал", [1, 2, 3]], ["II", [4, 5, 6]],
-               ["III", [7, 8, 9]], ["IV", [10, 11, 12]]] as [string, number[]][]).map(([l, ms]) => (
-              <button key={l} onClick={() => pickMonths(ms)} disabled={!ms.some(hasData)}
+            {rangePresets.map(([l, ps, tip]) => (
+              <button key={l} onClick={() => pickPeriods(ps)} disabled={!ps.some(hasData)} title={tip}
                 className="rounded-lg px-2 py-1 text-[11.5px] font-semibold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:text-gray-300">
                 {l}
               </button>
             ))}
             <span className="ml-auto text-[11.5px] text-gray-500">
-              {year} · <b className="text-gray-800">{monthsLabel(usedMonths)}</b>
+              <b className="text-gray-800">{periodsLabel(usedPeriods)}</b>
             </span>
           </div>
           {!!(report?.skipped?.length || (report?.missing && !Array.isArray(report.missing) && Object.keys(report.missing).length)) && (
             <div className="mt-1.5 text-[11.5px] text-amber-700">
-              {!!report?.skipped?.length && <>Data файлгүй тул орхисон: {monthsLabel(report.skipped)}. </>}
-              {report?.missing && !Array.isArray(report.missing) && Object.entries(report.missing).map(([m, ks]) =>
-                `${m}-р сар: ${ks.map(k => KIND_LABEL[k] ?? k).join(", ")} дутуу`).join(" · ")}
+              {!!report?.skipped?.length && <>Data файлгүй тул орхисон: {periodsLabel(report.skipped, year)}. </>}
+              {report?.missing && !Array.isArray(report.missing) && Object.entries(report.missing).map(([p, ks]) =>
+                `${pName(Number(p), year)}: ${ks.map(k => KIND_LABEL[k] ?? k).join(", ")} дутуу`).join(" · ")}
             </div>
           )}
         </div>
@@ -1819,18 +1868,18 @@ export default function EbarimtReportPage() {
                       ) : i + 1}
                     </td>
                     <td className="px-1 py-1 min-w-[112px]">
-                      {mode === "range" ? <EmpBreakdown row={r}/> : isAdmin ? (
+                      {mode === "range" ? <EmpBreakdown row={r} base={year}/> : isAdmin ? (
                         <EditableCell
                           value={r.employee === ORPHAN_EMP ? "" : r.employee}
                           defaultValue={r.defaults?.employee}
                           placeholder={r.is_orphan ? "Ажилтан оноох…" : "Ажилтан…"}
                           list={EMP_LIST_ID}
-                          tip={histTip(r, "emp", r.emp_pinned ? "Энэ сард гараар тогтоосон — Data файл дахин оруулсан ч өөрчлөгдөхгүй. Дарж солино." : "Дарж энэ сарын ажилтныг солино.")}
+                          tip={histTip(r, "emp", r.emp_pinned ? "Энэ сард гараар тогтоосон — Data файл дахин оруулсан ч өөрчлөгдөхгүй. Дарж солино." : "Дарж энэ сарын ажилтныг солино.", year)}
                           badge={hasHist(r, "emp") ? <History size={9} className="mr-0.5 inline align-[-1px] text-amber-500"/> : undefined}
                           onSave={v => assignEmployee([r.code], v || null, false)}
                           onRevert={() => assignEmployee([r.code], null, false)}/>
                       ) : (
-                        <div className="px-1 py-0.5" title={histTip(r, "emp", r.emp_assigned ? `Энэ сард сольсон · Data файлд: ${r.defaults?.employee ?? ""}` : "") || r.employee}>
+                        <div className="px-1 py-0.5" title={histTip(r, "emp", r.emp_assigned ? `Энэ сард сольсон · Data файлд: ${r.defaults?.employee ?? ""}` : "", year) || r.employee}>
                           <div className={`truncate text-[11px] ${r.emp_assigned ? "font-semibold text-blue-700" : r.is_orphan ? "italic text-gray-400" : "text-gray-700"}`}>
                             {hasHist(r, "emp") && <History size={9} className="mr-0.5 inline align-[-1px] text-amber-500"/>}{r.employee}
                           </div>
@@ -1878,14 +1927,14 @@ export default function EbarimtReportPage() {
                       </div>
                     </td>
                     <td className="border-l border-blue-100 px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
-                      <button onClick={() => setPurchases({ row: r, which: "orgil" })} title={histTip(r, "po", "Дарж орлогын баримтууд, бараануудыг харах")}
+                      <button onClick={() => setPurchases({ row: r, which: "orgil" })} title={histTip(r, "po", "Дарж орлогын баримтууд, бараануудыг харах", year)}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-blue-50 hover:text-blue-700 hover:underline">
                         {hasHist(r, "po") && <HistDot/>}{fmtMnt(r.purchase_orgil)}
                       </button>
                     </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
                       <button onClick={() => setEntries({ row: r, which: "orgil" })} title={histTip(r, "vo", `${r.cnt_orgil} баримт — дарж шивсэн баримтуудыг харах`
-                        + ((r.link_orgil ?? 0) > 0.5 ? `\nҮүнээс ${fmtMnt(r.link_orgil ?? 0)} — бүртгэлгүй регистрээс холбосон баримт` : ""))}
+                        + ((r.link_orgil ?? 0) > 0.5 ? `\nҮүнээс ${fmtMnt(r.link_orgil ?? 0)} — бүртгэлгүй регистрээс холбосон баримт` : ""), year)}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-blue-50 hover:text-blue-700 hover:underline">
                         {hasHist(r, "vo") && <HistDot/>}{(r.link_orgil ?? 0) > 0.5 && <Link2 size={9} className="mr-0.5 inline align-[-1px] text-amber-600"/>}{fmtMnt(r.vat_orgil)}
                       </button>
@@ -1895,14 +1944,14 @@ export default function EbarimtReportPage() {
                     </td>
                     <td className="border-r border-blue-100 px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px]">{diffCell(r.diff_orgil)}</td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
-                      <button onClick={() => setPurchases({ row: r, which: "harhorin" })} title={histTip(r, "ph", "Дарж орлогын баримтууд, бараануудыг харах")}
+                      <button onClick={() => setPurchases({ row: r, which: "harhorin" })} title={histTip(r, "ph", "Дарж орлогын баримтууд, бараануудыг харах", year)}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-violet-50 hover:text-violet-700 hover:underline">
                         {hasHist(r, "ph") && <HistDot/>}{fmtMnt(r.purchase_harhorin)}
                       </button>
                     </td>
                     <td className="px-1 py-1 text-right font-mono tabular-nums text-[11.5px]">
                       <button onClick={() => setEntries({ row: r, which: "harhorin" })} title={histTip(r, "vh", `${r.cnt_harhorin} баримт — дарж шивсэн баримтуудыг харах`
-                        + ((r.link_harhorin ?? 0) > 0.5 ? `\nҮүнээс ${fmtMnt(r.link_harhorin ?? 0)} — бүртгэлгүй регистрээс холбосон баримт` : ""))}
+                        + ((r.link_harhorin ?? 0) > 0.5 ? `\nҮүнээс ${fmtMnt(r.link_harhorin ?? 0)} — бүртгэлгүй регистрээс холбосон баримт` : ""), year)}
                         className="w-full rounded px-1 py-0.5 text-right text-gray-700 underline-offset-2 hover:bg-violet-50 hover:text-violet-700 hover:underline">
                         {hasHist(r, "vh") && <HistDot/>}{(r.link_harhorin ?? 0) > 0.5 && <Link2 size={9} className="mr-0.5 inline align-[-1px] text-amber-600"/>}{fmtMnt(r.vat_harhorin)}
                       </button>
@@ -1942,29 +1991,29 @@ export default function EbarimtReportPage() {
             )}
           </table>
           {entries && (
-            <EntriesModal row={rows.find(x => x.code === entries.row.code) ?? entries.row} which={entries.which} year={year}
-              months={usedMonths} canEdit={canEdit} onChanged={() => reload()} onClose={() => setEntries(null)}/>
+            <EntriesModal row={rows.find(x => x.code === entries.row.code) ?? entries.row} which={entries.which} base={year}
+              periods={usedPeriods} canEdit={canEdit} onChanged={() => reload()} onClose={() => setEntries(null)}/>
           )}
           {showUnreg && (
-            <UnregisteredModal rows={unreg} links={receiptLinks} year={year} months={usedMonths} paused={!!ttdEntries}
+            <UnregisteredModal rows={unreg} links={receiptLinks} base={year} periods={usedPeriods} paused={!!ttdEntries}
               canEdit={canEdit} onUnlink={unlinkReceipt}
               onClose={() => setShowUnreg(false)} onOpen={(u, w) => setTtdEntries({ u, which: w })}/>
           )}
           {ttdEntries && (
-            <EntriesModal ttd={{ ttd: ttdEntries.u.ttd, name: ttdEntries.u.name }} which={ttdEntries.which} year={year}
-              months={usedMonths} customers={custOpts} canEdit={canEdit} onChanged={() => reload()}
+            <EntriesModal ttd={{ ttd: ttdEntries.u.ttd, name: ttdEntries.u.name }} which={ttdEntries.which} base={year}
+              periods={usedPeriods} customers={custOpts} canEdit={canEdit} onChanged={() => reload()}
               onClose={() => setTtdEntries(null)}/>
           )}
           {purchases && (
-            <PurchasesModal row={purchases.row} which={purchases.which} year={year} months={usedMonths} onClose={() => setPurchases(null)}/>
+            <PurchasesModal row={purchases.row} which={purchases.which} base={year} periods={usedPeriods} onClose={() => setPurchases(null)}/>
           )}
           {filtered.length === 0 && (
             <div className="flex flex-col items-center py-14 text-gray-400 gap-2">
               <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gray-50">
                 <Search size={22} className="opacity-40"/>
               </div>
-              <p className="text-[13px] font-semibold text-gray-600">{mode === "range" && !rangeMonths.length ? "Нэгтгэх саруудаа сонгоно уу" : "Илэрц олдсонгүй"}</p>
-              <p className="text-[11px] text-gray-400">{mode === "range" && !rangeMonths.length ? "Дээрх сарууд дээр дарж сонгоно" : "Шүүлтээ өөрчилж үзнэ үү"}</p>
+              <p className="text-[13px] font-semibold text-gray-600">{mode === "range" && !rangePeriods.length ? "Нэгтгэх саруудаа сонгоно уу" : "Илэрц олдсонгүй"}</p>
+              <p className="text-[11px] text-gray-400">{mode === "range" && !rangePeriods.length ? "Дээрх сарууд дээр дарж сонгоно" : "Шүүлтээ өөрчилж үзнэ үү"}</p>
             </div>
           )}
         </div>

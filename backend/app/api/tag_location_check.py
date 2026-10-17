@@ -171,12 +171,12 @@ def _get_income_rows() -> list:
     db = SessionLocal()
     try:
         files = db.query(IncomeFile).all()
-        # Сарын файлтай онд бүтэн оны (month=0) файлыг АЛГАСНА — давхардахгүй
-        monthly_years = {f.year for f in files if (f.month or 0) > 0}
-        stored = [(f.year, f.month or 0, f.stored_filename) for f in files
-                  if f.stored_filename and not ((f.month or 0) == 0 and f.year in monthly_years)]
+        stored = [(f.year, f.month or 0, f.stored_filename) for f in files if f.stored_filename]
     finally:
         db.close()
+    # Сарын файл тухайн сараа бүтэн оны (month=0) файлаас ДАВАМГАЙЛНА — бүтэн оны файлын тэр сарын
+    # мөрийг алгасна (давхардахгүй; 2025: 1–11-р сар бүтэн оны файлаас, 12-р сар сарын файлаас)
+    covered = {(y, m) for y, m, fname in stored if m and (INCOME_DIR / fname).exists()}
 
     all_rows: list = []
     for _year, _month, fname in sorted(stored):
@@ -186,20 +186,19 @@ def _get_income_rows() -> list:
         mtime = path.stat().st_mtime
         key = str(path)
         cached = _income_cache.get(key)
-        if cached and cached[0] == mtime:
-            all_rows.extend(cached[1])
-            continue
-        with _cache_lock:
-            cached = _income_cache.get(key)
-            if cached and cached[0] == mtime:
-                all_rows.extend(cached[1])
-                continue
-            try:
-                rows = _parse_income_file(path)
-            except Exception:
-                rows = []
-            _income_cache[key] = (mtime, rows)
-            all_rows.extend(rows)
+        if not cached or cached[0] != mtime:
+            with _cache_lock:
+                cached = _income_cache.get(key)
+                if not cached or cached[0] != mtime:
+                    try:
+                        rows = _parse_income_file(path)
+                    except Exception:
+                        rows = []
+                    cached = _income_cache[key] = (mtime, rows)
+        rows = cached[1]
+        if _month == 0 and covered:
+            rows = [r for r in rows if (r[0].year, r[0].month) not in covered]
+        all_rows.extend(rows)
     return all_rows
 
 

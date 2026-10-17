@@ -63,6 +63,9 @@ export default function IncomeFileImport() {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
   // Энэ оноос эхлэн сар бүрээр (backend-ээс ирнэ; анхдагч 2026)
   const [monthlyFrom, setMonthlyFrom] = useState(2026);
+  // Сарын слот эхлэх (он, сар): 2025 онд бүтэн оны файл + 12-р сарын слот (Ebarimt 2025/12-оос эхэлсэн).
+  // Сарын файл тухайн сараа бүтэн оны файлаас давамгайлна (backend: тэр сарын мөрийг бүтэн оны файлаас алгасна).
+  const [slotFrom, setSlotFrom] = useState({ year: 2025, month: 12 });
   const [busy, setBusy] = useState<string | null>(null);   // "year-month" upload-д
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -80,7 +83,11 @@ export default function IncomeFileImport() {
       // Шинэ хариу {monthly_from_year, slots}; хуучин сервер массив буцаадаг байсан
       const d = r.data;
       if (Array.isArray(d)) setSlots(d.map((x: any) => ({ ...x, month: x.month ?? 0 })));
-      else { setSlots(d?.slots ?? []); if (d?.monthly_from_year) setMonthlyFrom(d.monthly_from_year); }
+      else {
+        setSlots(d?.slots ?? []);
+        if (d?.monthly_from_year) setMonthlyFrom(d.monthly_from_year);
+        if (d?.monthly_from?.year) setSlotFrom(d.monthly_from);
+      }
     } catch (e: any) {
       if (branchRef.current === b) setError(e?.response?.data?.detail ?? "Жагсаалт татаж чадсангүй.");
     }
@@ -174,6 +181,23 @@ export default function IncomeFileImport() {
   const monthCount = useMemo(() => slots.filter((s) => s.file && s.month > 0).length, [slots]);
   const curMonth = now.getMonth() + 1;
 
+  // Сарын нэг карт (сар бүрээр оруулдаг онд болон шилжилтийн онд)
+  const monthCard = (y: number, m: number) => {
+    const info = fileOf(y, m);
+    const isFuture = y > curYear || (y === curYear && m > curMonth);
+    return (
+      <div key={m} className={`rounded-xl border p-2.5 ${info ? "border-rose-200 bg-rose-50/40" : isFuture ? "border-gray-100 opacity-50" : "border-dashed border-gray-300"}`}>
+        <div className="mb-1 text-[13px] font-bold text-gray-800">{MONTH_NAMES[m - 1]}</div>
+        <FileRow info={info} busy={busy === key(y, m)} compact
+          onUpload={() => pickFile(y, m)}
+          onDownload={(fn) => onDownload(y, m, fn)}
+          onDelete={() => onDelete(y, m)} />
+      </div>
+    );
+  };
+  // Шилжилтийн он (2025): эхний сараас өмнөх нь бүтэн оны файлаас, үлдсэн нь сар бүрээр
+  const mixedMonths = (y: number) => MONTH_NAMES.map((_, i) => i + 1).filter((m) => y > slotFrom.year || m >= slotFrom.month);
+
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="px-4 py-3 sm:px-6 sm:py-4">
       <input ref={fileRef} type="file" className="hidden"
@@ -201,9 +225,9 @@ export default function IncomeFileImport() {
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Орлогын файл оруулалт</h1>
           {isMain ? (
-            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">{monthlyFrom} оноос <b>сар бүрээр</b>, өмнөх онуудыг <b>бүтэн оноор</b> оруулна. Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална. Ebarimt (НӨАТ) тайлангийн <b>«Оргил ХА»</b> эндээс бодогдоно.</p>
+            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">{monthlyFrom} оноос <b>сар бүрээр</b>, өмнөх онуудыг <b>бүтэн оноор</b> оруулна ({slotFrom.year} оны {slotFrom.month}-р сарыг тусад нь оруулж болно). Файлыг <b>ямар ч шалгуургүйгээр</b> хэвээр нь хадгална. Ebarimt (НӨАТ) тайлангийн <b>«Оргил ХА»</b> эндээс бодогдоно.</p>
           ) : (
-            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Хархорин салбарын орлогын файлыг <b>сар бүрээр</b> оруулна. Ebarimt (НӨАТ) тайлангийн <b>«Хархорин ХА»</b> эндээс бодогдоно — барааны үнэ шинэчлэхгүй, бусад тайланд орохгүй.</p>
+            <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">Хархорин салбарын орлогын файлыг <b>сар бүрээр</b> оруулна ({slotFrom.year} оны {slotFrom.month}-р сараас). Ebarimt (НӨАТ) тайлангийн <b>«Хархорин ХА»</b> эндээс бодогдоно — барааны үнэ шинэчлэхгүй, бусад тайланд орохгүй.</p>
           )}
         </div>
       </div>
@@ -243,35 +267,56 @@ export default function IncomeFileImport() {
                 <AlertCircle size={13} className="mt-0.5 shrink-0" />
                 <div className="min-w-0 flex-1">
                   <b>Бүтэн оны хуучин файл</b> байна ({yearFile.filename}, {fmtDate(yearFile.uploaded_at)}).
-                  {monthsDone > 0 ? " Сарын файл орсон тул энэ файл ашиглагдахгүй — устгаж болно." : " Сар бүрээр оруулж эхэлмэгц энэ файл ашиглагдахгүй болно."}
+                  {monthsDone > 0 ? ` Сарын файл орсон ${monthsDone} сарыг сарын файлаас авна — энэ файл зөвхөн сарын файлгүй сард ашиглагдана.` : " Сар бүрээр оруулсан сарыг сарын файлаас авна."}
                 </div>
                 <button onClick={() => onDownload(y, 0, yearFile.filename)} title="Татах" className="rounded-md p-1 text-amber-700 hover:bg-amber-100"><Download size={12} /></button>
                 <button onClick={() => onDelete(y, 0)} title="Устгах" className="rounded-md p-1 text-amber-700 hover:bg-red-100 hover:text-red-600"><Trash2 size={12} /></button>
               </div>
             )}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-              {MONTH_NAMES.map((mn, i) => {
-                const m = i + 1;
-                const info = fileOf(y, m);
-                const isFuture = y > curYear || (y === curYear && m > curMonth);
-                return (
-                  <div key={m} className={`rounded-xl border p-2.5 ${info ? "border-rose-200 bg-rose-50/40" : isFuture ? "border-gray-100 opacity-50" : "border-dashed border-gray-300"}`}>
-                    <div className="mb-1 text-[13px] font-bold text-gray-800">{mn}</div>
-                    <FileRow info={info} busy={busy === key(y, m)} compact
-                      onUpload={() => pickFile(y, m)}
-                      onDownload={(fn) => onDownload(y, m, fn)}
-                      onDelete={() => onDelete(y, m)} />
-                  </div>
-                );
-              })}
+              {MONTH_NAMES.map((_, i) => monthCard(y, i + 1))}
             </div>
+          </div>
+        );
+      })}
+
+      {/* ── Шилжилтийн он (2025): бүтэн оны файл + 12-р сарын файл (Ebarimt 2025/12) ── */}
+      {years.filter((y) => y >= slotFrom.year && y < monthlyFrom).map((y) => {
+        const ms = mixedMonths(y);
+        const ml = ms.length > 1 ? `${ms[0]}–${ms[ms.length - 1]}` : `${ms[0]}`;
+        const yearFile = fileOf(y, 0);
+        return (
+          <div key={`x-${y}`} className="mt-3 rounded-2xl border border-gray-200 bg-white p-3.5 shadow-sm">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="text-[15px] font-bold text-gray-900">{y} он</span>
+              <span className="text-[11px] text-gray-500">
+                {isMain && ms[0] > 1 ? `1–${ms[0] - 1}-р сар бүтэн оны файлаас · ${ml}-р сар сарын файлаар` : `${ml}-р сар сарын файлаар`}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+              {isMain && (
+                <div className={`col-span-2 rounded-xl border p-2.5 ${yearFile ? "border-rose-200 bg-rose-50/40" : "border-dashed border-gray-300"}`}>
+                  <div className="mb-1 text-[13px] font-bold text-gray-800">Бүтэн он</div>
+                  <FileRow info={yearFile} busy={busy === key(y, 0)} compact
+                    onUpload={() => pickFile(y)}
+                    onDownload={(fn) => onDownload(y, 0, fn)}
+                    onDelete={() => onDelete(y)} />
+                </div>
+              )}
+              {ms.map((m) => monthCard(y, m))}
+            </div>
+            {isMain && (
+              <p className="mt-2 text-[11px] text-gray-500">
+                {ml}-р сарын файл оруулбал бүх тайланд (Ebarimt, ирсэн бараа, хөдөлгөөнгүй г.м) тэр сарыг бүтэн оны файлаас биш энэ файлаас авна — давхардахгүй.
+              </p>
+            )}
           </div>
         );
       })}
 
       {/* ── Бүтэн оноор (өмнөх онууд) — зөвхөн үндсэн файлд ── */}
       {isMain && <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {years.filter((y) => y < monthlyFrom).map((y) => {
+        {years.filter((y) => y < Math.min(slotFrom.year, monthlyFrom)).map((y) => {
           const info = fileOf(y);
           return (
             <div key={y} className="rounded-2xl border border-gray-200 bg-white p-3.5 shadow-sm">

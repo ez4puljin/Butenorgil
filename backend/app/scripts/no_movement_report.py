@@ -154,10 +154,18 @@ def compute_no_movement(db, days: int, end: date | None = None) -> dict:
     start = end - timedelta(days=days - 1)
     years = sorted({start.year, end.year})
 
-    # ── Оролтын файлууд ──
-    inc_files = db.query(IncomeFile).filter(IncomeFile.year.in_(years)).all()
-    monthly_years = {f.year for f in inc_files if (f.month or 0) > 0}
-    inc_files = [f for f in inc_files if not ((f.month or 0) == 0 and f.year in monthly_years)]
+    # ── Оролтын файлууд ── сарын файл тухайн сараа бүтэн оны файлаас давамгайлна (_get_income_rows):
+    # цонхны сар бүрт — тэр сарын файл, байхгүй бол бүтэн оны файл (Дүгнэлт хуудсанд жагсаана)
+    win: set[tuple[int, int]] = set()
+    ms = date(start.year, start.month, 1)
+    while ms <= end:
+        win.add((ms.year, ms.month))
+        ms = date(ms.year + (ms.month == 12), ms.month % 12 + 1, 1)
+    inc_all = db.query(IncomeFile).filter(IncomeFile.year.in_(years)).all()
+    covered = {(f.year, f.month) for f in inc_all if (f.month or 0) > 0}
+    inc_files = [f for f in inc_all
+                 if ((f.year, f.month) in win if (f.month or 0) > 0
+                     else any(y == f.year and (y, m) not in covered for y, m in win))]
     if not inc_files:
         raise ReportInputError(f"{'/'.join(map(str, years))} оны орлогын файл оруулаагүй байна (Файл оруулалт → Орлогын файл).")
     mov_files = db.query(MovementFile).filter(MovementFile.year.in_(years)).all()

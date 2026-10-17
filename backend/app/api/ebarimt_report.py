@@ -21,11 +21,12 @@ Endpoint-ууд:
   DELETE /ebarimt/{year}/{month}/{kind}
   GET    /ebarimt/report            — ?year&month → нэгтгэсэн тайлан (mtime cache)
   GET    /ebarimt/months            — ?year → сар бүрт оруулсан файлын төрлүүд
-  GET    /ebarimt/report-range      — ?year&months=1,2,3 → сонгосон сарууд/бүтэн оны нэгтгэл
-  GET    /ebarimt/entries           — ?year&months&code&which=orgil|harhorin → харилцагчийн шивсэн
+  GET    /ebarimt/report-range      — ?year&months=1,2,3 эсвэл ?year&periods=202512,202601 → сонгосон
+                                      сарууд/бүтэн оны нэгтгэл (periods — өөр оны сарыг хамт: 2025/12 + 2026)
+  GET    /ebarimt/entries           — ?year&months|periods&code&which=orgil|harhorin → харилцагчийн шивсэн
                                       Ebarimt (НӨАТ) баримтууд — тайлан дээрх Ebarimt дүнгийн задаргаа
-  GET    /ebarimt/purchases         — ?year&months&code&which → ХА-ийн задаргаа: орлогын файлын баримтууд
-                                      (дүн, бараа мөрүүд) — app/services/income_index
+  GET    /ebarimt/purchases         — ?year&months|periods&code&which → ХА-ийн задаргаа: орлогын файлын
+                                      баримтууд (дүн, бараа мөрүүд) — app/services/income_index
   PUT    /ebarimt/exempt            — НӨАТ чөлөөлөгдөх дүн (он, сар, харилцагч, салбар)
   PUT    /ebarimt/employee          — сонгосон харилцагчдын тухайн сарын ажилтныг нэг дор солих (админ)
   GET/POST/DELETE /ebarimt/employees — Data-д бүртгэлгүй, гараар нэмсэн ажилтнууд (нэмэх/устгах — админ)
@@ -33,6 +34,8 @@ Endpoint-ууд:
 
 Тайлангийн хариунд: unregistered — Data-д бүртгэлгүй регистрээр шивсэн Ebarimt (ТТД, нэр, дүн);
 мөр бүрийн hist — ажилтан/ХА/Ebarimt утгын өөрчлөлтийн түүх (ebarimt_history, mouse-оор харуулна).
+Нэгтгэсэн тайлангийн «үе» (period) = он*100+сар (202512 = 2025 оны 12-р сар): by_month, emp_months,
+hist_m, missing, skipped, бүртгэлгүй регистрийн months — бүгд энэ түлхүүрээр.
 
 Зөрүү = Худалдан авалт − Манайд шивсэн НӨАТ (Ebarimt) − НӨАТ чөлөөлөгдөх дүн.
 """
@@ -314,7 +317,8 @@ def _link_state(db: Session, year: int, month: int, payload: dict) -> dict:
            for w, k in (("orgil", "ebarimt"), ("harhorin", "ebarimt2"))}
     for L in links:
         rec = idx.get(L.which, {}).get(L.rkey)
-        item = {"month": month, "which": L.which, "rkey": L.rkey, "ttd": L.ttd or "", "code": L.code,
+        item = {"year": year, "month": month, "period": _pkey(year, month),
+                "which": L.which, "rkey": L.rkey, "ttd": L.ttd or "", "code": L.code,
                 "amount": float(L.amount or 0), "padaan": "", "date": "", "name": "", "stale": rec is None,
                 "by": L.created_by_name or "", "at": L.created_at.isoformat() if L.created_at else None}
         if rec is not None:
@@ -518,6 +522,16 @@ def warm_ebarimt_reports() -> None:
 def _validate_ym(year: int, month: int):
     if not (2000 <= year <= 2100) or not (1 <= month <= 12):
         raise HTTPException(400, "Он/сар буруу.")
+
+
+def _pkey(year: int, month: int) -> int:
+    """Нэгтгэсэн тайлангийн «үе»: он*100+сар (202512 = 2025 оны 12-р сар)."""
+    return year * 100 + month
+
+
+def _plabel(year: int, month: int, base: int) -> str:
+    """Тайлбарт: тухайн онд — «3-р сар», өөр онд — «2025/12»."""
+    return f"{month}-р сар" if year == base else f"{year}/{month}"
 
 
 @router.post("/import")
@@ -985,6 +999,23 @@ def _parse_months(months: str) -> list[int]:
     return ms
 
 
+def _periods(year: int, months: str, periods: str) -> list[tuple[int, int]]:
+    """periods=202512,202601 (өөр оны сартай хамт) эсвэл year + months=1,2,3 → [(он, сар)], эрэмбэлсэн."""
+    if not (periods or "").strip():
+        _validate_ym(year, 1)
+        return [(year, m) for m in _parse_months(months)]
+    try:
+        ps = sorted({int(x) for x in periods.replace(" ", "").split(",") if x})
+    except ValueError:
+        raise HTTPException(400, "Үеийн жагсаалт буруу (жишээ нь 202512,202601).")
+    if len(ps) > 60:
+        raise HTTPException(400, "Хэт олон сар сонгосон.")
+    out = [(p // 100, p % 100) for p in ps]
+    for y, m in out:
+        _validate_ym(y, m)
+    return out
+
+
 @router.get("/months")
 def uploaded_months(
     year: int = Query(...),
@@ -1005,7 +1036,7 @@ def uploaded_months(
         purchase = {b: ("income" if income_index.covers(db, b, year, m) else "legacy" if b in ks else None)
                     for b in BRANCHES}
         up = sorted(k for k in ks if k in UPLOAD_KINDS)
-        out.append({"month": m, "kinds": up, "purchase": purchase,
+        out.append({"year": year, "month": m, "kinds": up, "purchase": purchase,
                     "complete": set(up) >= set(UPLOAD_KINDS) and all(v == "income" for v in purchase.values())})
     return out
 
@@ -1018,36 +1049,39 @@ _SUM_FIELDS = ("purchase_orgil", "vat_orgil", "cnt_orgil", "exempt_orgil", "link
 def report_range(
     year: int = Query(...),
     months: str = Query("", description="1,2,3 — хоосон бол тухайн оны Data-тай бүх сар"),
+    periods: str = Query("", description="202512,202601 — өөр оны сартай хамт (months-ийн оронд)"),
     db: Session = Depends(get_db),
     u: User = Depends(require_role("admin", "supervisor", "manager")),
 ):
     """Сонгосон сарууд (эсвэл бүтэн он)-ын нэгтгэсэн тайлан: сар бүрийн тайланг (гар засвартай)
-    харилцагчийн кодоор нэмнэ. Харилцагчийн мэдээлэл — хамгийн сүүлийн сарынх; тэмдэглэлүүд
-    сараар; by_month — сар бүрийн {po, vo, eo, ph, vh, eh} (ХА, Ebarimt, чөлөөлөгдөх × салбар)."""
-    _validate_ym(year, 1)
-    ms = _parse_months(months) or [x["month"] for x in uploaded_months(year=year, db=db, u=u) if "data" in x["kinds"]]
+    харилцагчийн кодоор нэмнэ. periods-оор өөр оны сарыг хамт нэгтгэнэ (2025/12 + 2026). Харилцагчийн
+    мэдээлэл — хамгийн сүүлийн сарынх; тэмдэглэлүүд сараар; by_month — үе (он*100+сар) бүрийн
+    {po, vo, eo, ph, vh, eh} (ХА, Ebarimt, чөлөөлөгдөх × салбар)."""
+    ps = _periods(year, months, periods) or [
+        (year, x["month"]) for x in uploaded_months(year=year, db=db, u=u) if "data" in x["kinds"]]
     agg: dict[str, dict] = {}
     unreg: dict[str, dict] = {}
     links: list[dict] = []
     used, skipped, missing = [], [], {}
-    for m in ms:
-        payload, rows = month_rows(db, year, m)
+    for y, m in ps:
+        k = _pkey(y, m)
+        payload, rows = month_rows(db, y, m)
         if payload.get("error"):
-            skipped.append(m)
+            skipped.append(k)
             continue
-        used.append(m)
-        record_history(db, year, m, payload, rows)
-        _attach_history(db, year, m, rows)
-        links += _receipt_links(db, year, m, payload, rows)
-        for x in _unregistered(db, year, m, payload, rows):
+        used.append(k)
+        record_history(db, y, m, payload, rows)
+        _attach_history(db, y, m, rows)
+        links += _receipt_links(db, y, m, payload, rows)
+        for x in _unregistered(db, y, m, payload, rows):
             t = unreg.setdefault(x["ttd"], {"ttd": x["ttd"], "name": "", "vat_orgil": 0.0, "cnt_orgil": 0,
                                             "vat_harhorin": 0.0, "cnt_harhorin": 0, "months": {}})
             t["name"] = x["name"] or t["name"]
             for f in ("vat_orgil", "cnt_orgil", "vat_harhorin", "cnt_harhorin"):
                 t[f] += x[f]
-            t["months"][m] = {"vo": x["vat_orgil"], "vh": x["vat_harhorin"]}
+            t["months"][k] = {"vo": x["vat_orgil"], "vh": x["vat_harhorin"]}
         if payload.get("missing"):
-            missing[m] = payload["missing"]
+            missing[k] = payload["missing"]
         for r in rows:
             a = agg.get(r["code"])
             if a is None:
@@ -1059,12 +1093,12 @@ def report_range(
             for f in _SUM_FIELDS:
                 a[f] += r[f]
             if (r.get("note") or "").strip():
-                a["notes"].append(f"{m}-р сар: {r['note'].strip()}")
-            a["by_month"][m] = {"po": r["purchase_orgil"], "vo": r["vat_orgil"], "eo": r["exempt_orgil"],
+                a["notes"].append(f"{_plabel(y, m, year)}: {r['note'].strip()}")
+            a["by_month"][k] = {"po": r["purchase_orgil"], "vo": r["vat_orgil"], "eo": r["exempt_orgil"],
                                 "ph": r["purchase_harhorin"], "vh": r["vat_harhorin"], "eh": r["exempt_harhorin"]}
-            a["_emp"].setdefault(r["employee"], []).append(m)
+            a["_emp"].setdefault(r["employee"], []).append(k)
             for f, evs in (r.get("hist") or {}).items():               # сар бүрийн өөрчлөлтийн түүх
-                a["hist_m"].setdefault(f, {})[m] = evs
+                a["hist_m"].setdefault(f, {})[k] = evs
     out = []
     for a in agg.values():
         a["diff_orgil"] = a["purchase_orgil"] - a["vat_orgil"] - a["exempt_orgil"]
@@ -1075,7 +1109,7 @@ def report_range(
                                  key=lambda x: (-len(x["months"]), -max(x["months"])))
         out.append(a)
     return {
-        "rows": out, "employees": _build_employees(out), "year": year, "months": used,
+        "rows": out, "employees": _build_employees(out), "year": year, "periods": used,
         "unregistered": sorted(unreg.values(), key=lambda x: -(x["vat_orgil"] + x["vat_harhorin"])),
         "receipt_links": links,
         "skipped": skipped, "missing": missing,
@@ -1085,8 +1119,9 @@ def report_range(
 
 @router.get("/entries")
 def ebarimt_entries(
-    year: int = Query(...),
-    months: str = Query(..., description="1 эсвэл 1,2,3"),
+    year: int = Query(0),
+    months: str = Query("", description="1 эсвэл 1,2,3"),
+    periods: str = Query("", description="202512,202601 — өөр оны сартай хамт (months-ийн оронд)"),
     code: str = Query("", max_length=30),
     which: str = Query("orgil", pattern="^(orgil|harhorin)$"),
     ttd: str = Query("", max_length=40),
@@ -1098,35 +1133,35 @@ def ebarimt_entries(
     ttd өгвөл харилцагчгүйгээр тэр регистрээр (Data-д бүртгэлгүй регистрийн жагсаалтаас)."""
     if not code.strip() and not ttd.strip():
         raise HTTPException(400, "code эсвэл ttd өгнө үү.")
-    _validate_ym(year, 1)
-    ms = _parse_months(months)
-    if not ms:
+    ps = _periods(year, months, periods)
+    if not ps:
         raise HTTPException(400, "Сар сонгоно уу.")
     kind = "ebarimt" if which == "orgil" else "ebarimt2"
     columns: list[str] = []
     out, registries, no_file = [], set(), []
-    for m in ms:
+    for y, m in ps:
+        k = _pkey(y, m)
         if ttd.strip():
             regs = {_norm_code(ttd.strip())}
         else:
-            _payload, rows = month_rows(db, year, m)
+            _payload, rows = month_rows(db, y, m)
             row = next((r for r in rows if r["code"] == code.strip()), None)
             if row is None:
                 continue
             regs = set(_split_registry(row.get("registry")))
         registries |= regs
-        path = _stored_paths(db, year, m).get(kind)
+        path = _stored_paths(db, y, m).get(kind)
         if path is None:
-            no_file.append(m)
+            no_file.append(k)
             continue
         links = {L.rkey: L for L in db.query(EbarimtReceiptLink).filter(
-            EbarimtReceiptLink.year == year, EbarimtReceiptLink.month == m, EbarimtReceiptLink.which == which).all()}
+            EbarimtReceiptLink.year == y, EbarimtReceiptLink.month == m, EbarimtReceiptLink.which == which).all()}
         mine = bool(code.strip()) and any(L.code == code.strip() for L in links.values())
         if not regs and not mine:
             continue
         cols, recs = _ebarimt_entries(path)
         rc = _receipt_cols(cols)
-        names = {r["code"]: r["name"] for r in get_report(db, year, m).get("rows", [])} if links else {}
+        names = {r["code"]: r["name"] for r in get_report(db, y, m).get("rows", [])} if links else {}
         columns += [c for c in cols if c not in columns]
         for rec in recs:
             rk = _rkey(rec, rc)
@@ -1138,19 +1173,21 @@ def ebarimt_entries(
                     continue
             elif rec["_ttd"] not in regs:
                 continue
-            item = {"month": m, "_rkey": rk, "_ttd": rec["_ttd"], **{k: v for k, v in rec.items() if k != "_ttd"}}
+            item = {"year": y, "month": m, "period": k, "_rkey": rk, "_ttd": rec["_ttd"],
+                    **{c: v for c, v in rec.items() if c != "_ttd"}}
             if L is not None:
                 item["_link"] = {"code": L.code, "name": names.get(L.code, ""), "by": L.created_by_name or "",
                                  "at": L.created_at.isoformat() if L.created_at else None}
             out.append(item)
-    return {"code": code.strip(), "which": which, "year": year, "months": ms, "columns": columns,
-            "registries": sorted(registries), "no_file": no_file, "rows": out}
+    return {"code": code.strip(), "which": which, "year": year, "periods": [_pkey(y, m) for y, m in ps],
+            "columns": columns, "registries": sorted(registries), "no_file": no_file, "rows": out}
 
 
 @router.get("/purchases")
 def purchase_documents(
-    year: int = Query(...),
-    months: str = Query(..., description="1 эсвэл 1,2,3"),
+    year: int = Query(0),
+    months: str = Query("", description="1 эсвэл 1,2,3"),
+    periods: str = Query("", description="202512,202601 — өөр оны сартай хамт (months-ийн оронд)"),
     code: str = Query(..., max_length=30),
     which: str = Query("orgil", pattern="^(orgil|harhorin)$"),
     db: Session = Depends(get_db),
@@ -1160,19 +1197,18 @@ def purchase_documents(
     (дүн, бараа мөрүүд). Оргил — үндсэн орлогын файл, Хархорин — салбарын орлогын файл.
     missing — орлогын файл оруулаагүй сарууд."""
     from app.services import income_index
-    _validate_ym(year, 1)
-    ms = _parse_months(months)
-    if not ms:
+    ps = _periods(year, months, periods)
+    if not ps:
         raise HTTPException(400, "Сар сонгоно уу.")
     docs, missing = [], []
-    for m in ms:
-        got = income_index.documents(db, which, year, m, code.strip())
+    for y, m in ps:
+        got = income_index.documents(db, which, y, m, code.strip())
         if got is None:
-            missing.append(m)
+            missing.append(_pkey(y, m))
             continue
-        docs += [{"month": m, **d} for d in got]
-    return {"code": code.strip(), "which": which, "year": year, "months": ms, "missing": missing,
-            "documents": docs, "total": round(sum(d["amount"] for d in docs), 2)}
+        docs += [{"year": y, "month": m, "period": _pkey(y, m), **d} for d in got]
+    return {"code": code.strip(), "which": which, "year": year, "periods": [_pkey(y, m) for y, m in ps],
+            "missing": missing, "documents": docs, "total": round(sum(d["amount"] for d in docs), 2)}
 
 
 class ExemptIn(BaseModel):

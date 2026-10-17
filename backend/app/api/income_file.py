@@ -5,7 +5,9 @@
 Файлыг хэрхэн ашиглахыг хожим тусдаа зааврын дагуу нэмнэ.
 
 2026 оноос САР БҮРЭЭР (month=1..12) оруулна; өмнөх онууд бүтэн он (month=0).
-Сарын файлтай онд бүтэн оны файл байвал ашиглагдахгүй (давхардахгүй).
+Сарын слот 2025 оны 12-р сараас эхэлнэ (MONTHLY_FROM) — Ebarimt тайлан 2025/12-оос эхэлсэн.
+Сарын файл тухайн сараа бүтэн оны файлаас давамгайлна: бүтэн оны файлын тэр сарын мөрийг
+алгасна (давхардахгүй) — 2025: 1–11-р сар бүтэн оны файлаас, 12-р сар сарын файлаас.
 
 Endpoint-ууд:
   POST   /income-files/import          — multipart upload (year, month=0, file)
@@ -35,6 +37,8 @@ router = APIRouter(prefix="/income-files", tags=["income-files"])
 
 # Энэ оноос эхлэн сар бүрээр оруулна (бүтэн оны нэг Excel хэт том болсон)
 MONTHLY_FROM_YEAR = 2026
+# Сарын слот харуулах эхний (он, сар): 2025 онд бүтэн оны файл + 12-р сарын слот (Ebarimt 2025/12-оос)
+MONTHLY_FROM = (2025, 12)
 
 UPLOAD_DIR = Path("app/data/uploads/income")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -157,6 +161,10 @@ def import_file(
             "price_update": price_update}
 
 
+def _monthly_from() -> dict:
+    return {"year": MONTHLY_FROM[0], "month": MONTHLY_FROM[1]}
+
+
 def _file_info(r: IncomeFile) -> dict:
     return {
         "filename": r.original_filename,
@@ -177,7 +185,7 @@ def list_slots(
     rows = db.query(IncomeFile).all()
     out = [{"year": int(r.year), "month": int(r.month or 0), "file": _file_info(r)} for r in rows]
     out.sort(key=lambda x: (x["year"], x["month"]), reverse=True)
-    return {"monthly_from_year": MONTHLY_FROM_YEAR, "slots": out}
+    return {"monthly_from_year": MONTHLY_FROM_YEAR, "monthly_from": _monthly_from(), "slots": out}
 
 
 @router.get("/download")
@@ -321,7 +329,8 @@ def list_branch_slots(
     rows = db.query(BranchIncomeFile).filter(BranchIncomeFile.branch == branch).all()
     out = [{"year": int(r.year), "month": int(r.month), "file": _branch_info(r)} for r in rows]
     out.sort(key=lambda x: (x["year"], x["month"]), reverse=True)
-    return {"monthly_from_year": MONTHLY_FROM_YEAR, "branch": branch, "label": BRANCHES[branch], "slots": out}
+    return {"monthly_from_year": MONTHLY_FROM_YEAR, "monthly_from": _monthly_from(), "branch": branch,
+            "label": BRANCHES[branch], "slots": out}
 
 
 @router.get("/branch/download")

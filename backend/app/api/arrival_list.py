@@ -93,17 +93,19 @@ def _parse_income(path: Path) -> list[tuple]:
 
 
 def _income_rows(d1: date, d2: date) -> list[tuple]:
-    """[d1, d2]-тэй давхцах орлогын файлуудын мөрүүд (сарын файлтай онд бүтэн оны файлыг алгасна)."""
+    """[d1, d2]-тэй давхцах орлогын файлуудын мөрүүд. Сарын файл тухайн сараа бүтэн оны файлаас
+    давамгайлна — бүтэн оны файлын тэр сарын мөрийг алгасна (2025: 1–11-р сар бүтэн оны, 12-р сар сарын файлаас)."""
     from app.core.db import SessionLocal
     from app.models.income_file import IncomeFile
     db = SessionLocal()
     try:
         files = db.query(IncomeFile).all()
-        monthly_years = {f.year for f in files if (f.month or 0) > 0}
+        covered = {(f.year, f.month) for f in files
+                   if (f.month or 0) > 0 and f.stored_filename and (INCOME_DIR / f.stored_filename).exists()}
         picked = []
         for f in files:
             m = f.month or 0
-            if not f.stored_filename or (m == 0 and f.year in monthly_years):
+            if not f.stored_filename:
                 continue
             if m:
                 start = date(f.year, m, 1)
@@ -111,11 +113,11 @@ def _income_rows(d1: date, d2: date) -> list[tuple]:
             else:
                 start, end = date(f.year, 1, 1), date(f.year, 12, 31)
             if start <= d2 and end >= d1:
-                picked.append(f.stored_filename)
+                picked.append((f.stored_filename, m == 0))
     finally:
         db.close()
     out: list = []
-    for fname in sorted(picked):
+    for fname, full_year in sorted(picked):
         path = INCOME_DIR / fname
         if not path.exists():
             continue
@@ -131,7 +133,8 @@ def _income_rows(d1: date, d2: date) -> list[tuple]:
                         print(f"[arrivals] {fname} уншиж чадсангүй: {e}")
                         hit = (mtime, [])
                     _INC[str(path)] = hit
-        out.extend(r for r in hit[1] if d1 <= r[0] <= d2)
+        out.extend(r for r in hit[1] if d1 <= r[0] <= d2
+                   and not (full_year and (r[0].year, r[0].month) in covered))
     return out
 
 
