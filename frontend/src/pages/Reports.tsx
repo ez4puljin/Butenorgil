@@ -4,8 +4,9 @@ import { Card } from "../components/ui/Card";
 import { api } from "../lib/api";
 import {
   Download, FileSpreadsheet, CheckCircle2, AlertCircle, MapPinned, Printer,
-  FileDown, Settings2, ChevronDown, ChevronRight, RefreshCw, Save, PackageCheck, Share2, ImageIcon,
+  FileDown, Settings2, ChevronDown, ChevronRight, RefreshCw, Save, PackageCheck, Share2, ImageIcon, ShieldCheck,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 
 // ── Тайлангийн тодорхойлолт ───────────────────────────────────────────────────
 type ReportCard = {
@@ -709,6 +710,17 @@ export default function Reports() {
       <div className="mt-1 text-sm text-gray-500 print:hidden">
         Тайлан боловсруулж эксэл файлаар экспорт хийх
       </div>
+
+      {/* ── Erkhet sync шалгалт (erxes deal → Эрхэт авлага) ─────────────────── */}
+      <Link to="/reports/erkhet-sync"
+        className="mt-5 flex items-center gap-3 rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-white p-4 shadow-sm transition hover:border-indigo-400 print:hidden">
+        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white"><ShieldCheck size={18} /></div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[15px] font-semibold text-gray-900">Erkhet sync шалгалт</div>
+          <div className="text-[12px] text-gray-500">erxes-ийн deal бүр Эрхэт рүү авлага болж орсон эсэх — CASH, «undefined», sync-гүй deal-ийг олж дахин sync хийнэ</div>
+        </div>
+        <ChevronRight size={18} className="text-indigo-400" />
+      </Link>
 
       {/* ── Агуулахад буусан барааны жагсаалт (PDF) ─────────────────────────── */}
       <ArrivalListPdf />

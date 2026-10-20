@@ -32,6 +32,7 @@ from app.api.pos_recon import router as pos_recon_router
 from app.api.price_check import router as price_check_router
 from app.api.hall_count import router as hall_count_router
 from app.api.master_count import router as master_count_router
+from app.api.erkhet_deal_sync import router as erkhet_deal_sync_router
 from app.api.pallets import router as pallets_router
 from app.api.custom_master import router as custom_master_router
 from app.api.brand_orderers import router as brand_orderers_router
