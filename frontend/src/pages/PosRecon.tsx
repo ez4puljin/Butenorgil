@@ -8,7 +8,7 @@ import { api } from "../lib/api";
 // Касс → erxes → Эрхэт гэсэн ХОЁР шатны тулгалт.
 // Тэнцэл: кассын нийт = erxes дээрх + буцаалт. Зөрвөл л жинхэнэ алдагдал.
 interface DayCell {
-  day: string; status: "ok" | "warn" | "bad" | "none";
+  day: string; status: "ok" | "warn" | "bad" | "online" | "none";
   local: number; erxes: number; returns: number;
   unexplained: number; unsynced: number; pos_count: number;
 }
@@ -39,12 +39,14 @@ const CELL: Record<string, string> = {
   ok:   "bg-emerald-500 text-white hover:bg-emerald-600",
   warn: "bg-amber-400 text-white hover:bg-amber-500",
   bad:  "bg-rose-500 text-white hover:bg-rose-600",
+  online: "bg-sky-400 text-white hover:bg-sky-500",
   none: "bg-gray-100 text-gray-400 hover:bg-gray-200",
 };
 const LEGEND: [string, string][] = [
   ["ok", "Бүрэн таарсан"],
   ["warn", "Эрхэт рүү ороогүй"],
   ["bad", "Тайлбаргүй зөрүү / алдаа"],
+  ["online", "Онлайн касс — локал POS ажиллаагүй"],
   ["none", "Шалгаагүй"],
 ];
 
@@ -53,7 +55,7 @@ function fmt(n: number | null | undefined) {
 }
 function pad(n: number) { return String(n).padStart(2, "0"); }
 
-export default function PosReconPage() {
+export default function PosReconPage({ embedded = false }: { embedded?: boolean }) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -147,7 +149,7 @@ export default function PosReconPage() {
   const pct = job && job.total > 0 ? Math.round((job.done / job.total) * 100) : 0;
 
   return (
-    <div className="flex h-[calc(100vh-5rem)] flex-col overflow-hidden rounded-2xl bg-white shadow-sm lg:h-[calc(100vh-2.5rem)]">
+    <div className={`flex flex-col overflow-hidden rounded-2xl bg-white shadow-sm ${embedded ? "min-h-0 flex-1" : "h-[calc(100vh-5rem)] lg:h-[calc(100vh-2.5rem)]"}`}>
 
       {/* Header */}
       <div className="flex shrink-0 items-center gap-3 border-b border-gray-100 px-4 py-3 sm:px-5">
@@ -245,7 +247,7 @@ export default function PosReconPage() {
               <span>{Number(c.day.slice(-2))}</span>
               {c.status !== "none" && (
                 <span className="text-[9px] font-medium opacity-90">
-                  {c.unexplained ? `−${c.unexplained}` : c.unsynced ? `⇢${c.unsynced}` : fmt(c.local)}
+                  {c.unexplained ? `−${c.unexplained}` : c.unsynced ? `⇢${c.unsynced}` : fmt(c.local || c.erxes)}
                 </span>
               )}
             </button>
@@ -283,6 +285,11 @@ export default function PosReconPage() {
                         <span className={`h-2 w-2 shrink-0 rounded-full ${CELL[r.status]?.split(" ")[0] ?? "bg-gray-300"}`}/>
                         <span className="text-[12.5px] font-bold text-gray-900">{r.pos_name}</span>
                       </div>
+                      {r.status === "online" && (
+                        <p className="mb-1 text-[11.5px] text-sky-700">
+                          Энэ өдөр локал касс (192.168.1.254) ажиллаагүй — онлайн кассаар заржээ. Касс ↔ erxes шатыг шалгах боломжгүй; Эрхэт рүү орсныг шалгав.
+                        </p>
+                      )}
                       {r.error ? (
                         <p className="text-[11.5px] text-rose-600">{r.error}</p>
                       ) : (

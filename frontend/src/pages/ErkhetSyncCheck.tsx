@@ -94,7 +94,7 @@ function StatusBadges({ item, meta }: { item: Item; meta: Meta | null }) {
 }
 
 // ── Page ────────────────────────────────────────────────────────────────────
-export default function ErkhetSyncCheck() {
+export default function ErkhetSyncCheck({ embedded = false }: { embedded?: boolean }) {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [err, setErr] = useState("");
   const saved = (() => { try { return JSON.parse(localStorage.getItem(LS) || "{}"); } catch { return {}; } })();
@@ -190,9 +190,9 @@ export default function ErkhetSyncCheck() {
     <div className="flex min-h-[calc(100vh-5rem)] flex-col gap-3 pb-6">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
-        <Link to="/reports" className="grid h-9 w-9 place-items-center rounded-xl bg-gray-100 hover:bg-gray-200"><ArrowLeft size={16}/></Link>
+        {!embedded && <Link to="/reports" className="grid h-9 w-9 place-items-center rounded-xl bg-gray-100 hover:bg-gray-200"><ArrowLeft size={16}/></Link>}
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Erkhet sync шалгалт</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Deal sync шалгалт</h1>
           <p className="text-[12px] text-gray-500">erxes-ийн deal бүр Эрхэт рүү авлага (debtAmount) болж sync хийгдсэн эсэх</p>
         </div>
         <div className="ml-auto flex items-center gap-2">

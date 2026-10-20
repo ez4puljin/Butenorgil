@@ -44,7 +44,7 @@ const navItems: NavItem[] = [
   { to: "/ebarimt",            label: "Ebarimt",             icon: ReceiptText,    pageKey: "ebarimt" },
   { to: "/ai-chat",            label: "AI туслах",           icon: Sparkles,       pageKey: "ai_chat" },
   { to: "/pos-sync",           label: "POS татах",           icon: Store,          pageKey: "pos_sync" },
-  { to: "/pos-recon",          label: "POS тулгалт",         icon: CalendarCheck,  pageKey: "pos_recon" },
+  { to: "/pos-recon",          label: "Sync хяналт",         icon: CalendarCheck,  pageKey: "pos_recon" },
   { to: "/price-check",        label: "Үнэ харах",           icon: Tag,            pageKey: "price_check" },
   { to: "/hall-count",         label: "Заалны тооллого",     icon: ScanBarcode,    pageKey: "hall_count" },
   { to: "/pallets",            label: "Поддон хураалт",      icon: Layers,         pageKey: "pallets" },

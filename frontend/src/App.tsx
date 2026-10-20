@@ -45,7 +45,6 @@ const BankStatement      = page(() => import("./pages/BankStatement"));
 const EbarimtReport      = page(() => import("./pages/EbarimtReport"));
 const AiChat             = page(() => import("./pages/AiChat"));
 const PosSync            = page(() => import("./pages/PosSync"));
-const PosRecon           = page(() => import("./pages/PosRecon"));
 const PriceCheck         = page(() => import("./pages/PriceCheck"));
 const HallCount          = page(() => import("./pages/HallCount"));
 const Pallets            = page(() => import("./pages/Pallets"));
@@ -57,7 +56,7 @@ const Documents          = page(() => import("./pages/Documents"));
 const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
 const ProductMovementImport = page(() => import("./pages/ProductMovementImport"));
 const IncomeFileImport   = page(() => import("./pages/IncomeFileImport"));
-const ErkhetSyncCheck    = page(() => import("./pages/ErkhetSyncCheck"));
+const SyncControl        = page(() => import("./pages/SyncControl"));
 const BalanceFileImport  = page(() => import("./pages/BalanceFileImport"));
 const Attendance         = page(() => import("./pages/Attendance"));
 const AttendanceAdmin    = page(() => import("./pages/AttendanceAdmin"));
@@ -257,7 +256,7 @@ export default function App() {
                 <Route path="/imports/income-file" element={<IncomeFileImport />} />
                 <Route path="/imports/balance-file" element={<BalanceFileImport />} />
                 <Route path="/reports" element={<Reports />} />
-                <Route path="/reports/erkhet-sync" element={<ErkhetSyncCheck />} />
+                <Route path="/reports/erkhet-sync" element={<Navigate to="/pos-recon?tab=deal" replace />} />
                 <Route
                   path="/order"
                   element={
@@ -341,7 +340,7 @@ export default function App() {
                 />
                 <Route
                   path="/pos-recon"
-                  element={can("pos_recon") ? <PosRecon /> : <DefaultRedirect />}
+                  element={can("pos_recon") ? <SyncControl /> : <DefaultRedirect />}
                 />
                 <Route
                   path="/price-check"

@@ -145,6 +145,11 @@ def reconcile_day(day: str = "", urls: list[str] | None = None,
                 "unsynced_count": len(eids) - synced,
             })
             row["status"] = _status_of(row["unexplained"], row["unsynced_count"], "")
+            # Локал касс тэр өдөр ажиллаагүй (2026-10-10…15 локал POS унтарч онлайн pos.bto.mn-оор
+            # зарсан) — 1-р шатыг шалгах боломжгүй, зөрүү биш. Зөвхөн Эрхэт рүү орсныг шалгана.
+            if not lids and eids:
+                row["unexplained"] = 0
+                row["status"] = "warn" if row["unsynced_count"] else "online"
         except Exception as e:      # noqa: BLE001 — POS нэг нь унтарсан ч бусад үргэлжилнэ
             row["error"] = str(e)[:250]
             row["status"] = "bad"
@@ -222,7 +227,7 @@ def load_rows(db, day: str) -> list[dict]:
 
 def worst(statuses: list[str]) -> str:
     """Хамгийн муу төлөв — календарийн нүдний өнгө үүнээс шийдэгдэнэ."""
-    for s in ("bad", "warn", "ok"):
+    for s in ("bad", "warn", "online", "ok"):
         if s in statuses:
             return s
     return "none"
