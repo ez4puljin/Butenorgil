@@ -96,26 +96,37 @@ def escpos(img, cut: bool = True) -> bytes:
 
 
 def send(data: bytes, path: str | None = None) -> None:
-    """Windows spooler-ээр RAW (драйвер хөндөхгүй) — хуваалцсан принтер руу файл шиг бичихэд
-    «Permission denied» өгдөг (2026-10-21), харин OpenPrinter/WritePrinter ажилладаг."""
-    import win32print
+    """RAW байт: (1) SMB — хуваалцсан принтер руу файл шиг (`copy /b`), (2) Windows spooler
+    (OpenPrinter/WritePrinter). 2026-10-21: 192.168.1.209 хоёуланг нь хаасан — SMB «Access is denied»
+    (энэ PC-ийн хэрэглэгчийг танихгүй), spooler 0x11b (PrintNightmare RPC хамгаалалт). Тэр PC-ийн
+    хэрэглэгчийн нэр/нууц үгийг энэ серверийн Credential Manager-т хадгалбал SMB зам ажиллана."""
     p = path or printer_path()
+    errs = []
     try:
+        with open(p, "wb") as f:
+            f.write(data)
+        return
+    except OSError as e:
+        errs.append(f"SMB: {e.strerror or e}")
+    try:
+        import win32print
         h = win32print.OpenPrinter(p)
-    except Exception as e:  # noqa: BLE001
-        raise PrintError(f"Принтер ({p}) олдсонгүй/холбогдсонгүй: {e}")
-    try:
-        win32print.StartDocPrinter(h, 1, ("Үнийн шошго", None, "RAW"))
         try:
-            win32print.StartPagePrinter(h)
-            win32print.WritePrinter(h, data)
-            win32print.EndPagePrinter(h)
+            win32print.StartDocPrinter(h, 1, ("Үнийн шошго", None, "RAW"))
+            try:
+                win32print.StartPagePrinter(h)
+                win32print.WritePrinter(h, data)
+                win32print.EndPagePrinter(h)
+            finally:
+                win32print.EndDocPrinter(h)
+            return
         finally:
-            win32print.EndDocPrinter(h)
+            win32print.ClosePrinter(h)
     except Exception as e:  # noqa: BLE001
-        raise PrintError(f"Принтер ({p}) рүү илгээж чадсангүй: {e}")
-    finally:
-        win32print.ClosePrinter(h)
+        code = getattr(e, "winerror", None) or (e.args[0] if getattr(e, "args", None) else "")
+        errs.append(f"spooler: {code}")
+    raise PrintError(f"Принтер ({p}) рүү хэвлэх эрхгүй байна ({'; '.join(errs)}). "
+                     "192.168.1.209 компьютерийн хэрэглэгчийн нэвтрэлтийг серверт хадгална уу.")
 
 
 def print_label(product: dict, copies: int = 1) -> dict:
