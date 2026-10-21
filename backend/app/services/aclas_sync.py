@@ -17,8 +17,11 @@ Sync-ийн дүрэм:
     хойш) нь бүх sync-ийн бараанд тохиргооны «valid_days» (2026-10-21 хэрэглэгч: 90 хоног); 0 бол жин дээрх
     утгыг хөндөхгүй (шинэ бараанд 0).
   • Илгээсний дараа жингээс буцааж татаж харьцуулна; зөвхөн баталгаажсаны дараа төлөв (state) шинэчилнэ.
-  • ⚠ PLU upload нь upsert эсвэл бүрэн солих эсэх батлагдаагүй — segment-ээс гарсан бараа илгээсний дараа
-    жин дээр үлдвэл stale_ids-д тэмдэглэж дахин оролдохгүй.
+  • PLU upload нь UPSERT — илгээсэн файлд байхгүй бүртгэл жин дээр үлдэнэ (2026-10-21 туршсан).
+    procType 3 нь файлын агуулгаас үл хамааран БҮХ PLU-г цэвэрлэдэг (2026-10-21 туршилтаар жин 2 мин
+    хоосорсон). Тиймээс хуучин бүртгэлийг устгах = «цэвэрлэх → зөвхөн segment-ийн жагсаалт илгээх»
+    (replace). replace_all=True (хэрэглэгч 2026-10-21: «жин дээр хуучин бүртгэлийг устгадаг байх») үед
+    segment-д ороогүй БҮХ бүртгэл устна; агент илгээх амжилтгүй бол өмнөх жагсаалтыг тэр даруй буцаана.
 """
 from __future__ import annotations
 
@@ -38,7 +41,7 @@ NEW_ROW_DEFAULTS = {"Label1ID": b"0", "DiscountID": b"0", "DepartmentID": b"1", 
 MANAGED = ("Name1", "Price", "ItemCode", "UnitID", "ValidDate")
 PLU_AUTO_START = 800001                     # тоон биш кодтой бараанд оноох PLU дугаар
 SETTINGS_DEFAULT = {"segment_ids": [], "interval_min": 15, "auto_enabled": False, "dry_run": True,
-                    "label_id": 0, "default_valid_days": 90, "name_max": 26,
+                    "label_id": 0, "default_valid_days": 90, "name_max": 26, "replace_all": True,
                     "price_pos_url": "http://192.168.1.254:4030/graphql"}
 JOB_TIMEOUT_MIN = 10
 MAX_ATTEMPTS = 3
@@ -309,7 +312,11 @@ def make_plan(db, scale, settings: dict | None = None, desired: tuple | None = N
                       "status": st, "warnings": w["warnings"],
                       "before": row_view(old) if old else None, "diffs": diffs,
                       "manual_override": old is not None and plu not in managed_prev})
-    removed = sorted(i for i in managed_prev if i not in want and i in cur_by and i not in stale)
+    replace_all = bool(settings.get("replace_all", True))
+    if replace_all:                                  # segment-д ороогүй БҮХ бүртгэл устна
+        removed = sorted(i for i in cur_by if i not in want)
+    else:                                            # зөвхөн өмнө нь бидний оруулсан, segment-ээс гарсан
+        removed = sorted(i for i in managed_prev if i not in want and i in cur_by and i not in stale)
     keep = [r for r in cur if _rid(r) not in want and _rid(r) not in removed]
     rows = keep + [final[p] for p in sorted(final)]
     unmanaged = [row_view(r) for r in keep if _rid(r) not in managed_prev]
@@ -320,6 +327,8 @@ def make_plan(db, scale, settings: dict | None = None, desired: tuple | None = N
         "changed": bool(add or chg or removed),
         "items": items, "removed": [row_view(cur_by[i]) for i in removed], "skipped": skipped, "unmanaged": unmanaged,
         "upload": build_plu(header, rows), "desired_ids": sorted(want),
+        # upsert хуучныг устгадаггүй тул устгах зүйл байвал агент эхлээд цэвэрлээд илгээнэ
+        "replace": bool(removed),
     }
 
 
@@ -440,7 +449,7 @@ def agent_current(db, job, plu_raw: bytes) -> dict:
     stored["upload_b64"] = b64(plan["upload"])
     job.plan = json.dumps(stored, ensure_ascii=False, default=str)
     db.commit()
-    return {"upload_b64": stored["upload_b64"]}
+    return {"upload_b64": stored["upload_b64"], "replace": bool(plan.get("replace"))}
 
 
 def agent_finish(db, job, body: dict) -> dict:

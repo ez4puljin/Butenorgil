@@ -96,6 +96,7 @@ class SettingsIn(BaseModel):
     default_valid_days: int | None = None
     name_max: int | None = None
     price_pos_url: str | None = None
+    replace_all: bool | None = None
 
 
 @router.put("/settings")

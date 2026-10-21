@@ -10,7 +10,7 @@ import { api } from "../lib/api";
 
 interface Settings {
   segment_ids: string[]; interval_min: number; auto_enabled: boolean; dry_run: boolean;
-  label_id: number; default_valid_days: number; name_max: number; price_pos_url: string;
+  label_id: number; default_valid_days: number; name_max: number; price_pos_url: string; replace_all: boolean;
 }
 interface ScaleRow {
   id: number; name: string; branch: string; ip: string; label_index: number; enabled: boolean;
@@ -191,6 +191,10 @@ export default function AclasScalePage() {
               <label className="col-span-2 flex items-center gap-2 text-[12.5px] font-normal text-gray-700">
                 <input type="checkbox" className="accent-indigo-600" checked={st.auto_enabled} onChange={() => setSt({ ...st, auto_enabled: !st.auto_enabled })}/>
                 Автомат sync ({st.interval_min} мин тутам, өөрчлөлт байвал л илгээнэ)
+              </label>
+              <label className="col-span-2 flex items-start gap-2 text-[12.5px] font-normal text-gray-700">
+                <input type="checkbox" className="mt-0.5 accent-rose-600" checked={st.replace_all} onChange={() => setSt({ ...st, replace_all: !st.replace_all })}/>
+                <span>Segment-д ороогүй хуучин бүртгэлийг жингээс устгах <span className="text-gray-400">(жин дээр зөвхөн segment-ийн бараа үлдэнэ — агент цэвэрлээд шинэ жагсаалт илгээнэ, ~20 сек)</span></span>
               </label>
               <label className="col-span-2 flex items-center gap-2 text-[12.5px] font-normal text-gray-700">
                 <input type="checkbox" className="accent-amber-600" checked={st.dry_run} onChange={() => setSt({ ...st, dry_run: !st.dry_run })}/>

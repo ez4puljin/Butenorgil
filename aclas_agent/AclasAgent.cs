@@ -36,7 +36,7 @@ static class AclasAgent
 {
     const string SdkDir = @"C:\Program Files (x86)\Aclas LINK66\SDK";
     const uint Port = 5001, Protocol = 0;
-    const uint ToScale = 0x00, FromScale = 0x01;
+    const uint ToScale = 0x00, FromScale = 0x01, ProcClear = 0x03;   // 3 = БҮХ PLU-г цэвэрлэнэ (файл үл харгалзана)
     const uint DtPlu = 0x0000, DtLabelFormat = 0x0020, DtLabelMap = 0x0021;
     const int TaskTimeoutMs = 120000;
 
@@ -283,7 +283,25 @@ static class AclasAgent
                 var r = Call("POST", "/aclas/agent/jobs/" + id + "/current", new Dictionary<string, object> { { "plu_b64", B64(cur) } });
                 if (r.ContainsKey("skip")) { Log("  өөрчлөлтгүй — илгээсэнгүй"); return; }
                 if (r.ContainsKey("abort")) { Log("  сервер цуцлав: " + r["abort"]); return; }
-                Upload(ip, 0, DtPlu, Un64(r["upload_b64"]), "sync_upload.txt");
+                bool replace = r.ContainsKey("replace") && r["replace"] is bool && (bool)r["replace"];
+                if (replace)
+                {
+                    // Upload нь upsert тул хуучныг устгахын тулд эхлээд БҮХ PLU-г цэвэрлэнэ (procType 3,
+                    // файлын агуулгыг үл харгалздаг). Илгээх амжилтгүй бол өмнөх жагсаалтыг буцаана —
+                    // жин хоосон үлдэхгүй.
+                    Log("  хуучин бүртгэлийг цэвэрлэж байна");
+                    uint c = Exec(ip, ProcClear, DtPlu, Path.Combine(_work, "sync_current.txt"));
+                    if (c != 0) throw new ScaleException("PLU цэвэрлэж чадсангүй (юу ч өөрчлөгдөөгүй)", c);
+                    try { Upload(ip, 0, DtPlu, Un64(r["upload_b64"]), "sync_upload.txt"); }
+                    catch (ScaleException e)
+                    {
+                        Log("  илгээх амжилтгүй — өмнөх жагсаалтыг буцааж байна");
+                        try { Upload(ip, 0, DtPlu, cur, "sync_rollback.txt"); Log("  өмнөх жагсаалт сэргэв"); }
+                        catch (ScaleException e2) { Log("  !!! СЭРГЭЭЖ ЧАДСАНГҮЙ — жин хоосон байж магадгүй: " + e2.Message); }
+                        throw new ScaleException(e.Message + " (өмнөх жагсаалтыг сэргээсэн)", e.Code);
+                    }
+                }
+                else Upload(ip, 0, DtPlu, Un64(r["upload_b64"]), "sync_upload.txt");
                 Log("  илгээлээ, буцааж шалгаж байна");
                 res["verify_b64"] = B64(Download(ip, 0, DtPlu, "sync_verify.txt"));
             }
