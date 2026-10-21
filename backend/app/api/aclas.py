@@ -226,6 +226,16 @@ def restore(bid: int, request: Request, db: Session = Depends(get_db), u: User =
     return {"job_id": j.id}
 
 
+@router.get("/hotkeys")
+def hotkeys(scale_id: int = 0, db: Session = Depends(get_db), u: User = Depends(ADMIN)):
+    """Hotkey хуудас: LINK66-ийн товчны байрлал + erxes (offline POS) нэр — хэвлэхэд."""
+    s = db.get(AclasScale, scale_id) if scale_id else db.query(AclasScale).order_by(AclasScale.id).first()
+    try:
+        return svc.hotkey_sheet(db, s)
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
 @router.get("/jobs")
 def jobs(limit: int = 100, db: Session = Depends(get_db), u: User = Depends(ADMIN)):
     return [_job_out(j) for j in db.query(AclasJob).order_by(AclasJob.id.desc()).limit(min(limit, 500))]

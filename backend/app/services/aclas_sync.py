@@ -173,7 +173,7 @@ def fetch_segment_products(seg_id: str) -> list[dict]:
         page += 1
 
 
-_price_cache: dict = {"url": "", "at": 0.0, "by_id": {}, "by_code": {}}
+_price_cache: dict = {"url": "", "at": 0.0, "by_id": {}, "by_code": {}, "names": {}}
 
 
 def local_prices(url: str) -> tuple[dict[str, float], dict[str, float]]:
@@ -181,15 +181,17 @@ def local_prices(url: str) -> tuple[dict[str, float], dict[str, float]]:
     import requests
     if _price_cache["url"] == url and time.time() - _price_cache["at"] < 60:
         return _price_cache["by_id"], _price_cache["by_code"]
-    by_id, by_code, page = {}, {}, 1
+    by_id, by_code, names, page = {}, {}, {}, 1
     while True:
-        r = requests.post(url, json={"query": 'query($p: Int) { poscProducts(page: $p, perPage: 5000) { _id code unitPrice } }',
+        r = requests.post(url, json={"query": 'query($p: Int) { poscProducts(page: $p, perPage: 5000) { _id code name unitPrice } }',
                                      "variables": {"p": page}}, timeout=60)
         j = r.json()
         if j.get("errors"):
             raise RuntimeError(f"Локал POS: {j['errors'][0].get('message', '')[:200]}")
         rows = (j.get("data") or {}).get("poscProducts") or []
         for x in rows:
+            if x.get("code") and x.get("name"):
+                names[str(x["code"]).strip()] = " ".join(str(x["name"]).split())
             if x.get("unitPrice") is not None:
                 by_id[x["_id"]] = float(x["unitPrice"])
                 if x.get("code"):
@@ -197,8 +199,63 @@ def local_prices(url: str) -> tuple[dict[str, float], dict[str, float]]:
         if len(rows) < 5000 or page > 20:
             break
         page += 1
-    _price_cache.update(url=url, at=time.time(), by_id=by_id, by_code=by_code)
+    _price_cache.update(url=url, at=time.time(), by_id=by_id, by_code=by_code, names=names)
     return by_id, by_code
+
+
+def local_names(url: str) -> dict[str, str]:
+    """Offline POS-ийн барааны нэр {код: нэр} (erxes-ийн нэр — Ө/Ү бүрэн)."""
+    local_prices(url)
+    return _price_cache["names"]
+
+
+# ── Hotkey хуудас (LINK66) ──────────────────────────────────────────────────
+# Жингийн hotkey товчны PLU-г LINK66 өөрийн SQLite-д (LsHotkeytbl, KeyboardTbl) хадгалдаг бөгөөд
+# хуудсыг латин нэрээр хэвлэдэг. Бид ижил байрлал/хэмжээ (мм)-ээр erxes-ийн нэрээр хэвлэнэ.
+LINK66_DB = r"C:\Program Files (x86)\Aclas LINK66\Database\Default.db"
+
+
+def hotkey_sheet(db, scale=None) -> dict:
+    import sqlite3
+    path = _kv(db, "link66_db", "") or LINK66_DB
+    try:
+        c = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    except Exception as e:
+        raise RuntimeError(f"LINK66-ийн сан нээгдсэнгүй ({path}): {e}")
+    try:
+        rows = c.execute("select HotkeyID, KeyboardID, ButtonIndex, ButtonValue, PLUName, IsFunKey "
+                         "from LsHotkeytbl order by HotkeyID, ButtonIndex").fetchall()
+        kb = {r[0]: r for r in c.execute("select ID, Row, Col, PageWidth, PageHeight, BorderLeft, BorderTop, "
+                                         "ButtonWidth, ButtonHeight, HorizontalSpace, VerticalSpace from KeyboardTbl")}
+    finally:
+        c.close()
+    st = get_settings(db)
+    try:
+        names = local_names(st.get("price_pos_url") or SETTINGS_DEFAULT["price_pos_url"])
+    except Exception:
+        names = {}
+    on_scale = {_rid(r): r for r in parse_plu(scale.state_raw)[1]} if scale is not None and scale.state_raw else None
+    sheets: dict[str, dict] = {}
+    for hid, kid, idx, plu, lname, fun in rows:
+        k = kb.get(kid)
+        if not k:
+            continue
+        _id, nrow, ncol, pw, ph, bl, bt, bw, bh, hs, vs = k
+        per = nrow * ncol
+        sh = sheets.setdefault(hid, {"hotkey": hid, "keyboard": kid, "rows": nrow, "cols": ncol, "page_w": pw,
+                                     "page_h": ph, "left": bl, "top": bt, "btn_w": bw, "btn_h": bh, "hgap": hs or 0,
+                                     "vgap": vs or 0, "pages": 1, "buttons": []})
+        page = (idx - 1) // per
+        sh["pages"] = max(sh["pages"], page + 1)
+        if not plu:
+            continue
+        code = str(plu)
+        sr = on_scale.get(int(plu)) if on_scale is not None else None
+        sh["buttons"].append({"index": idx, "page": page, "row": ((idx - 1) % per) // ncol, "col": (idx - 1) % ncol,
+                              "plu": int(plu), "name": names.get(code) or (sr.get("Name1", b"").decode("cp1251") if sr else "")
+                              or lname or "", "link66_name": lname or "", "from_erxes": code in names,
+                              "on_scale": (sr is not None) if on_scale is not None else None, "fun": bool(fun)})
+    return {"sheets": list(sheets.values()), "db": path}
 
 
 # ── PLU мөр бэлтгэх ба diff ─────────────────────────────────────────────────

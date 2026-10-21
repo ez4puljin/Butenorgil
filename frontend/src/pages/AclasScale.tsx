@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Scale, RefreshCw, Plus, Save, Wifi, WifiOff, KeyRound, Eye, Upload, DatabaseBackup, RotateCcw, X, AlertTriangle,
-  CheckCircle2, Info, Trash2, Pencil,
+  CheckCircle2, Info, Trash2, Pencil, Printer,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -49,6 +49,37 @@ const fmtDT = (s?: string | null) => {
   return Number.isNaN(d.getTime()) ? s : d.toLocaleString("sv-SE", { timeZone: "Asia/Ulaanbaatar" }).slice(0, 16);
 };
 const num = (n: number | string | null | undefined) => (n == null || n === "" ? "—" : Number(n).toLocaleString("en-US"));
+
+// ── Hotkey хуудас: LINK66-ийн товчны байрлал (мм) + erxes-ийн барааны нэр ─────────
+interface HkButton { index: number; page: number; row: number; col: number; plu: number; name: string;
+  link66_name: string; from_erxes: boolean; on_scale: boolean | null }
+interface HkSheet { hotkey: string; rows: number; cols: number; page_w: number; page_h: number; left: number; top: number;
+  btn_w: number; btn_h: number; hgap: number; vgap: number; pages: number; buttons: HkButton[] }
+const escHtml = (t: string) => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+
+/** Жингийн гарны доор тавих хуудас — LINK66-тэй ижил хэмжээ (мм), A4 хэвтээ, хуудас бүр тусдаа. */
+function hotkeyHtml(sh: HkSheet): string {
+  const pages = Array.from({ length: sh.pages }, (_, pg) => {
+    const cells: string[] = [];
+    for (let r = 0; r < sh.rows; r++) for (let c = 0; c < sh.cols; c++) {
+      const b = sh.buttons.find(x => x.page === pg && x.row === r && x.col === c);
+      const x = sh.left + c * (sh.btn_w + sh.hgap), y = sh.top + r * (sh.btn_h + sh.vgap);
+      cells.push(`<div class="k" style="left:${x}mm;top:${y}mm;width:${sh.btn_w}mm;height:${sh.btn_h}mm">${
+        b ? `<div class="c">${b.plu}</div><div class="n">${escHtml(b.name)}</div>` : ""}</div>`);
+    }
+    return `<section class="p" style="width:${sh.page_w}mm;height:${sh.page_h}mm">${cells.join("")}</section>`;
+  });
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Hotkey ${escHtml(sh.hotkey)}</title><style>
+    @page { size: A4 landscape; margin: 8mm; }
+    body { margin: 0; font-family: Arial, "Segoe UI", sans-serif; }
+    .p { position: relative; page-break-after: always; break-after: page; }
+    .p:last-child { page-break-after: auto; break-after: auto; }
+    .k { position: absolute; box-sizing: border-box; border: 0.2mm solid #000; padding: 0.5mm; overflow: hidden; text-align: center; }
+    .c { font-size: 2.6mm; font-weight: bold; line-height: 1.1; }
+    .n { font-size: 2.45mm; line-height: 1.1; word-break: break-word; max-height: 9.6mm; overflow: hidden; }
+  </style></head><body>${pages.join("")}<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`;
+}
+
 const EMPTY_SCALE = { id: 0, name: "", branch: "", ip: "192.168.1.", label_index: 0, enabled: true };
 
 export default function AclasScalePage() {
@@ -62,6 +93,7 @@ export default function AclasScalePage() {
   const [plan, setPlan] = useState<{ scale: ScaleRow; plan: Plan | null; loading: boolean } | null>(null);
   const [planFilter, setPlanFilter] = useState<"changed" | "all">("changed");
   const [jobDetail, setJobDetail] = useState<any>(null);
+  const [hk, setHk] = useState<{ sheets: HkSheet[] } | null>(null);
   const timer = useRef<number | undefined>(undefined);
 
   const load = () => api.get("/aclas/overview").then(r => {
@@ -126,6 +158,10 @@ export default function AclasScalePage() {
               {ov.agent.online ? <Wifi size={12}/> : <WifiOff size={12}/>}Агент {ov.agent.online ? "холбогдсон" : "холбогдоогүй"}
             </span>
           )}
+          <button onClick={() => api.get("/aclas/hotkeys", { timeout: 60000 }).then(r => setHk(r.data)).catch(e => fail(e, "Hotkey уншиж чадсангүй"))}
+            className="flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-gray-600 hover:bg-gray-50">
+            <Printer size={13}/>Hotkey хуудас
+          </button>
           <button onClick={newToken} className="flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-gray-600 hover:bg-gray-50">
             <KeyRound size={13}/>Агентын token
           </button>
@@ -336,6 +372,52 @@ export default function AclasScalePage() {
                 {plan.plan.unmanaged.length > 0 && <div className="mt-2 text-[12px] text-gray-500"><b>Жин дээр гараар оруулсан, хөндөхгүй ({plan.plan.unmanaged.length}):</b> {plan.plan.unmanaged.map(u => `${u.plu} ${u.name}`).join(", ")}</div>}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {hk && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3" onClick={() => setHk(null)}>
+          <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3">
+              <div><div className="text-[15px] font-bold">Hotkey хуудас — erxes-ийн нэрээр</div>
+                <div className="text-[11.5px] text-gray-500">Товчны байрлал, хэмжээ LINK66-аас (LsHotkeytbl). Нэр нь erxes-ийн барааны бүртгэлээс. A4 хэвтээ, 100% масштабаар хэвлэнэ.</div></div>
+              <button onClick={() => setHk(null)} className="ml-auto text-gray-400"><X size={16}/></button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-4 overflow-auto px-4 py-3">
+              {hk.sheets.map(sh => {
+                const missing = sh.buttons.filter(b => b.on_scale === false);
+                const noErxes = sh.buttons.filter(b => !b.from_erxes);
+                return (
+                  <div key={sh.hotkey}>
+                    <div className="mb-2 flex flex-wrap items-center gap-2 text-[12px]">
+                      <b>Hotkey {sh.hotkey}</b><span className="text-gray-500">{sh.rows}×{sh.cols} · {sh.pages} хуудас · {sh.buttons.length} товч</span>
+                      <button onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(hotkeyHtml(sh)); w.document.close(); } }}
+                        className="ml-auto flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-indigo-700"><Printer size={13}/>Хэвлэх</button>
+                    </div>
+                    {missing.length > 0 && <div className="mb-2 rounded-lg bg-rose-50 px-3 py-1.5 text-[12px] text-rose-700">Жин дээр байхгүй PLU-д оноосон товч ({missing.length}): {missing.map(b => b.plu).join(", ")} — дарахад бараа гарахгүй. LINK66 → Hotkey-оос солино уу.</div>}
+                    {noErxes.length > 0 && <div className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[12px] text-amber-800">erxes-д бүртгэлгүй код ({noErxes.length}): {noErxes.map(b => b.plu).join(", ")} — LINK66-ийн нэрээр хэвлэгдэнэ.</div>}
+                    {Array.from({ length: sh.pages }, (_, pg) => (
+                      <div key={pg} className="mb-2 overflow-auto">
+                        <div className="mb-1 text-[11px] text-gray-400">Хуудас {pg + 1}</div>
+                        <div className="grid border-l border-t border-gray-400" style={{ gridTemplateColumns: `repeat(${sh.cols}, minmax(64px, 1fr))` }}>
+                          {Array.from({ length: sh.rows * sh.cols }, (_, i) => {
+                            const b = sh.buttons.find(x => x.page === pg && x.row === Math.floor(i / sh.cols) && x.col === i % sh.cols);
+                            return (
+                              <div key={i} title={b ? `${b.plu} · ${b.name}${b.link66_name && b.link66_name !== b.name ? `
+LINK66: ${b.link66_name}` : ""}` : ""}
+                                className={`h-14 overflow-hidden border-b border-r border-gray-400 p-0.5 text-center text-[9.5px] leading-tight ${b?.on_scale === false ? "bg-rose-50" : !b ? "" : b.from_erxes ? "" : "bg-amber-50"}`}>
+                                {b && <><div className="font-bold">{b.plu}</div><div>{b.name}</div></>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
