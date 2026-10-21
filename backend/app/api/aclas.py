@@ -51,8 +51,9 @@ def _job_out(j: AclasJob, full: bool = False) -> dict:
            "created_at": j.created_at.isoformat() if j.created_at else None,
            "finished_at": j.finished_at.isoformat() if j.finished_at else None,
            "summary": plan.get("summary") or res.get("summary"),
-           "verify": {k: v for k, v in (res.get("verify") or {}).items() if k != "mismatch"} | (
-               {"mismatch_n": len((res.get("verify") or {}).get("mismatch") or [])} if res.get("verify") else {}),
+           # Зөвхөн sync-д баталгаажуулалт бий — бусад даалгаварт None (UI «—» харуулна)
+           "verify": ({k: v for k, v in res["verify"].items() if k != "mismatch"}
+                      | {"mismatch_n": len(res["verify"].get("mismatch") or [])}) if res.get("verify") else None,
            "no_change": res.get("no_change", False)}
     if full:
         out["plan"] = {k: v for k, v in plan.items() if k != "upload_b64"}
