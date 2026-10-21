@@ -57,6 +57,7 @@ const ProductSalesImport = page(() => import("./pages/ProductSalesImport"));
 const ProductMovementImport = page(() => import("./pages/ProductMovementImport"));
 const IncomeFileImport   = page(() => import("./pages/IncomeFileImport"));
 const SyncControl        = page(() => import("./pages/SyncControl"));
+const AclasScalePage     = page(() => import("./pages/AclasScale"));
 const BalanceFileImport  = page(() => import("./pages/BalanceFileImport"));
 const Attendance         = page(() => import("./pages/Attendance"));
 const AttendanceAdmin    = page(() => import("./pages/AttendanceAdmin"));
@@ -93,6 +94,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "calendar",            path: "/calendar" },
   { key: "admin_panel",         path: "/admin" },
   { key: "min_stock",           path: "/admin/min-stock" },
+  { key: "aclas",               path: "/admin/aclas" },
   { key: "audit_log",           path: "/admin/audit-log" },
   { key: "kpi_checklist",       path: "/kpi/checklist" },
   { key: "kpi_approvals",       path: "/kpi/approvals" },
@@ -257,6 +259,7 @@ export default function App() {
                 <Route path="/imports/balance-file" element={<BalanceFileImport />} />
                 <Route path="/reports" element={<Reports />} />
                 <Route path="/reports/erkhet-sync" element={<Navigate to="/pos-recon?tab=deal" replace />} />
+                <Route path="/admin/aclas" element={can("aclas") ? <AclasScalePage /> : <DefaultRedirect />} />
                 <Route
                   path="/order"
                   element={

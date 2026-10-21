@@ -28,7 +28,7 @@ PERMISSION_MANIFEST = [
     {"key": "ebarimt",             "label": "Ebarimt"},
     {"key": "ai_chat",             "label": "AI туслах"},
     {"key": "pos_sync",            "label": "POS татах"},
-    {"key": "pos_recon",           "label": "POS тулгалт"},
+    {"key": "pos_recon",           "label": "Sync хяналт (POS тулгалт, Deal sync)"},
     {"key": "price_check",         "label": "Үнэ харах",       "universal": True},
     {"key": "hall_count",          "label": "Заалны тооллого", "universal": True},
     {"key": "pallets",             "label": "Поддон хураалт"},
@@ -44,6 +44,7 @@ PERMISSION_MANIFEST = [
     {"key": "audit_log",           "label": "Үйлдлийн бүртгэл"},
     {"key": "documents",           "label": "Бичиг баримт"},
     {"key": "extensions",          "label": "Extension (Chrome)", "universal": True},
+    {"key": "aclas",               "label": "Aclas жин"},
     {"key": "admin_panel",         "label": "Удирдлага"},
 ]
 

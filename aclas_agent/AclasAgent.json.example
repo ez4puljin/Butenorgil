@@ -1,0 +1,6 @@
+{
+  "server": "https://127.0.0.1:8000",
+  "token": "acl_... (Aclas жин хуудаснаас «Агентын token»)",
+  "insecure": true,
+  "poll_seconds": 15
+}

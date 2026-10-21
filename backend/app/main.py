@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router, digest_router, pos_recon_router, price_check_router, hall_count_router, pallets_router, custom_master_router, brand_orderers_router, po_history_router, arrival_list_router, sales_analytics_router, chrome_extensions_router, master_count_router, erkhet_deal_sync_router
+from app.api import auth_router, admin_router, imports_router, products_router, orders_router, reports_router, accounts_receivable_router, suppliers_router, logistics_router, purchase_orders_router, calendar_router, kpi_router, new_product_router, sales_report_router, inventory_count_router, erkhet_auto_router, receivings_router, bank_statements_router, expiration_router, documents_router, product_monthly_sales_router, product_yearly_movement_router, income_file_router, balance_file_router, tag_location_check_router, attendance_router, ebarimt_router, ai_chat_router, pos_sync_router, digest_router, pos_recon_router, price_check_router, hall_count_router, pallets_router, custom_master_router, brand_orderers_router, po_history_router, arrival_list_router, sales_analytics_router, chrome_extensions_router, master_count_router, erkhet_deal_sync_router, aclas_router
 from app.services.seed import ensure_admin
 from app.models.sales_report import SalesImportLog, SalesCacheRow  # noqa: F401 – registers tables
 from app.models.inventory_count import InventoryCount, InventoryCountFile  # noqa: F401 – registers tables
@@ -40,6 +40,7 @@ from app.models.balance_file import BalanceFile  # noqa: F401 – registers tabl
 from app.models.hall_count import HallCountSession, HallCountItem, HallCountScan  # noqa: F401 – registers tables
 from app.models.master_count import MasterCount, MasterCountLine, MasterCountScan  # noqa: F401 – registers tables
 from app.models.erkhet_sync_check import ErkhetSyncRun, ErkhetSyncItem, ErkhetSyncSetting, ErkhetSyncAction  # noqa: F401
+from app.models.aclas import AclasScale, AclasSetting, AclasPluId, AclasJob, AclasBackup  # noqa: F401
 from app.models.pallet import PalletSalesSettings, PalletTemplate, ProductPallet  # noqa: F401 – registers tables
 from app.models.custom_master import CustomField, CustomRecord  # noqa: F401 – registers tables
 from app.models.brand_orderer import BrandOrderer  # noqa: F401 – registers tables
@@ -1260,6 +1261,24 @@ async def _nightly_jobs_loop():
         await asyncio.sleep(300)          # 5 минут тутам шалгана
 
 
+async def _aclas_loop():
+    """Aclas жин: тохиргооны хуваарь (interval_min) болсон бол erxes ↔ жин diff → sync даалгавар.
+    Dry-run / автомат унтраалттай үед юу ч хийхгүй (aclas_sync.tick)."""
+    from app.services import aclas_sync
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await asyncio.to_thread(aclas_sync.tick)
+        except Exception as e:
+            print(f"[aclas] tick алдаа: {e}")
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def schedule_aclas_sync():
+    asyncio.create_task(_aclas_loop())
+
+
 @app.on_event("startup")
 async def schedule_nightly_jobs():
     """Шөнийн автомат ажлууд + өглөөний тайланг бүртгэнэ."""
@@ -1345,6 +1364,7 @@ app.include_router(price_check_router)
 app.include_router(hall_count_router)
 app.include_router(master_count_router)
 app.include_router(erkhet_deal_sync_router)
+app.include_router(aclas_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)
 app.include_router(brand_orderers_router)

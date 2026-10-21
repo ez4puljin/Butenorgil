@@ -6,7 +6,7 @@ import {
   FileText, Building2, Truck, X, CalendarDays, CheckSquare,
   BadgeCheck, Settings2, Sparkles, BarChart3, MoreHorizontal,
   ChevronRight, User, Menu, ClipboardCheck, Bot, PackageCheck, Landmark, History, Timer,
-  Clock, CalendarClock, ReceiptText, Store, CalendarCheck, Tag, ScanBarcode, Layers, Columns3, TrendingUp, Puzzle,
+  Clock, CalendarClock, ReceiptText, Store, CalendarCheck, Tag, ScanBarcode, Layers, Columns3, TrendingUp, Puzzle, Scale,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 import ConnectionBanner from "../ConnectionBanner";
@@ -33,6 +33,7 @@ const navItems: NavItem[] = [
   { to: "/calendar",            label: "Календар",            icon: CalendarDays,  pageKey: "calendar" },
   { to: "/admin",               label: "Удирдлага",           icon: Shield,        pageKey: "admin_panel" },
   { to: "/admin/min-stock",     label: "Доод үлдэгдэл",      icon: ClipboardCheck, pageKey: "min_stock" },
+  { to: "/admin/aclas",         label: "Aclas жин",          icon: Scale,          pageKey: "aclas" },
   { to: "/admin/audit-log",     label: "Үйлдлийн бүртгэл",  icon: History,        pageKey: "audit_log" },
   { to: "/kpi/admin",           label: "KPI тохиргоо",        icon: Settings2,     pageKey: "kpi_admin" },
   { to: "/new-product",         label: "Шинэ бараа",          icon: Sparkles,      pageKey: "new_product" },
