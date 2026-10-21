@@ -65,24 +65,33 @@ def bulk_info(product_id: str, unit_price=None) -> dict:
 
 
 # erxes-ийн хуучин «Шошго» загвар ({{ name }} {{ code }} {{ price }} {{ bulkQuantity }}
-# {{ bulkPrice }}) — style-уудыг өөрчлөлгүй хуулсан. {date} — бидний нэмдэг байсан огноо.
+# {{ bulkPrice }}) — style-уудыг хуулсан. 2026-10-21 хэрэглэгчийн хүсэлтээр: огноо code-ийн мөрийн
+# эсрэг (баруун) талд, бөөний ширхэг/үнэ нэг мөрөнд (_FIT_JS үсгийг багтах хүртэл жижигрүүлнэ).
 _TEMPLATE = (
     '<div><div style="border: 2px solid; padding: 3px 3px;border-bottom:none">'
     '<p style="text-align: center;"><span style="font-size: 16px"><strong>{name}</strong></span></p>'
-    '<p><span style="font-size: 12px"><strong>code</strong></span>: '
-    '<span style="font-size: 14px"><strong>{code} </strong></span></p></div>'
+    '<p style="display:flex;justify-content:space-between;align-items:baseline"><span>'
+    '<span style="font-size: 12px"><strong>code</strong></span>: '
+    '<span style="font-size: 14px"><strong>{code} </strong></span></span>'
+    '<span style="font-size:10px">{date}</span></p></div>'
     '<div style="border: 2px solid; padding: 3px 3px;">'
     '<p><span style="font-size: 18px">Үнэ :</span>&nbsp; '
     '<span style="font-size: 22px"><strong>{price} </strong></span></p>'
-    '<p><span style="font-size: 16px">Бөөний ширхэг&nbsp;<strong>{bulk_qty}</strong>'
+    '<p class="bulk" style="white-space:nowrap"><span style="font-size: 16px">Бөөний ширхэг&nbsp;<strong>{bulk_qty}</strong>'
     '&nbsp;Бөөний үнэ: </span><span style="font-size: 20px"><strong>{bulk_price}</strong></span></p>'
-    '<p style="margin:2px 0 0;font-size:10px;color:#000;text-align:right">{date}</p>'
     '</div></div>'
 )
 
 # erxes-ийн print-ийн нэмдэг receipt CSS (шошгонд хамаатай хэсэг)
 _RECEIPT_CSS = ("html {color: #000;font-size: 11px;font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;}"
                 "body {margin: 0;}")
+
+
+# Бөөний мөрийг нэг мөрөнд багтаах — хэтэрвэл span бүрийн үсгийг пропорциональ жижигрүүлнэ.
+_FIT_JS = ("<script>[].forEach.call(document.querySelectorAll('p.bulk'),function(p){"
+           "var s=p.querySelectorAll('span'),b=[].map.call(s,function(x){return parseFloat(x.style.fontSize)||16}),k=1;"
+           "while(p.scrollWidth>p.clientWidth+1&&k>0.5){k-=0.03;"
+           "[].forEach.call(s,function(x,i){x.style.fontSize=(b[i]*k).toFixed(2)+'px'})}})</script>")
 
 
 def _one(p: dict, bulk: dict, stamp: str) -> str:
@@ -103,7 +112,7 @@ def label_inner(product: dict, when: datetime | None = None) -> str:
     except Exception:  # noqa: BLE001 — бөөний мэдээлэлгүй ч шошго хэвлэгдэнэ
         bulk = {"ok": False}
     stamp = (when or datetime.now()).strftime("%Y-%m-%d")
-    return f"<style>{_RECEIPT_CSS}</style>" + _one(product, bulk, stamp)
+    return f"<style>{_RECEIPT_CSS}</style>" + _one(product, bulk, stamp) + _FIT_JS
 
 
 def label_page(product: dict, copies: int = 1, auto_print: bool = True,
@@ -131,5 +140,5 @@ def label_page(product: dict, copies: int = 1, auto_print: bool = True,
         "<style>@page{margin:4mm}body{margin:0}"
         f"@media screen{{body{{background:#eee;padding:8mm}}body>div{{max-width:{width}mm;background:#fff}}}}"
         f"</style><style type=\"text/css\">/*receipt*/{_RECEIPT_CSS}</style>"
-        "</head><body>" + inner + auto + "</body></html>"
+        "</head><body>" + inner + _FIT_JS + auto + "</body></html>"
     )

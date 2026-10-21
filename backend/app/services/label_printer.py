@@ -66,9 +66,10 @@ def render_png(html: str) -> "Image.Image":  # noqa: F821
         img = Image.open(out).convert("L")
     if img.width != DOTS:
         img = img.resize((DOTS, round(img.height * DOTS / img.width)))
-    box = ImageChops.invert(img).getbbox()                 # хар зурагтай хэсэг
-    bottom = min(img.height, (box[3] if box else 40) + 12)
-    return img.crop((0, 0, DOTS, bottom))
+    box = ImageChops.invert(img).getbbox()                 # хар зурагтай хэсэг — хүрээгээр яг тайрна
+    if not box:
+        raise PrintError("Шошго хоосон зурагдлаа.")
+    return img.crop((0, box[1], DOTS, box[3]))
 
 
 def escpos(img, cut: bool = True) -> bytes:
@@ -89,9 +90,8 @@ def escpos(img, cut: bool = True) -> bytes:
                     if x < w and px[x, y] == 0:
                         byte |= 0x80 >> bit
                 out.append(byte)
-    out += b"\n\n\n\n"
     if cut:
-        out += b"\x1dV\x42\x00"                            # хагас хайчлалт (feed + cut)
+        out += b"\x1dV\x42\x00"                            # хайчлах байрлал хүртэл л урагшилж хүрээгээр хайчилна
     return bytes(out)
 
 
