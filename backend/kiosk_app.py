@@ -90,6 +90,19 @@ def label(q: str = Query(..., min_length=1, max_length=80),
                             f"Шошго татахад алдаа: {str(e)[:120]}</p>", status_code=502)
 
 
+@app.post("/label/print")
+def label_print(q: str = Query(..., min_length=1, max_length=80), copies: int = Query(1, ge=1, le=20)):
+    """Шошгыг заалны XP-80C принтер рүү шууд (app/services/label_printer)."""
+    from app.services import label_printer
+    p = (pos_price.lookup(q) or {}).get("product")
+    if not p:
+        return JSONResponse({"ok": False, "error": "Бараа олдсонгүй."}, status_code=404)
+    try:
+        return label_printer.print_label(p, copies)
+    except Exception as e:      # noqa: BLE001 — kiosk хэзээ ч 500 буцаах ёсгүй
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=502)
+
+
 @app.get("/vendor/html5-qrcode.min.js")
 def vendor_js():
     """Камерын нөөц сан. Байхгүй бол хуудас native BarcodeDetector-оор ажиллана."""

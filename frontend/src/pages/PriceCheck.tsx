@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 
-/* Заалны таблетад зориулсан үнийн лавлагаа — онлайн POS (pos.bto.mn)-оос.
+/* Заалны таблетад зориулсан үнийн лавлагаа — offline POS (192.168.1.254:7000)-оос.
    Камер БАЙНГА ажиллана — үйлчлүүлэгч ирээд шууд уншуулна. Тиймээс нийтлэг
    BarcodeScanner (modal) тохирохгүй: тэр нь нэг уншаад хаагддаг.
    Мөн USB/Bluetooth скáннер (гар шиг бичдэг) ажиллана — гар оролтыг сонсоно. */
@@ -19,7 +19,7 @@ interface LookupRes {
   query: string; found: boolean; product: Product | null;
   others: Product[]; error: string;
 }
-// Онлайн POS-той холболт: аль POS-уудаас үнэ асууж байгаа, алдаа
+// Offline POS-той холболт: аль POS-уудаас үнэ асууж байгаа, алдаа
 interface PriceStatus { enabled: boolean; site: string; pos: string[]; error: string }
 
 // Скáннер бүр Enter-ийг өөрөөр илгээдэг (Enter / Return / keyCode 13).
@@ -57,14 +57,15 @@ export default function PriceCheckPage() {
   const [copies, setCopies] = useState(1);
   const [printing, setPrinting] = useState(false);
   const [printErr, setPrintErr] = useState("");
+  const [printed, setPrinted] = useState(false);
   const [bulk, setBulk] = useState<BulkInfo | null>(null);
   const [status, setStatus] = useState<PriceStatus | null>(null);
 
-  // Онлайн POS-той холбогдож байгаа эсэх — алдаатай бол дээр нь анхааруулна
+  // Offline POS-той холбогдож байгаа эсэх — алдаатай бол дээр нь анхааруулна
   const loadStatus = useCallback(() => {
     api.get("/price-check/status", { timeout: 20000 })
       .then(r => setStatus(r.data))
-      .catch(() => setStatus({ enabled: false, site: "pos.bto.mn", pos: [], error: "Сервертэй холбогдож чадсангүй" }));
+      .catch(() => setStatus({ enabled: false, site: "Offline POS 192.168.1.254:7000", pos: [], error: "Сервертэй холбогдож чадсангүй" }));
   }, []);
   useEffect(() => { loadStatus(); }, [loadStatus]);
   const statusBad = !!status && (!status.enabled || !!status.error);
@@ -101,10 +102,20 @@ export default function PriceCheckPage() {
     }
   }, []);
 
-  // Шошгыг auth-тай татаад шинэ цонхонд бичнэ — шууд URL нээвэл токен
-  // дамжихгүй тул 401 болно. Сервер юу ч хэвлэхгүй: хэвлэгчийн харилцах
-  // цонх гарч, хүн баталгаажуулна.
+  // Заалны XP-80C (\\192.168.1.209\XP-80C Zaal) принтер рүү ШУУД — сервер зураад RAW илгээнэ.
   async function printLabel(code: string) {
+    setPrinting(true); setPrintErr(""); setPrinted(false);
+    try {
+      await api.post("/price-check/label/print", { q: code, copies }, { timeout: 90000 });
+      setPrinted(true);
+      setTimeout(() => setPrinted(false), 3000);
+    } catch (e: any) {
+      setPrintErr(e?.response?.data?.detail ?? "Принтер рүү хэвлэж чадсангүй");
+    } finally { setPrinting(false); }
+  }
+
+  // Нөөц: шошгыг auth-тай татаад шинэ цонхонд бичиж хөтчөөр хэвлэнэ (шууд URL нээвэл 401).
+  async function printLabelBrowser(code: string) {
     setPrinting(true); setPrintErr("");
     try {
       const r = await api.get("/price-check/label", {
@@ -232,7 +243,7 @@ export default function PriceCheckPage() {
           <p className="text-[11px] leading-tight text-gray-500">Барааны баркодыг камерт уншуулна уу</p>
         </div>
         {status && (
-          <span title={statusBad ? status.error : `Үнэ: онлайн POS (${status.site}) — ${status.pos.join(", ")}`}
+          <span title={statusBad ? status.error : `Үнэ: ${status.site} — ${status.pos.join(", ")}`}
             className={`hidden shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium sm:flex ${
               statusBad ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-700"}`}>
             {statusBad ? <WifiOff size={11}/> : <Wifi size={11}/>}{status.site}
@@ -247,7 +258,7 @@ export default function PriceCheckPage() {
       {statusBad && (
         <div className="flex shrink-0 items-center gap-2 border-b border-rose-100 bg-rose-50 px-4 py-2 text-[12px] text-rose-700">
           <WifiOff size={13} className="shrink-0"/>
-          <span className="min-w-0 flex-1">Онлайн POS ({status?.site})-оос үнэ авч чадахгүй байна{status?.error ? `: ${status.error}` : "."}</span>
+          <span className="min-w-0 flex-1">{status?.site}-оос үнэ авч чадахгүй байна{status?.error ? `: ${status.error}` : "."}</span>
           <button onClick={loadStatus} className="flex shrink-0 items-center gap-1 rounded-lg border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold hover:bg-rose-100">
             <RefreshCw size={11}/>Дахин шалгах
           </button>
@@ -368,10 +379,15 @@ export default function PriceCheckPage() {
                 <button onClick={() => printLabel(p.code)} disabled={printing}
                   className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-4 py-2 text-[13px] font-semibold text-white hover:bg-violet-700 disabled:opacity-60">
                   {printing ? <Loader2 size={14} className="animate-spin"/> : <Printer size={14}/>}
-                  Шошго хэвлэх
+                  {printed ? "Хэвлэгдлээ ✓" : "Шошго хэвлэх"}
                 </button>
               </div>
-              {printErr && <p className="mt-1.5 text-center text-[11.5px] text-rose-600">{printErr}</p>}
+              {printErr && (
+                <p className="mt-1.5 text-center text-[11.5px] text-rose-600">
+                  {printErr}{" "}
+                  <button onClick={() => printLabelBrowser(p.code)} className="font-semibold underline">Хөтчөөр хэвлэх</button>
+                </p>
+              )}
 
               {(p.barcodes.length > 0 || p.source) && (
                 <div className="mt-2 border-t border-violet-100 pt-2 text-center text-[10.5px] text-gray-400">

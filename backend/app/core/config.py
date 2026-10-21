@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     pos_price_pos: str = "Бүтэн Оргил ХХК,Заалны архи"
     # Токеныг шууд өгөх бол "нэр=токен,нэр=токен" (админ нэвтрэлт хэрэггүй). env: POS_PRICE_TOKENS
     pos_price_tokens: str = ""
+    # 2026-10-21-ээс үнэ харах = offline POS (192.168.1.254:7000 → API 4030), таслалаар олныг
+    pos_price_local_urls: str = "http://192.168.1.254:4030/graphql"
+    # Үнийн шошгыг шууд хэвлэх принтер (Windows хуваалцсан нэр) — app/services/label_printer
+    label_printer: str = r"\\192.168.1.209\XP-80C Zaal"
+    label_browser: str = ""
     # ── Үнийн шошго (erxes document template) ────────────────────────────
     # Шошгон дээрх бөөний ширхэг/үнэ нь erxes дотор бодогддог тул шошгыг
     # erxes-ийн бэлэн загвараас татна. Утгууд нь худалдагчийн ашигладаг

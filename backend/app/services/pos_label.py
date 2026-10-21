@@ -94,6 +94,18 @@ def _one(p: dict, bulk: dict, stamp: str) -> str:
         date=e(stamp))
 
 
+def label_inner(product: dict, when: datetime | None = None) -> str:
+    """Нэг шошгоны HTML (загвар + receipt CSS) — принтер рүү шууд хэвлэхэд (label_printer)."""
+    if not product or not product.get("_id"):
+        raise LabelError("Бараа олдсонгүй.")
+    try:
+        bulk = bulk_info(product["_id"], product.get("price"))
+    except Exception:  # noqa: BLE001 — бөөний мэдээлэлгүй ч шошго хэвлэгдэнэ
+        bulk = {"ok": False}
+    stamp = (when or datetime.now()).strftime("%Y-%m-%d")
+    return f"<style>{_RECEIPT_CSS}</style>" + _one(product, bulk, stamp)
+
+
 def label_page(product: dict, copies: int = 1, auto_print: bool = True,
                when: datetime | None = None) -> str:
     """Хэвлэхэд бэлэн бүтэн хуудас (өмнөх erxes шошготой ижил харагдац)."""

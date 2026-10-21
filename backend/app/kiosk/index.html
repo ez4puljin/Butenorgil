@@ -195,9 +195,19 @@
       loadBulk(p.code);
       // innerHTML дахин зурагдах бүрд товч шинэ элемент болдог тул энд холбоно.
       panel.querySelector("#prn").addEventListener("click", function () {
-        var n = (panel.querySelector("#pcopies") || {}).value || "1";
-        // Сервер юу ч хэвлэхгүй — шинэ цонх нээгдэж хэвлэгчийн харилцах цонх гарна.
-        window.open("label?q=" + encodeURIComponent(p.code) + "&copies=" + n, "_blank");
+        var btn = this, n = (panel.querySelector("#pcopies") || {}).value || "1";
+        // Заалны XP-80C принтер рүү шууд; амжилтгүй бол хуучнаар хөтчийн хэвлэх цонх.
+        btn.disabled = true; btn.textContent = "Хэвлэж байна…";
+        fetch("label/print?q=" + encodeURIComponent(p.code) + "&copies=" + n, { method: "POST" })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok && j.ok, j: j }; }); })
+          .then(function (x) {
+            if (x.ok) { btn.textContent = "Хэвлэгдлээ ✓"; return; }
+            btn.textContent = "Шошго хэвлэх";
+            if (confirm("Принтер рүү шууд хэвлэж чадсангүй: " + (x.j.error || "") + "\n\nХөтчөөр хэвлэх үү?"))
+              window.open("label?q=" + encodeURIComponent(p.code) + "&copies=" + n, "_blank");
+          })
+          .catch(function () { btn.textContent = "Шошго хэвлэх"; })
+          .then(function () { setTimeout(function () { btn.disabled = false; btn.textContent = "Шошго хэвлэх"; }, 2500); });
       });
       return;
     }

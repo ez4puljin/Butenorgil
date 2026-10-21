@@ -1,8 +1,9 @@
 """Үнэ харах — заалны таблет дээрх барааны үнийн лавлагаа.
 
-    GET /price-check/lookup?q=<баркод | код | нэр>
+    GET  /price-check/lookup?q=<баркод | код | нэр>
+    POST /price-check/label/print {q, copies} — заалны XP-80C принтер рүү ШУУД (app/services/label_printer)
 
-Эх сурвалж: онлайн POS (pos.bto.mn) — app/services/pos_price.
+Эх сурвалж: offline POS (192.168.1.254:7000 → API 4030) — app/services/pos_price.
 
 Эрх: нэвтэрсэн ЛЮБОЙ хэрэглэгч. Заалны таблет дундын бүртгэлээр нэвтэрдэг
 бөгөөд энэ цэс нь үйлчлүүлэгч лангуун дээр аль хэдийн харж байгаа үнийг л
@@ -15,7 +16,9 @@ from fastapi.responses import HTMLResponse
 
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.services import pos_label, pos_price
+from pydantic import BaseModel
+
+from app.services import label_printer, pos_label, pos_price
 
 router = APIRouter(prefix="/price-check", tags=["price-check"])
 
@@ -57,6 +60,23 @@ def label(
     try:
         return HTMLResponse(pos_label.label_page(p, copies, auto_print=not preview))
     except pos_label.LabelError as e:
+        raise HTTPException(502, str(e))
+
+
+class PrintIn(BaseModel):
+    q: str
+    copies: int = 1
+
+
+@router.post("/label/print")
+def label_print(body: PrintIn, _: User = Depends(get_current_user)):
+    """Шошгыг заалны XP-80C (\\192.168.1.209\XP-80C Zaal) принтер рүү шууд хэвлэнэ — харилцах цонхгүй."""
+    p = (pos_price.lookup((body.q or "").strip()) or {}).get("product")
+    if not p:
+        raise HTTPException(404, "Бараа олдсонгүй.")
+    try:
+        return label_printer.print_label(p, body.copies)
+    except (label_printer.PrintError, pos_label.LabelError) as e:
         raise HTTPException(502, str(e))
 
 

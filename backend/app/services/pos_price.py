@@ -1,21 +1,16 @@
-"""Барааны үнэ хайх — заалны таблет, kiosk, тайланд.
+"""Барааны үнэ хайх — заалны таблет, kiosk, шошго, тайланд.
 
-Эх сурвалж нь ОНЛАЙН POS (pos.bto.mn) — түүний API нь erxes gateway-ийн posclient
-(`{ERXES_URL}/graphql`, header `erxes-pos-token: <POS-ийн токен>`). 2026-10-аас
-касс локал POS (192.168.1.254:4030/4031)-оос онлайн руу шилжсэн тул локал API унтарсан.
+Эх сурвалж нь OFFLINE POS (касс 192.168.1.254:7000 «Бүтэн Оргил ХХК» → GraphQL API :4030) —
+хэрэглэгчийн шийдвэр 2026-10-21 (өмнө нь 10-11…10-21 онлайн pos.bto.mn, erxes-pos-token-оор).
+Локал API нэвтрэлтгүй, хайлт ~0.05 сек; схем нь онлайнтай ижил (poscProducts, getPriceInfo).
 
-  · Кассчны нэвтрэлт хэрэггүй — POS-ийн токеноор л бараа/үнэ гарна (токенгүй бол хоосон).
-  · Токеныг erxes-ийн `posList`-оос (ERP-ийн админ нэвтрэлтээр) аваад 1 цаг кэшилнэ;
-    POS_PRICE_TOKENS өгвөл админ нэвтрэлтгүйгээр шууд ашиглана.
-  · Асуух POS-ууд POS_PRICE_POS (анхдагч: Бүтэн Оргил ХХК, Заалны архи) — хоёулаа
-    ижил 12,833 бараатай, үнэ нь 100% ижил (2026-10-11 шалгасан). Хархорин салбарын
-    180 барааны үнэ өөр тул энд ороогүй.
-  · Нэг хайлт ~0.4 сек (локал 0.1 сек байсан) — POS-уудыг зэрэг асууж, хариуг 60 сек
-    кэшилнэ (нэг барааг дахин уншуулахад агшин зуур).
+  · Асуух POS-ууд POS_PRICE_LOCAL_URLS (таслалаар, анхдагч http://192.168.1.254:4030/graphql) —
+    дарааллаар нь ЯГ таарсныг эрхэмлэнэ. Нэрийг currentConfig-оос авч 1 цаг кэшилнэ.
+  · Хайлтын хариуг 60 сек кэшилнэ (нэг барааг дахин уншуулахад агшин зуур).
 
 `unitPrice` = лангууны үнэ (2026-08-24-нд 38 бодит борлуулалтын мөрөөр баталсан:
 34 яг таарсан, зөрсөн 4 нь кассын хямдралтай). Барааны `_id` нь erxes-ийн барааны
-`_id`-тай ижил тул шошго/бөөний үнэ (pos_label) шууд ажиллана.
+`_id`-тай ижил тул шошго/бөөний үнэ (pos_label) шууд ажиллана. Зураг — erxes gateway-ийн read-file.
 """
 from __future__ import annotations
 
@@ -53,69 +48,51 @@ def _norm(s) -> str:
     return str(s or "").strip().lower()
 
 
-def _endpoint() -> str:
-    base = (settings.erxes_url or "").rstrip("/")
-    return base if base.endswith("/graphql") else f"{base}/graphql"
+def _urls() -> list[str]:
+    return [u.strip() for u in (settings.pos_price_local_urls or "").split(",") if u.strip()]
 
 
 def _site() -> str:
-    """Хэрэглэгчид харуулах эх сурвалж — онлайн POS-ийн хаяг."""
-    return "pos.bto.mn"
+    """Хэрэглэгчид харуулах эх сурвалж — offline POS-ийн хаяг."""
+    return "Offline POS 192.168.1.254:7000"
 
 
-# ── POS-ууд (нэр, токен) ──────────────────────────────────────────────────────
+# ── POS-ууд (нэр, API url) ────────────────────────────────────────────────────
 _TOKENS: dict = {"at": 0.0, "list": [], "error": ""}
 _TOKENS_LOCK = threading.Lock()
 
 
-def _explicit_tokens() -> list[tuple[str, str]]:
-    """POS_PRICE_TOKENS="нэр=токен,нэр=токен" (эсвэл зөвхөн токенууд)."""
-    out = []
-    for i, raw in enumerate((settings.pos_price_tokens or "").split(",")):
-        raw = raw.strip()
-        if not raw:
-            continue
-        name, _, tok = raw.rpartition("=")
-        out.append(((name or f"POS {i + 1}").strip(), tok.strip()))
-    return [x for x in out if x[1]]
-
-
 def targets(force: bool = False) -> list[tuple[str, str]]:
-    """Үнэ асуух POS-ууд (нэр, токен) — POS_PRICE_POS-ийн дарааллаар."""
-    explicit = _explicit_tokens()
-    if explicit:
-        return explicit
+    """Үнэ асуух offline POS-ууд (нэр, API url) — POS_PRICE_LOCAL_URLS-ийн дарааллаар."""
     if not force and _TOKENS["list"] and time.monotonic() - _TOKENS["at"] < TOKENS_TTL:
         return _TOKENS["list"]
     with _TOKENS_LOCK:
         if not force and _TOKENS["list"] and time.monotonic() - _TOKENS["at"] < TOKENS_TTL:
             return _TOKENS["list"]
-        from app.services.erxes_client import get_client
-        try:
-            pl = get_client().pos_list()
-        except Exception as e:  # noqa: BLE001 — өмнөх токенууд байвал түүгээр үргэлжилнэ
-            _TOKENS["error"] = f"erxes POS жагсаалт: {str(e)[:100]}"
-            if _TOKENS["list"]:
+        out, errs = [], []
+        for url in _urls():
+            try:
+                name = ((_gql(url, "{ currentConfig { name } }", {}, timeout=(3, 10)).get("currentConfig") or {})
+                        .get("name") or url)
+                out.append((name, url))
+            except Exception as e:  # noqa: BLE001
+                errs.append(f"{url}: {str(e)[:80]}")
+        if not out:
+            _TOKENS["error"] = "Offline POS холбогдсонгүй — " + ("; ".join(errs) or "POS_PRICE_LOCAL_URLS хоосон")
+            if _TOKENS["list"]:                     # өмнө нь олдсон бол түүгээр үргэлжилнэ
                 return _TOKENS["list"]
             raise PriceError(_TOKENS["error"])
-        by_name = {(p.get("name") or "").strip(): p.get("token") for p in pl if p.get("token")}
-        names = [n.strip() for n in (settings.pos_price_pos or "").split(",") if n.strip()]
-        out = [(n, by_name[n]) for n in names if by_name.get(n)]
-        if not out:
-            raise PriceError(f"POS олдсонгүй ({', '.join(names) or 'POS_PRICE_POS хоосон'}). "
-                             f"erxes дээр: {', '.join(by_name) or '—'}")
         _TOKENS.update(at=time.monotonic(), list=out, error="")
         return out
 
 
-def _gql(token: str, query: str, variables: dict, timeout=TIMEOUT) -> dict:
-    r = requests.post(_endpoint(), json={"query": query, "variables": variables},
-                      headers={"Content-Type": "application/json", "erxes-pos-token": token},
-                      timeout=timeout, verify=False)
+def _gql(url: str, query: str, variables: dict, timeout=TIMEOUT) -> dict:
+    r = requests.post(url, json={"query": query, "variables": variables},
+                      headers={"Content-Type": "application/json"}, timeout=timeout)
     try:
         j = r.json()
     except ValueError:
-        raise PriceError(f"онлайн POS хариу буруу ({r.status_code})")
+        raise PriceError(f"offline POS хариу буруу ({r.status_code})")
     if j.get("errors"):
         raise PriceError(str(j["errors"][0].get("message"))[:120])
     return j.get("data") or {}
@@ -230,7 +207,7 @@ _PI_Q = "query($id:String!){ getPriceInfo(productId:$id) }"
 
 
 def price_info(product_id: str) -> dict | None:
-    """Бөөний үнэ — онлайн POS-ийн pricing (касс яг үүгээр бодно).
+    """Бөөний үнэ — offline POS-ийн pricing (касс яг үүгээр бодно).
 
     `getPriceInfo` нь JSON текст буцаана: {"<id>": {"value": 2, "price": 29130}} — 2 ба
     түүнээс дээш ширхэгт нэгж үнэ 29,130₮. Нэг удаад зөвхөн нэг бараа хүлээн авна."""
@@ -253,14 +230,14 @@ def price_info(product_id: str) -> dict | None:
 
 
 def enabled() -> bool:
-    return bool(settings.erxes_url and (_explicit_tokens() or (settings.erxes_email and settings.erxes_password)))
+    return bool(_urls())
 
 
 def status() -> dict:
-    """UI-д: онлайн POS-той холбогдож байгаа эсэх, аль POS-уудаас асууж байгаа."""
+    """UI-д: offline POS-той холбогдож байгаа эсэх, аль POS-уудаас асууж байгаа."""
     if not enabled():
         return {"enabled": False, "site": _site(), "pos": [], "pos_count": 0,
-                "error": "erxes тохиргоо дутуу (ERXES_URL, ERXES_EMAIL, ERXES_PASSWORD эсвэл POS_PRICE_TOKENS)."}
+                "error": "POS_PRICE_LOCAL_URLS тохируулаагүй (offline POS-ийн API)."}
     try:
         names = [n for n, _ in targets()]
         return {"enabled": True, "site": _site(), "pos": names, "pos_count": len(names), "error": ""}
@@ -289,7 +266,7 @@ def _all_products(token: str) -> list[dict]:
 
 
 def price_map(force: bool = False) -> tuple[dict[str, float], dict[str, float], str]:
-    """(код → зарах үнэ, баркод → зарах үнэ, алдаа) — онлайн POS-уудаас.
+    """(код → зарах үнэ, баркод → зарах үнэ, алдаа) — offline POS-уудаас.
 
     POS-ийн бараа Эрхэттэй синк хийгддэг тул POS-ийн ``code`` = мастерын item_code.
     Хэд хэдэн POS байвал эхнийхийн үнэ давуу (дараагийнхаас зөвхөн дутууг нөхнө)."""
