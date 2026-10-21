@@ -58,30 +58,36 @@ interface HkData {
   changes?: { index: number; old: number; new: number }[]; overflow?: number[]; known?: boolean;
 }
 interface HkSheet { hotkey: string; rows: number; cols: number; page_w: number; page_h: number; left: number; top: number;
-  btn_w: number; btn_h: number; hgap: number; vgap: number; pages: number; buttons: HkButton[] }
+  btn_w: number; btn_h: number; hgap: number; vgap: number; pages: number; buttons: HkButton[]; border?: number[][] }
 const escHtml = (t: string) => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
-/** Жингийн гарны доор тавих хуудас — LINK66-тэй ижил хэмжээ (мм), A4 хэвтээ, хуудас бүр тусдаа. */
+/** Жингийн гарны доор тавих хуудас — LINK66-тэй ижил хэмжээ (мм), Letter цаасан дээр НЭГ хуудас (эхний
+ *  112 товч), хайчлах зураастай. Хэвлэхдээ «Actual size / 100%» — масштаблавал гарын нүхэнд таарахгүй. */
 function hotkeyHtml(sh: HkSheet): string {
-  const pages = Array.from({ length: sh.pages }, (_, pg) => {
-    const cells: string[] = [];
-    for (let r = 0; r < sh.rows; r++) for (let c = 0; c < sh.cols; c++) {
-      const b = sh.buttons.find(x => x.page === pg && x.row === r && x.col === c);
-      const x = sh.left + c * (sh.btn_w + sh.hgap), y = sh.top + r * (sh.btn_h + sh.vgap);
-      cells.push(`<div class="k" style="left:${x}mm;top:${y}mm;width:${sh.btn_w}mm;height:${sh.btn_h}mm">${
-        b ? `<div class="c">${b.plu}</div><div class="n">${escHtml(b.name)}</div>` : ""}</div>`);
-    }
-    return `<section class="p" style="width:${sh.page_w}mm;height:${sh.page_h}mm">${cells.join("")}</section>`;
-  });
+  const cells: string[] = [];
+  for (let r = 0; r < sh.rows; r++) for (let c = 0; c < sh.cols; c++) {
+    const b = sh.buttons.find(x => x.page === 0 && x.row === r && x.col === c);
+    const x = sh.left + c * (sh.btn_w + sh.hgap), y = sh.top + r * (sh.btn_h + sh.vgap);
+    cells.push(`<div class="k" style="left:${x}mm;top:${y}mm;width:${sh.btn_w}mm;height:${sh.btn_h}mm">${
+      b ? `<div class="c">${b.plu}</div><div class="n">${escHtml(b.name)}</div>` : ""}</div>`);
+  }
+  const bd = sh.border?.length ? sh.border : [[0, 0], [sh.page_w, 0], [sh.page_w, sh.page_h], [0, sh.page_h], [0, 0]];
+  const cut = `<svg class="cut" width="${sh.page_w}mm" height="${sh.page_h}mm" viewBox="0 0 ${sh.page_w} ${sh.page_h}">
+    <polyline points="${bd.map(p => p.join(",")).join(" ")}" fill="none" stroke="#000" stroke-width="0.3"/></svg>`;
+  const gridBottom = sh.top + sh.rows * (sh.btn_h + sh.vgap);
+  const stamp = `${escHtml(sh.hotkey)} · ${new Date().toLocaleString("sv-SE", { timeZone: "Asia/Ulaanbaatar" }).slice(0, 16)}`;
   return `<!doctype html><html><head><meta charset="utf-8"><title>Hotkey ${escHtml(sh.hotkey)}</title><style>
-    @page { size: A4 landscape; margin: 8mm; }
-    body { margin: 0; font-family: Arial, "Segoe UI", sans-serif; }
-    .p { position: relative; page-break-after: always; break-after: page; }
-    .p:last-child { page-break-after: auto; break-after: auto; }
-    .k { position: absolute; box-sizing: border-box; border: 0.2mm solid #000; padding: 0.5mm; overflow: hidden; text-align: center; }
-    .c { font-size: 2.6mm; font-weight: bold; line-height: 1.1; }
-    .n { font-size: 2.45mm; line-height: 1.1; word-break: break-word; max-height: 9.6mm; overflow: hidden; }
-  </style></head><body>${pages.join("")}<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`;
+    @page { size: letter landscape; margin: 0; }   /* LINK66-тэй адил Letter ХЭВТЭЭ — босоо (216мм) дээр 225мм хуудас багтахгүй тул хэвлэгч ~7% жижигрүүлдэг */
+    html, body { margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .p { position: relative; width: ${sh.page_w}mm; height: ${sh.page_h}mm; margin: 5mm 0 0 5mm; }
+    .cut { position: absolute; left: 0; top: 0; overflow: visible; }
+    .k { position: absolute; box-sizing: border-box; border: 0.25mm solid #000; padding: 0.4mm 0.3mm; overflow: hidden; text-align: center; }
+    .c { font-size: 3.5mm; line-height: 1.05; }
+    .n { font-size: 3.1mm; line-height: 1.08; word-break: break-word; max-height: 6.8mm; overflow: hidden; }
+    .f { position: absolute; left: 0; width: ${sh.page_w}mm; text-align: center; font-size: 3.2mm; }
+  </style></head><body><section class="p">${cut}${cells.join("")}<div class="f" style="top:${gridBottom + 2}mm">${stamp}</div></section>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`;
 }
 
 const EMPTY_SCALE = { id: 0, name: "", branch: "", ip: "192.168.1.", label_index: 0, enabled: true };
@@ -397,7 +403,7 @@ export default function AclasScalePage() {
           <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3">
               <div><div className="text-[15px] font-bold">Hotkey — {hk.scale.name}</div>
-                <div className="text-[11.5px] text-gray-500">Жингийн өөрийн hotkey (сүүлд уншсан {fmtDT(hk.cur.hotkeys_at)}) · зөвхөн жин дээр байгаа бараа · нэр нь erxes-ийн бүртгэлээс. A4 хэвтээ, 100% масштабаар хэвлэнэ.</div></div>
+                <div className="text-[11.5px] text-gray-500">Жингийн өөрийн hotkey (сүүлд уншсан {fmtDT(hk.cur.hotkeys_at)}) · зөвхөн жин дээр байгаа бараа · нэр нь erxes-ийн бүртгэлээс. Letter хэвтээ, нэг хуудас, хайчлах зураастай — хэвлэхдээ масштаб 100% (Actual size), «Fit to page» биш.</div></div>
               <button onClick={() => setHk(null)} className="ml-auto text-gray-400"><X size={16}/></button>
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-auto px-4 py-3">

@@ -216,7 +216,9 @@ def local_names(url: str) -> dict[str, str]:
 # settings «hotkeys:{scale_id}»-д хадгална. Хэмжээ (мм) — LINK66 KeyboardTbl (LS2-112×2), эс бөгөөс анхдагч.
 LINK66_DB = r"C:\Program Files (x86)\Aclas LINK66\Database\Default.db"
 KB_DEFAULT = {"rows": 8, "cols": 14, "page_w": 225.0, "page_h": 140.0, "left": 11.0, "top": 8.0,
-              "btn_w": 15.0769, "btn_h": 14.0, "hgap": 0.0, "vgap": 0.0}
+              "btn_w": 15.0769, "btn_h": 14.0, "hgap": 0.0, "vgap": 0.0,
+              # хайчлах хүрээ (мм) — LS2-112 гарын нүхний хэлбэр (LINK66 KeyBoardBorder)
+              "border": [[2.8, 0], [224, 0], [224, 129], [150, 131], [0, 125], [2.8, 0]]}
 HOTKEY_COUNT = 224
 
 
@@ -249,12 +251,22 @@ def _keyboard(db) -> dict:
         try:
             kid = (c.execute("select KeyboardID from LsHotkeytbl limit 1").fetchone() or [1])[0]
             r = c.execute("select Row, Col, PageWidth, PageHeight, BorderLeft, BorderTop, ButtonWidth, ButtonHeight, "
-                          "HorizontalSpace, VerticalSpace from KeyboardTbl where ID=?", (kid,)).fetchone()
+                          "HorizontalSpace, VerticalSpace, KeyBoardBorder from KeyboardTbl where ID=?", (kid,)).fetchone()
         finally:
             c.close()
         if r:
-            return dict(zip(("rows", "cols", "page_w", "page_h", "left", "top", "btn_w", "btn_h", "hgap", "vgap"),
-                            [x or 0 for x in r]))
+            kb = dict(zip(("rows", "cols", "page_w", "page_h", "left", "top", "btn_w", "btn_h", "hgap", "vgap"),
+                          [x or 0 for x in r[:10]]))
+            pts = []
+            for pair in str(r[10] or "").split("\t"):
+                xy = pair.split(",")
+                if len(xy) == 2:
+                    try:
+                        pts.append([float(xy[0]), float(xy[1])])
+                    except ValueError:
+                        pass
+            kb["border"] = pts if len(pts) >= 3 else KB_DEFAULT["border"]
+            return kb
     except Exception:
         pass
     return dict(KB_DEFAULT)
