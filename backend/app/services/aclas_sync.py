@@ -13,8 +13,9 @@ PLU файл (2026-10-21-нд жингээс татаж баталсан): tab, 
 
 Sync-ийн дүрэм:
   • Бид зөвхөн ӨӨРСДИЙН оруулсан (managed) PLU-г удирдана — жин дээр гараар оруулсан бараа хэвээр.
-  • Удирдах талбар: Name1, Price, ItemCode, UnitID. ValidDate (хадгалах хоног) — жин дээр байгаа утгыг
-    хадгална (erxes-д энэ мэдээлэл алга), шинэ бараанд тохиргооны анхдагч.
+  • Удирдах талбар: Name1, Price, ItemCode, UnitID, ValidDate. ValidDate (хадгалах хоног — шошго хэвлэснээс
+    хойш) нь бүх sync-ийн бараанд тохиргооны «valid_days» (2026-10-21 хэрэглэгч: 90 хоног); 0 бол жин дээрх
+    утгыг хөндөхгүй (шинэ бараанд 0).
   • Илгээсний дараа жингээс буцааж татаж харьцуулна; зөвхөн баталгаажсаны дараа төлөв (state) шинэчилнэ.
   • ⚠ PLU upload нь upsert эсвэл бүрэн солих эсэх батлагдаагүй — segment-ээс гарсан бараа илгээсний дараа
     жин дээр үлдвэл stale_ids-д тэмдэглэж дахин оролдохгүй.
@@ -34,10 +35,10 @@ DEFAULT_HEADER = ["Name1", "ID", "Label1ID", "DiscountID", "DepartmentID", "Barc
 NEW_ROW_DEFAULTS = {"Label1ID": b"0", "DiscountID": b"0", "DepartmentID": b"1", "BarcodeType1": b"54",
                     "UnitID": b"4", "ValidDate": b"0", "Message1": b"0", "Message2": b"0", "PackageWeight": b"0",
                     "PackageType": b"0", "TareValue": b"0"}
-MANAGED = ("Name1", "Price", "ItemCode", "UnitID")
+MANAGED = ("Name1", "Price", "ItemCode", "UnitID", "ValidDate")
 PLU_AUTO_START = 800001                     # тоон биш кодтой бараанд оноох PLU дугаар
 SETTINGS_DEFAULT = {"segment_ids": [], "interval_min": 15, "auto_enabled": False, "dry_run": True,
-                    "label_id": 0, "default_valid_days": 0, "name_max": 26,
+                    "label_id": 0, "default_valid_days": 90, "name_max": 26,
                     "price_pos_url": "http://192.168.1.254:4030/graphql"}
 JOB_TIMEOUT_MIN = 10
 MAX_ATTEMPTS = 3
@@ -291,7 +292,9 @@ def make_plan(db, scale, settings: dict | None = None, desired: tuple | None = N
         row = dict(old) if old else {h: NEW_ROW_DEFAULTS.get(h, b"0") for h in header}
         if not old:
             row["Label1ID"] = str(int(settings.get("label_id") or 0)).encode()
-            row["ValidDate"] = str(int(settings.get("default_valid_days") or 0)).encode()
+        vd = int(settings.get("default_valid_days") or 0)
+        if vd or not old:
+            row["ValidDate"] = str(vd).encode()           # бүх бараанд ижил (0 бол жин дээрхийг хадгална)
         row.update(w["row"])
         final[plu] = row
         diffs = [f for f in MANAGED if old is not None and old.get(f, b"") != row.get(f, b"")]
@@ -301,7 +304,8 @@ def make_plan(db, scale, settings: dict | None = None, desired: tuple | None = N
         same += st == "same"
         p = w["product"]
         items.append({"plu": plu, "code": p.get("code"), "name": p.get("name"), "name_scale": row["Name1"].decode("cp1251"),
-                      "price": int(row["Price"]), "erxes_price": p.get("erxes_price"), "uom": p.get("uom"),
+                      "price": int(row["Price"]), "valid": int(row.get("ValidDate", b"0") or 0),
+                      "erxes_price": p.get("erxes_price"), "uom": p.get("uom"),
                       "status": st, "warnings": w["warnings"],
                       "before": row_view(old) if old else None, "diffs": diffs,
                       "manual_override": old is not None and plu not in managed_prev})

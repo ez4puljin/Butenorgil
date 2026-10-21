@@ -28,7 +28,7 @@ interface Overview {
 }
 interface Segment { _id: string; name: string; count: number }
 interface PlanItem {
-  plu: number; code: string; name: string; name_scale: string; price: number; erxes_price: number | null; uom: string;
+  plu: number; code: string; name: string; name_scale: string; price: number; valid: number; erxes_price: number | null; uom: string;
   status: "add" | "change" | "same"; warnings: string[]; diffs: string[]; manual_override: boolean;
   before: { name: string; price: string; code: string; valid: string } | null;
 }
@@ -176,7 +176,7 @@ export default function AclasScalePage() {
                 <input type="number" min={5} value={st.interval_min} onChange={e => setSt({ ...st, interval_min: Number(e.target.value) })}
                   className="mt-0.5 block w-full rounded-lg border border-gray-200 px-2 py-1.5 text-[12px] font-normal"/>
               </label>
-              <label>Шинэ барааны хадгалах хоног (0 = хэвлэхгүй)
+              <label>Хадгалах хоног — шошго хэвлэснээс хойш, бүх бараанд (0 = жин дээрхийг хөндөхгүй)
                 <input type="number" min={0} value={st.default_valid_days} onChange={e => setSt({ ...st, default_valid_days: Number(e.target.value) })}
                   className="mt-0.5 block w-full rounded-lg border border-gray-200 px-2 py-1.5 text-[12px] font-normal"/>
               </label>
@@ -311,7 +311,7 @@ export default function AclasScalePage() {
                 <table className="w-full text-[11.5px]">
                   <thead className="sticky top-0 bg-white text-left text-[10px] font-bold uppercase text-gray-500"><tr>
                     <th className="px-2 py-1">Төлөв</th><th className="px-2 py-1">PLU</th><th className="px-2 py-1">Код</th><th className="px-2 py-1">Erxes нэр</th>
-                    <th className="px-2 py-1">Жин дээр одоо</th><th className="px-2 py-1">Жин рүү очих нэр</th><th className="px-2 py-1 text-right">Үнэ (₮/кг)</th><th className="px-2 py-1">Анхааруулга</th>
+                    <th className="px-2 py-1">Жин дээр одоо</th><th className="px-2 py-1">Жин рүү очих нэр</th><th className="px-2 py-1 text-right">Үнэ (₮/кг)</th><th className="px-2 py-1 text-right">Хоног</th><th className="px-2 py-1">Анхааруулга</th>
                   </tr></thead>
                   <tbody>{items.map(i => (
                     <tr key={i.plu} className="border-t border-gray-100">
@@ -322,6 +322,8 @@ export default function AclasScalePage() {
                       <td className="px-2 py-1 font-medium">{i.name_scale}</td>
                       <td className="whitespace-nowrap px-2 py-1 text-right font-mono" title={i.erxes_price != null ? `erxes-ийн үнэ ${num(i.erxes_price)}` : ""}>
                         {i.before && i.before.price !== String(i.price) ? <><span className="text-gray-400 line-through">{num(i.before.price)}</span> → </> : null}<b>{num(i.price)}</b></td>
+                      <td className="whitespace-nowrap px-2 py-1 text-right font-mono">
+                        {i.before && i.before.valid !== String(i.valid) ? <><span className="text-gray-400 line-through">{i.before.valid}</span> → </> : null}<b>{i.valid}</b></td>
                       <td className="px-2 py-1 text-[10.5px] text-amber-700">{i.warnings.join("; ")}{i.manual_override ? `${i.warnings.length ? "; " : ""}гараар оруулсан PLU-г дарна` : ""}</td>
                     </tr>))}</tbody>
                 </table>
