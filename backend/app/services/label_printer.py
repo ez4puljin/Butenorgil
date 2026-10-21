@@ -1,6 +1,6 @@
 """Үнийн шошгыг заалны XP-80C (80мм дулааны) принтер рүү ШУУД хэвлэх.
 
-Принтер: 192.168.1.209 (DESKTOP-9IMSI4A) компьютер Windows-оор «XP-80C Zaal» нэрээр хуваалцсан
+Принтер: 192.168.1.106 (DESKTOP-9IMSI4A) компьютер Windows-оор «XP-80C Zaal» нэрээр хуваалцсан
 (9100 порт хаалттай, 445/SMB нээлттэй — 2026-10-21 шалгасан). Хуваалцсан принтер рүү RAW байт бичихэд
 (`copy /b`-тэй адил) драйвер хөндөхгүй шууд принтерт очно.
 
@@ -32,7 +32,7 @@ class PrintError(RuntimeError):
 
 
 def printer_path() -> str:
-    return (getattr(settings, "label_printer", "") or r"\\192.168.1.209\XP-80C Zaal").strip()
+    return (getattr(settings, "label_printer", "") or r"\\192.168.1.106\XP-80C Zaal").strip()
 
 
 def _browser() -> str:
@@ -97,7 +97,7 @@ def escpos(img, cut: bool = True) -> bytes:
 
 def send(data: bytes, path: str | None = None) -> None:
     """RAW байт: (1) SMB — хуваалцсан принтер руу файл шиг (`copy /b`), (2) Windows spooler
-    (OpenPrinter/WritePrinter). 2026-10-21: 192.168.1.209 хоёуланг нь хаасан — SMB «Access is denied»
+    (OpenPrinter/WritePrinter). 2026-10-21: 192.168.1.106 хоёуланг нь хаасан — SMB «Access is denied»
     (энэ PC-ийн хэрэглэгчийг танихгүй), spooler 0x11b (PrintNightmare RPC хамгаалалт). Тэр PC-ийн
     хэрэглэгчийн нэр/нууц үгийг энэ серверийн Credential Manager-т хадгалбал SMB зам ажиллана."""
     p = path or printer_path()
@@ -136,7 +136,7 @@ def send(data: bytes, path: str | None = None) -> None:
         return
     errs.append(f"spooler: {box.get('err', 'хугацаа хэтэрсэн')}")
     raise PrintError(f"Принтер ({p}) рүү хэвлэх эрхгүй байна ({'; '.join(errs)}). "
-                     "192.168.1.209 компьютерийн хэрэглэгчийн нэвтрэлтийг серверт хадгална уу.")
+                     "192.168.1.106 компьютерийн хэрэглэгчийн нэвтрэлтийг серверт хадгална уу.")
 
 
 def print_label(product: dict, copies: int = 1) -> dict:

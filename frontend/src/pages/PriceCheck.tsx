@@ -102,7 +102,7 @@ export default function PriceCheckPage() {
     }
   }, []);
 
-  // Заалны XP-80C (\\192.168.1.209\XP-80C Zaal) принтер рүү ШУУД — сервер зураад RAW илгээнэ.
+  // Заалны XP-80C (\\192.168.1.106\XP-80C Zaal) принтер рүү ШУУД — сервер зураад RAW илгээнэ.
   async function printLabel(code: string) {
     setPrinting(true); setPrintErr(""); setPrinted(false);
     try {

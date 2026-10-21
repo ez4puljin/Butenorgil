@@ -70,7 +70,7 @@ class PrintIn(BaseModel):
 
 @router.post("/label/print")
 def label_print(body: PrintIn, _: User = Depends(get_current_user)):
-    """Шошгыг заалны XP-80C (\\192.168.1.209\XP-80C Zaal) принтер рүү шууд хэвлэнэ — харилцах цонхгүй."""
+    """Шошгыг заалны XP-80C (\\192.168.1.106\XP-80C Zaal) принтер рүү шууд хэвлэнэ — харилцах цонхгүй."""
     p = (pos_price.lookup((body.q or "").strip()) or {}).get("product")
     if not p:
         raise HTTPException(404, "Бараа олдсонгүй.")
