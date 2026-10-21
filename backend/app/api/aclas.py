@@ -226,14 +226,37 @@ def restore(bid: int, request: Request, db: Session = Depends(get_db), u: User =
     return {"job_id": j.id}
 
 
-@router.get("/hotkeys")
-def hotkeys(scale_id: int = 0, db: Session = Depends(get_db), u: User = Depends(ADMIN)):
-    """Hotkey хуудас: LINK66-ийн товчны байрлал + erxes (offline POS) нэр — хэвлэхэд."""
-    s = db.get(AclasScale, scale_id) if scale_id else db.query(AclasScale).order_by(AclasScale.id).first()
+@router.get("/scales/{sid}/hotkeys")
+def hotkeys(sid: int, db: Session = Depends(get_db), u: User = Depends(ADMIN)):
+    """Хэвлэх hotkey хуудас: жингийн одоогийн hotkey × жин дээр байгаа PLU, нэр нь erxes-ийн бүртгэлээс."""
     try:
-        return svc.hotkey_sheet(db, s)
+        return svc.hotkey_sheet(db, _scale(db, sid))
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(400, str(e))
+
+
+@router.get("/scales/{sid}/hotkey-plan")
+def hotkey_plan(sid: int, db: Session = Depends(get_db), u: User = Depends(ADMIN)):
+    """Hotkey-г жин дээр байгаа бараагаар шинэчлэх санал (жин рүү илгээхгүй)."""
+    p = svc.hotkey_plan(db, _scale(db, sid))
+    p.pop("file_b64", None)
+    return p
+
+
+@router.post("/scales/{sid}/hotkey-apply")
+def hotkey_apply(sid: int, request: Request, db: Session = Depends(get_db), u: User = Depends(ADMIN)):
+    s = _scale(db, sid)
+    p = svc.hotkey_plan(db, s)
+    if not p["known"]:
+        raise HTTPException(400, "Жингийн hotkey хараахан татагдаагүй — эхлээд «Нөөцлөх».")
+    if not p["changes"]:
+        raise HTTPException(400, "Hotkey аль хэдийн жин дээрх бараатай таарч байна.")
+    j, _ = svc.enqueue(db, s, "hotkey", {"hotkey_b64": p["file_b64"]}, by=u.username)
+    audit(db, request, u, action="aclas_hotkey", entity_type="aclas",
+          extra={"scale": s.name, "changes": len(p["changes"])}, autocommit=True)
+    return {"job_id": j.id, "changes": len(p["changes"])}
 
 
 @router.get("/jobs")

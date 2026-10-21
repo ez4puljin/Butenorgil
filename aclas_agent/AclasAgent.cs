@@ -37,7 +37,7 @@ static class AclasAgent
     const string SdkDir = @"C:\Program Files (x86)\Aclas LINK66\SDK";
     const uint Port = 5001, Protocol = 0;
     const uint ToScale = 0x00, FromScale = 0x01, ProcClear = 0x03;   // 3 = БҮХ PLU-г цэвэрлэнэ (файл үл харгалзана)
-    const uint DtPlu = 0x0000, DtLabelFormat = 0x0020, DtLabelMap = 0x0021;
+    const uint DtPlu = 0x0000, DtHotkey = 0x0003, DtLabelFormat = 0x0020, DtLabelMap = 0x0021;   // 0x0003 = hotkey (ButtonIndex→PLU, 224 товч; 2026-10-21 туршсан)
     const int TaskTimeoutMs = 120000;
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -245,6 +245,13 @@ static class AclasAgent
         public ScaleException(string m, uint c) : base(m) { Code = c; }
     }
 
+    // Жингийн hotkey (товч → PLU) — хэвлэх хуудсанд; татаж чадаагүй ч даалгаврыг унагаахгүй
+    static void TryHotkey(string ip, Dictionary<string, object> res)
+    {
+        try { res["hotkey_b64"] = B64(Download(ip, 0, DtHotkey, "hotkey.txt")); }
+        catch (ScaleException e) { Log("  hotkey уншигдсангүй: " + e.Message); }
+    }
+
     static string B64(byte[] b) { return Convert.ToBase64String(b ?? new byte[0]); }
     static byte[] Un64(object s) { return s == null ? new byte[0] : Convert.FromBase64String((string)s); }
 
@@ -270,6 +277,7 @@ static class AclasAgent
             if (kind == "backup")
             {
                 res["plu_b64"] = B64(Download(ip, 0, DtPlu, "backup_plu.txt"));
+                TryHotkey(ip, res);
                 try
                 {
                     res["format_b64"] = B64(Download(ip, lbl, DtLabelFormat, "backup_format.hex"));
@@ -304,6 +312,7 @@ static class AclasAgent
                 else Upload(ip, 0, DtPlu, Un64(r["upload_b64"]), "sync_upload.txt");
                 Log("  илгээлээ, буцааж шалгаж байна");
                 res["verify_b64"] = B64(Download(ip, 0, DtPlu, "sync_verify.txt"));
+                TryHotkey(ip, res);
             }
             else if (kind == "restore")
             {
@@ -315,6 +324,12 @@ static class AclasAgent
                     Upload(ip, li, DtLabelMap, Un64(payload["map_b64"]), "restore_map.hex");
                 }
                 res["verify_b64"] = B64(Download(ip, 0, DtPlu, "restore_verify.txt"));
+            }
+            else if (kind == "hotkey")
+            {
+                Upload(ip, 0, DtHotkey, Un64(payload["hotkey_b64"]), "hotkey_upload.txt");
+                Log("  hotkey илгээлээ, буцааж шалгаж байна");
+                res["hotkey_b64"] = B64(Download(ip, 0, DtHotkey, "hotkey_verify.txt"));
             }
             else if (kind == "label")
             {

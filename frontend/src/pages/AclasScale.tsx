@@ -51,8 +51,12 @@ const fmtDT = (s?: string | null) => {
 const num = (n: number | string | null | undefined) => (n == null || n === "" ? "—" : Number(n).toLocaleString("en-US"));
 
 // ── Hotkey хуудас: LINK66-ийн товчны байрлал (мм) + erxes-ийн барааны нэр ─────────
-interface HkButton { index: number; page: number; row: number; col: number; plu: number; name: string;
-  link66_name: string; from_erxes: boolean; on_scale: boolean | null }
+interface HkButton { index: number; page: number; row: number; col: number; plu: number; code: string; name: string;
+  from_erxes: boolean }
+interface HkData {
+  sheets: HkSheet[]; dead?: { index: number; plu: number }[]; hotkeys_at?: string | null; scale_items?: number;
+  changes?: { index: number; old: number; new: number }[]; overflow?: number[]; known?: boolean;
+}
 interface HkSheet { hotkey: string; rows: number; cols: number; page_w: number; page_h: number; left: number; top: number;
   btn_w: number; btn_h: number; hgap: number; vgap: number; pages: number; buttons: HkButton[] }
 const escHtml = (t: string) => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
@@ -93,7 +97,22 @@ export default function AclasScalePage() {
   const [plan, setPlan] = useState<{ scale: ScaleRow; plan: Plan | null; loading: boolean } | null>(null);
   const [planFilter, setPlanFilter] = useState<"changed" | "all">("changed");
   const [jobDetail, setJobDetail] = useState<any>(null);
-  const [hk, setHk] = useState<{ sheets: HkSheet[] } | null>(null);
+  const [hk, setHk] = useState<{ scale: ScaleRow; cur: HkData; plan: HkData | null } | null>(null);
+  async function openHotkeys(sc: ScaleRow) {
+    try { setHk({ scale: sc, cur: (await api.get(`/aclas/scales/${sc.id}/hotkeys`, { timeout: 60000 })).data, plan: null }); }
+    catch (e) { fail(e, "Hotkey уншиж чадсангүй"); }
+  }
+  async function planHotkeys() {
+    if (!hk) return;
+    try { const r = await api.get(`/aclas/scales/${hk.scale.id}/hotkey-plan`, { timeout: 60000 }); setHk({ ...hk, plan: r.data }); }
+    catch (e) { fail(e, "Hotkey санал гаргаж чадсангүй"); }
+  }
+  async function applyHotkeys() {
+    if (!hk?.plan) return;
+    if (!confirm(`Жингийн ${hk.plan.changes?.length ?? 0} товчийг өөрчлөх үү? Жин дээр байхгүй бараатай товч чөлөөлөгдөж, товчгүй бараа хоосон товчнуудад орно.`)) return;
+    try { const r = await api.post(`/aclas/scales/${hk.scale.id}/hotkey-apply`); flash(`Hotkey даалгавар #${r.data.job_id} — агент илгээнэ`); setHk(null); load(); }
+    catch (e) { fail(e, "Hotkey илгээж чадсангүй"); }
+  }
   const timer = useRef<number | undefined>(undefined);
 
   const load = () => api.get("/aclas/overview").then(r => {
@@ -158,10 +177,6 @@ export default function AclasScalePage() {
               {ov.agent.online ? <Wifi size={12}/> : <WifiOff size={12}/>}Агент {ov.agent.online ? "холбогдсон" : "холбогдоогүй"}
             </span>
           )}
-          <button onClick={() => api.get("/aclas/hotkeys", { timeout: 60000 }).then(r => setHk(r.data)).catch(e => fail(e, "Hotkey уншиж чадсангүй"))}
-            className="flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-gray-600 hover:bg-gray-50">
-            <Printer size={13}/>Hotkey хуудас
-          </button>
           <button onClick={newToken} className="flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-gray-600 hover:bg-gray-50">
             <KeyRound size={13}/>Агентын token
           </button>
@@ -272,6 +287,7 @@ export default function AclasScalePage() {
               <div className="ml-auto flex flex-wrap gap-1.5">
                 <button onClick={() => act(s, "ping")} className="flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 text-[11.5px] font-semibold text-gray-600 hover:bg-gray-50"><Wifi size={12}/>Шалгах</button>
                 <button onClick={() => act(s, "backup")} className="flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 text-[11.5px] font-semibold text-gray-600 hover:bg-gray-50"><DatabaseBackup size={12}/>Нөөцлөх</button>
+                <button onClick={() => openHotkeys(s)} className="flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 text-[11.5px] font-semibold text-gray-600 hover:bg-gray-50"><Printer size={12}/>Hotkey</button>
                 <button onClick={() => preview(s)} className="flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11.5px] font-semibold text-indigo-700 hover:bg-indigo-100"><Eye size={12}/>Урьдчилан харах</button>
                 <button onClick={() => act(s, "sync")} disabled={st?.dry_run}
                   title={st?.dry_run ? "Dry-run идэвхтэй — тохиргооноос унтраана" : "Одоо sync хийх"}
@@ -380,33 +396,49 @@ export default function AclasScalePage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3" onClick={() => setHk(null)}>
           <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3">
-              <div><div className="text-[15px] font-bold">Hotkey хуудас — erxes-ийн нэрээр</div>
-                <div className="text-[11.5px] text-gray-500">Товчны байрлал, хэмжээ LINK66-аас (LsHotkeytbl). Нэр нь erxes-ийн барааны бүртгэлээс. A4 хэвтээ, 100% масштабаар хэвлэнэ.</div></div>
+              <div><div className="text-[15px] font-bold">Hotkey — {hk.scale.name}</div>
+                <div className="text-[11.5px] text-gray-500">Жингийн өөрийн hotkey (сүүлд уншсан {fmtDT(hk.cur.hotkeys_at)}) · зөвхөн жин дээр байгаа бараа · нэр нь erxes-ийн бүртгэлээс. A4 хэвтээ, 100% масштабаар хэвлэнэ.</div></div>
               <button onClick={() => setHk(null)} className="ml-auto text-gray-400"><X size={16}/></button>
             </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-auto px-4 py-3">
-              {hk.sheets.map(sh => {
-                const missing = sh.buttons.filter(b => b.on_scale === false);
-                const noErxes = sh.buttons.filter(b => !b.from_erxes);
+            <div className="min-h-0 flex-1 space-y-3 overflow-auto px-4 py-3">
+              {(() => {
+                const view = hk.plan ?? hk.cur;
+                const sh = view.sheets[0];
                 return (
-                  <div key={sh.hotkey}>
-                    <div className="mb-2 flex flex-wrap items-center gap-2 text-[12px]">
-                      <b>Hotkey {sh.hotkey}</b><span className="text-gray-500">{sh.rows}×{sh.cols} · {sh.pages} хуудас · {sh.buttons.length} товч</span>
-                      <button onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(hotkeyHtml(sh)); w.document.close(); } }}
-                        className="ml-auto flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-indigo-700"><Printer size={13}/>Хэвлэх</button>
+                  <>
+                    <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                      {hk.plan
+                        ? <span className="rounded-lg bg-indigo-50 px-2 py-1 font-semibold text-indigo-800">Санал: {hk.plan.changes?.length ?? 0} товч өөрчлөгдөнө{hk.plan.overflow?.length ? ` · ${hk.plan.overflow.length} бараа товч хүрэлцээгүй` : ""}</span>
+                        : <span className="text-gray-500">{sh.buttons.length} товч · жин дээр {hk.cur.scale_items} бараа</span>}
+                      <div className="ml-auto flex gap-2">
+                        {hk.plan
+                          ? <>
+                              <button onClick={() => setHk({ ...hk, plan: null })} className="rounded-lg border border-gray-200 px-3 py-1.5 font-semibold text-gray-600">Одоогийнх руу буцах</button>
+                              <button onClick={applyHotkeys} disabled={!hk.plan.changes?.length}
+                                className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 font-semibold text-white disabled:opacity-40"><Upload size={13}/>Жин рүү илгээх</button>
+                            </>
+                          : <button onClick={planHotkeys} className="flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 font-semibold text-indigo-700"><RotateCcw size={13}/>Жингийн бараагаар шинэчлэх</button>}
+                        <button onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(hotkeyHtml(sh)); w.document.close(); } }}
+                          className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 font-semibold text-white hover:bg-indigo-700"><Printer size={13}/>Хэвлэх{hk.plan ? " (санал)" : ""}</button>
+                      </div>
                     </div>
-                    {missing.length > 0 && <div className="mb-2 rounded-lg bg-rose-50 px-3 py-1.5 text-[12px] text-rose-700">Жин дээр байхгүй PLU-д оноосон товч ({missing.length}): {missing.map(b => b.plu).join(", ")} — дарахад бараа гарахгүй. LINK66 → Hotkey-оос солино уу.</div>}
-                    {noErxes.length > 0 && <div className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[12px] text-amber-800">erxes-д бүртгэлгүй код ({noErxes.length}): {noErxes.map(b => b.plu).join(", ")} — LINK66-ийн нэрээр хэвлэгдэнэ.</div>}
+                    {!hk.plan && (hk.cur.dead?.length ?? 0) > 0 && (
+                      <div className="rounded-lg bg-rose-50 px-3 py-1.5 text-[12px] text-rose-700">
+                        Жин дээр байхгүй бараанд оноосон товч ({hk.cur.dead!.length}): {hk.cur.dead!.map(d => `№${d.index}→${d.plu}`).join(", ")} — хуудсанд хоосон хэвлэгдэнэ.
+                        «Жингийн бараагаар шинэчлэх»-ээр чөлөөлж, жин дээрх бараагаар бөглөнө.
+                      </div>
+                    )}
                     {Array.from({ length: sh.pages }, (_, pg) => (
-                      <div key={pg} className="mb-2 overflow-auto">
+                      <div key={pg} className="overflow-auto">
                         <div className="mb-1 text-[11px] text-gray-400">Хуудас {pg + 1}</div>
                         <div className="grid border-l border-t border-gray-400" style={{ gridTemplateColumns: `repeat(${sh.cols}, minmax(64px, 1fr))` }}>
                           {Array.from({ length: sh.rows * sh.cols }, (_, i) => {
                             const b = sh.buttons.find(x => x.page === pg && x.row === Math.floor(i / sh.cols) && x.col === i % sh.cols);
+                            const idx = pg * sh.rows * sh.cols + i + 1;
+                            const ch = hk.plan?.changes?.find(c => c.index === idx);
                             return (
-                              <div key={i} title={b ? `${b.plu} · ${b.name}${b.link66_name && b.link66_name !== b.name ? `
-LINK66: ${b.link66_name}` : ""}` : ""}
-                                className={`h-14 overflow-hidden border-b border-r border-gray-400 p-0.5 text-center text-[9.5px] leading-tight ${b?.on_scale === false ? "bg-rose-50" : !b ? "" : b.from_erxes ? "" : "bg-amber-50"}`}>
+                              <div key={i} title={b ? `№${idx} · ${b.plu} · ${b.name}` : `№${idx}`}
+                                className={`h-14 overflow-hidden border-b border-r border-gray-400 p-0.5 text-center text-[9.5px] leading-tight ${ch ? "bg-indigo-50" : b && !b.from_erxes ? "bg-amber-50" : ""}`}>
                                 {b && <><div className="font-bold">{b.plu}</div><div>{b.name}</div></>}
                               </div>
                             );
@@ -414,9 +446,9 @@ LINK66: ${b.link66_name}` : ""}` : ""}
                         </div>
                       </div>
                     ))}
-                  </div>
+                  </>
                 );
-              })}
+              })()}
             </div>
           </div>
         </div>

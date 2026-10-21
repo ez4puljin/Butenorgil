@@ -209,53 +209,115 @@ def local_names(url: str) -> dict[str, str]:
     return _price_cache["names"]
 
 
-# ── Hotkey хуудас (LINK66) ──────────────────────────────────────────────────
-# Жингийн hotkey товчны PLU-г LINK66 өөрийн SQLite-д (LsHotkeytbl, KeyboardTbl) хадгалдаг бөгөөд
-# хуудсыг латин нэрээр хэвлэдэг. Бид ижил байрлал/хэмжээ (мм)-ээр erxes-ийн нэрээр хэвлэнэ.
+# ── Hotkey (жингийн товч → PLU) ─────────────────────────────────────────────
+# Хуудсыг ЖИНГИЙН ӨӨРИЙН hotkey-ээс (SDK dataType 0x0003: «ButtonIndex<TAB>ButtonValue», 224 мөр; 2026-10-21
+# туршсан) хэвлэнэ — LINK66-ийн сан (LsHotkeytbl) жингээс зөрдөг байсан (3-р товч: жин 215424, LINK66 215485).
+# Зөвхөн жин дээр одоо байгаа PLU гарна (хэрэглэгч 2026-10-21). Агент backup/sync бүрт hotkey татаж
+# settings «hotkeys:{scale_id}»-д хадгална. Хэмжээ (мм) — LINK66 KeyboardTbl (LS2-112×2), эс бөгөөс анхдагч.
 LINK66_DB = r"C:\Program Files (x86)\Aclas LINK66\Database\Default.db"
+KB_DEFAULT = {"rows": 8, "cols": 14, "page_w": 225.0, "page_h": 140.0, "left": 11.0, "top": 8.0,
+              "btn_w": 15.0769, "btn_h": 14.0, "hgap": 0.0, "vgap": 0.0}
+HOTKEY_COUNT = 224
 
 
-def hotkey_sheet(db, scale=None) -> dict:
+def parse_hotkeys(raw: bytes | None) -> dict[int, int]:
+    out = {}
+    for ln in (raw or b"").split(b"\r\n")[1:]:
+        c = ln.split(b"\t")
+        if len(c) >= 2 and c[0].strip().isdigit():
+            out[int(c[0])] = int(c[1]) if c[1].strip().isdigit() else 0
+    return out
+
+
+def build_hotkeys(m: dict[int, int], n: int = HOTKEY_COUNT) -> bytes:
+    return b"\r\n".join([b"ButtonIndex\tButtonValue"] + [f"{i}\t{m.get(i, 0)}".encode() for i in range(1, n + 1)]) + b"\r\n"
+
+
+def scale_hotkeys(db, scale) -> tuple[dict[int, int], str | None]:
+    raw = _kv(db, f"hotkeys:{scale.id}", "")
+    if not raw:
+        return {}, None
+    d = json.loads(raw)
+    return parse_hotkeys(unb64(d.get("b64"))), d.get("at")
+
+
+def _keyboard(db) -> dict:
     import sqlite3
     path = _kv(db, "link66_db", "") or LINK66_DB
     try:
         c = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
-    except Exception as e:
-        raise RuntimeError(f"LINK66-ийн сан нээгдсэнгүй ({path}): {e}")
-    try:
-        rows = c.execute("select HotkeyID, KeyboardID, ButtonIndex, ButtonValue, PLUName, IsFunKey "
-                         "from LsHotkeytbl order by HotkeyID, ButtonIndex").fetchall()
-        kb = {r[0]: r for r in c.execute("select ID, Row, Col, PageWidth, PageHeight, BorderLeft, BorderTop, "
-                                         "ButtonWidth, ButtonHeight, HorizontalSpace, VerticalSpace from KeyboardTbl")}
-    finally:
-        c.close()
+        try:
+            kid = (c.execute("select KeyboardID from LsHotkeytbl limit 1").fetchone() or [1])[0]
+            r = c.execute("select Row, Col, PageWidth, PageHeight, BorderLeft, BorderTop, ButtonWidth, ButtonHeight, "
+                          "HorizontalSpace, VerticalSpace from KeyboardTbl where ID=?", (kid,)).fetchone()
+        finally:
+            c.close()
+        if r:
+            return dict(zip(("rows", "cols", "page_w", "page_h", "left", "top", "btn_w", "btn_h", "hgap", "vgap"),
+                            [x or 0 for x in r]))
+    except Exception:
+        pass
+    return dict(KB_DEFAULT)
+
+
+def _names(db) -> dict[str, str]:
     st = get_settings(db)
     try:
-        names = local_names(st.get("price_pos_url") or SETTINGS_DEFAULT["price_pos_url"])
+        return local_names(st.get("price_pos_url") or SETTINGS_DEFAULT["price_pos_url"])
     except Exception:
-        names = {}
-    on_scale = {_rid(r): r for r in parse_plu(scale.state_raw)[1]} if scale is not None and scale.state_raw else None
-    sheets: dict[str, dict] = {}
-    for hid, kid, idx, plu, lname, fun in rows:
-        k = kb.get(kid)
-        if not k:
-            continue
-        _id, nrow, ncol, pw, ph, bl, bt, bw, bh, hs, vs = k
-        per = nrow * ncol
-        sh = sheets.setdefault(hid, {"hotkey": hid, "keyboard": kid, "rows": nrow, "cols": ncol, "page_w": pw,
-                                     "page_h": ph, "left": bl, "top": bt, "btn_w": bw, "btn_h": bh, "hgap": hs or 0,
-                                     "vgap": vs or 0, "pages": 1, "buttons": []})
-        page = (idx - 1) // per
-        sh["pages"] = max(sh["pages"], page + 1)
+        return {}
+
+
+def _buttons(m: dict[int, int], kb: dict, plu_rows: dict[int, dict], names: dict[str, str]) -> tuple[list, list]:
+    per = kb["rows"] * kb["cols"]
+    shown, dead = [], []
+    for idx in sorted(m):
+        plu = m[idx]
         if not plu:
             continue
-        code = str(plu)
-        sr = on_scale.get(int(plu)) if on_scale is not None else None
-        sh["buttons"].append({"index": idx, "page": page, "row": ((idx - 1) % per) // ncol, "col": (idx - 1) % ncol,
-                              "plu": int(plu), "name": names.get(code) or (sr.get("Name1", b"").decode("cp1251") if sr else "")
-                              or lname or "", "link66_name": lname or "", "from_erxes": code in names,
-                              "on_scale": (sr is not None) if on_scale is not None else None, "fun": bool(fun)})
-    return {"sheets": list(sheets.values()), "db": path}
+        r = plu_rows.get(plu)
+        if r is None:                            # жин дээр байхгүй PLU — хэвлэхгүй
+            dead.append({"index": idx, "plu": plu})
+            continue
+        code = r.get("ItemCode", b"").decode() or str(plu)
+        shown.append({"index": idx, "page": (idx - 1) // per, "row": ((idx - 1) % per) // kb["cols"],
+                      "col": (idx - 1) % kb["cols"], "plu": plu, "code": code,
+                      "name": names.get(code) or names.get(str(plu)) or r.get("Name1", b"").decode("cp1251"),
+                      "from_erxes": code in names or str(plu) in names})
+    return shown, dead
+
+
+def hotkey_sheet(db, scale) -> dict:
+    """Хэвлэх hotkey хуудас: жингийн hotkey × жин дээр байгаа PLU, нэр нь erxes-ийн бүртгэлээс."""
+    m, at = scale_hotkeys(db, scale)
+    if not m:
+        raise RuntimeError("Жингийн hotkey хараахан татагдаагүй — «Нөөцлөх» дарж агентаар уншуулна уу.")
+    kb = _keyboard(db)
+    rows = {_rid(r): r for r in parse_plu(scale.state_raw)[1]}
+    shown, dead = _buttons(m, kb, rows, _names(db))
+    pages = max(1, -(-max(m) // (kb["rows"] * kb["cols"])))
+    return {"sheets": [{**kb, "hotkey": scale.name, "pages": pages, "buttons": shown}], "dead": dead,
+            "hotkeys_at": at, "scale_items": len(rows)}
+
+
+def hotkey_plan(db, scale) -> dict:
+    """Hotkey-г жин дээр байгаа бараагаар: байгаа PLU байрандаа үлдэнэ, жин дээр байхгүй PLU-ийн товч
+    чөлөөлөгдөнө, товчгүй бараа хоосон товчнуудад кодын дарааллаар орно."""
+    m, _ = scale_hotkeys(db, scale)
+    rows = {_rid(r): r for r in parse_plu(scale.state_raw)[1]}
+    kb = _keyboard(db)
+    n = max([HOTKEY_COUNT] + list(m))
+    new = {i: (p if p in rows else 0) for i, p in m.items()}
+    placed = {p for p in new.values() if p}
+    free = [i for i in range(1, n + 1) if not new.get(i)]
+    todo = sorted((p for p in rows if p not in placed), key=lambda p: rows[p].get("ItemCode", b"").decode() or str(p))
+    for p, i in zip(todo, free):
+        new[i] = p
+    overflow = todo[len(free):]
+    shown, _ = _buttons(new, kb, rows, _names(db))
+    changes = [{"index": i, "old": m.get(i, 0), "new": new.get(i, 0)} for i in range(1, n + 1) if m.get(i, 0) != new.get(i, 0)]
+    return {"sheets": [{**kb, "hotkey": scale.name, "pages": -(-n // (kb["rows"] * kb["cols"])), "buttons": shown}],
+            "changes": changes, "overflow": overflow, "file_b64": b64(build_hotkeys(new, n)), "known": bool(m)}
 
 
 # ── PLU мөр бэлтгэх ба diff ─────────────────────────────────────────────────
@@ -550,8 +612,15 @@ def agent_finish(db, job, body: dict) -> dict:
         if vr:
             s.state_raw, s.state_at = vr, now
         s.last_ping_ok, s.last_ping_at = True, now
+    elif job.kind == "hotkey":
+        want = parse_hotkeys(unb64(json.loads(job.payload or "{}").get("hotkey_b64")))
+        got = parse_hotkeys(unb64(body.get("hotkey_b64")))
+        bad = [i for i in want if want[i] != got.get(i, 0)]
+        res["verify"] = {"ok": not bad, "checked": len(want), "mismatch": bad[:50], "missing": []}
     elif job.kind == "label":
         res["preview_b64"] = body.get("preview_b64") or ""
+    if body.get("hotkey_b64"):                          # жингийн одоогийн hotkey — хэвлэх хуудсанд
+        _set_kv(db, f"hotkeys:{s.id}", json.dumps({"b64": body["hotkey_b64"], "at": now.isoformat()}))
     job.status, job.finished_at, job.error = "done", now, ""
     job.result = json.dumps(res, ensure_ascii=False, default=str)
     db.commit()
