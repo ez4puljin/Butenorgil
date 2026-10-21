@@ -108,23 +108,33 @@ def send(data: bytes, path: str | None = None) -> None:
         return
     except OSError as e:
         errs.append(f"SMB: {e.strerror or e}")
-    try:
-        import win32print
-        h = win32print.OpenPrinter(p)
+    # Spooler-ийн RPC алсын PC дээр минут гаруй гацах тохиолдол байсан (2026-10-21) — 20 сек хязгаар
+    box: dict = {}
+
+    def _spool():
         try:
-            win32print.StartDocPrinter(h, 1, ("Үнийн шошго", None, "RAW"))
+            import win32print
+            h = win32print.OpenPrinter(p)
             try:
-                win32print.StartPagePrinter(h)
-                win32print.WritePrinter(h, data)
-                win32print.EndPagePrinter(h)
+                win32print.StartDocPrinter(h, 1, ("Үнийн шошго", None, "RAW"))
+                try:
+                    win32print.StartPagePrinter(h)
+                    win32print.WritePrinter(h, data)
+                    win32print.EndPagePrinter(h)
+                finally:
+                    win32print.EndDocPrinter(h)
+                box["ok"] = True
             finally:
-                win32print.EndDocPrinter(h)
-            return
-        finally:
-            win32print.ClosePrinter(h)
-    except Exception as e:  # noqa: BLE001
-        code = getattr(e, "winerror", None) or (e.args[0] if getattr(e, "args", None) else "")
-        errs.append(f"spooler: {code}")
+                win32print.ClosePrinter(h)
+        except Exception as e:  # noqa: BLE001
+            box["err"] = getattr(e, "winerror", None) or (e.args[0] if getattr(e, "args", None) else str(e))
+
+    t = threading.Thread(target=_spool, daemon=True, name="label-spool")
+    t.start()
+    t.join(20)
+    if box.get("ok"):
+        return
+    errs.append(f"spooler: {box.get('err', 'хугацаа хэтэрсэн')}")
     raise PrintError(f"Принтер ({p}) рүү хэвлэх эрхгүй байна ({'; '.join(errs)}). "
                      "192.168.1.209 компьютерийн хэрэглэгчийн нэвтрэлтийг серверт хадгална уу.")
 
