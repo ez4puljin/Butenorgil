@@ -1214,6 +1214,7 @@ async def _nightly_jobs_loop():
       05:00  POS тулгалт — касс↔erxes↔Эрхэт хоёр шатыг шалгаж хадгалах
       08:00  Өглөөний тайлан — бүх анхаарах зүйлийг Telegram-аар
       09:00  Erkhet sync шалгалт — өмнөх 7 хоногийн deal; асуудалтай бол Telegram (sync ХИЙХГҮЙ)
+      06/12/18:00  Барааны мастер — Эрхэт+erxes жагсаалт татаж мастер нэгтгэл, erxes↔Эрхэт тулгалт
 
     Ажил бүр удаан үргэлжилж болох тул тусдаа thread-д ажиллуулж event
     loop-ыг блоклохгүй. Аль нэг нь алдвал бусад нь болон loop өөрөө
@@ -1237,6 +1238,12 @@ async def _nightly_jobs_loop():
                      "POS тулгалт", pos_reconcile.run_and_save))
         jobs.append((int(getattr(settings, "erkhet_deal_check_hour", 9) or 9),
                      "Erkhet sync шалгалт", erkhet_deal_check.run_daily_check))
+    if has_erxes and has_erkhet:
+        # Барааны мастер: Master-ын гар ажил (Эрхэт + erxes жагсаалт → слот → мастер нэгтгэл) + тулгалт.
+        # Өдөрт 3 удаа; зөрүү өөрчлөгдсөн үед л Telegram.
+        from app.services import product_master_sync
+        for h in (6, 12, 18):
+            jobs.append((h, f"Барааны мастер {h:02d}", lambda: product_master_sync.run_master_auto(notify=True)))
     jobs.append((int(getattr(settings, "digest_hour", 8) or 8),
                  "Өглөөний тайлан", daily_digest.send_daily_digest))
 
@@ -1390,6 +1397,8 @@ app.include_router(master_count_router)
 app.include_router(erkhet_deal_sync_router)
 from app.api.payments_scan import router as payments_scan_router  # noqa: E402
 app.include_router(payments_scan_router)
+from app.api.product_master import router as product_master_router  # noqa: E402
+app.include_router(product_master_router)
 app.include_router(aclas_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)

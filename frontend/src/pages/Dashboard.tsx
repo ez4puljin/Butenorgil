@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
+import ProductSyncCard from "../components/ProductSyncCard";
 import {
   AlertTriangle,
   Image,
@@ -649,6 +650,9 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* ── Барааны мэдээлэл: erxes ↔ Эрхэт тулгалт ─────────────────────── */}
+      <ProductSyncCard />
 
       {/* ── Захиалгын тайлан ────────────────────────────────────────────── */}
       {poStats && (
