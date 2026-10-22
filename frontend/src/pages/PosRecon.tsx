@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   CalendarCheck, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, X,
-  Loader2, Undo2, ArrowRightLeft,
+  Loader2, Undo2, ArrowRightLeft, ShoppingCart, ChevronDown,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -31,6 +31,22 @@ interface RunStatus {
   message: string; error: string; log: string[];
 }
 
+// Кассын төлөгдөөгүй захиалга — erxes зөвхөн төлөгдсөнийг авдаг тул тэнд огт байхгүй
+interface UnpaidOrder {
+  pos_name: string; _id: string; number: string; status: string; sale_status: string;
+  created_at: string; modified_at: string; amount: number; cashier: string;
+  items: { name: string; count: number; price: number }[]; in_erxes: boolean | null;
+}
+interface UnpaidData { start: string; end: string; orders: UnpaidOrder[]; errors: string[]; total_amount: number; not_in_erxes: number }
+const SALE_STATUS: Record<string, string> = { cart: "Сагсанд", confirmed: "Баталгаажсан", complete: "Дууссан" };
+
+// UTC ISO → Улаанбаатарын цаг (UTC+8)
+function ubDate(iso: string) {
+  if (!iso) return "";
+  const d = new Date(new Date(iso).getTime() + 8 * 3600 * 1000);
+  return d.toISOString().slice(0, 16).replace("T", " ");
+}
+
 const WD = ["Да", "Мя", "Лх", "Пү", "Ба", "Бя", "Ня"];
 const MONTHS = ["1-р сар", "2-р сар", "3-р сар", "4-р сар", "5-р сар", "6-р сар",
   "7-р сар", "8-р сар", "9-р сар", "10-р сар", "11-р сар", "12-р сар"];
@@ -49,6 +65,7 @@ const LEGEND: [string, string][] = [
   ["online", "Онлайн касс — локал POS ажиллаагүй"],
   ["none", "Шалгаагүй"],
 ];
+// Нүдний баруун дээд буланд нил ягаан тоо = тэр өдрийн төлөгдөөгүй захиалга
 
 function fmt(n: number | null | undefined) {
   return Math.round(n || 0).toLocaleString("mn-MN");
@@ -67,6 +84,9 @@ export default function PosReconPage({ embedded = false }: { embedded?: boolean 
   const [err, setErr] = useState("");
   const [job, setJob] = useState<RunStatus | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [unpaid, setUnpaid] = useState<UnpaidData | null>(null);
+  const [unpaidLoading, setUnpaidLoading] = useState(false);
+  const [unpaidOpen, setUnpaidOpen] = useState<string>("");
 
   const loadMonth = useCallback(async () => {
     setLoading(true); setErr("");
@@ -89,6 +109,23 @@ export default function PosReconPage({ embedded = false }: { embedded?: boolean 
   }, []);
 
   useEffect(() => { loadMonth(); }, [loadMonth]);
+
+  // Сонгосон сарын төлөгдөөгүй захиалга (локал кассаас шууд, ~5-10 сек)
+  const loadUnpaid = useCallback(async () => {
+    const last = new Date(year, month, 0).getDate();
+    const today = new Date().toISOString().slice(0, 10);
+    const end = `${year}-${pad(month)}-${pad(last)}`;
+    setUnpaidLoading(true);
+    try {
+      const r = await api.get("/pos-recon/unpaid", {
+        params: { start: `${year}-${pad(month)}-01`, end: end > today ? today : end }, timeout: 120000 });
+      setUnpaid(r.data);
+    } catch (e: any) {
+      setUnpaid({ start: "", end: "", orders: [], total_amount: 0, not_in_erxes: 0,
+        errors: [e?.response?.data?.detail ?? "Төлөгдөөгүй захиалгыг ачаалж чадсангүй"] });
+    } finally { setUnpaidLoading(false); }
+  }, [year, month]);
+  useEffect(() => { loadUnpaid(); }, [loadUnpaid]);
   useEffect(() => {
     api.get("/pos-recon/run-status").then(r => setJob(r.data)).catch(() => {});
   }, []);
@@ -146,6 +183,9 @@ export default function PosReconPage({ embedded = false }: { embedded?: boolean 
   const monthStart = `${year}-${pad(month)}-01`;
   const lastDay = new Date(year, month, 0).getDate();
   const monthEnd = `${year}-${pad(month)}-${pad(lastDay)}`;
+  const unpaidByDay: Record<string, number> = {};
+  (unpaid?.orders ?? []).forEach(o => { const d = ubDate(o.created_at).slice(0, 10); unpaidByDay[d] = (unpaidByDay[d] || 0) + 1; });
+  const unpaidShown = (unpaid?.orders ?? []).filter(o => !sel || ubDate(o.created_at).startsWith(sel));
   const pct = job && job.total > 0 ? Math.round((job.done / job.total) * 100) : 0;
 
   return (
@@ -244,7 +284,15 @@ export default function PosReconPage({ embedded = false }: { embedded?: boolean 
               className={`flex aspect-square flex-col items-center justify-center rounded-xl text-[13px] font-bold transition ${CELL[c.status]} ${sel === c.day ? "ring-2 ring-gray-900 ring-offset-1" : ""}`}
               title={c.status === "none" ? "Шалгаагүй" :
                 `касс ${fmt(c.local)} = erxes ${fmt(c.erxes)} + буцаалт ${c.returns}`}>
-              <span>{Number(c.day.slice(-2))}</span>
+              <span className="relative">
+                {Number(c.day.slice(-2))}
+                {unpaidByDay[c.day] > 0 && (
+                  <span title={`${unpaidByDay[c.day]} төлөгдөөгүй захиалга`}
+                    className="absolute -right-3.5 -top-2 rounded-full bg-violet-600 px-1 text-[8.5px] font-bold leading-[14px] text-white ring-1 ring-white">
+                    {unpaidByDay[c.day]}
+                  </span>
+                )}
+              </span>
               {c.status !== "none" && (
                 <span className="text-[9px] font-medium opacity-90">
                   {c.unexplained ? `−${c.unexplained}` : c.unsynced ? `⇢${c.unsynced}` : fmt(c.local || c.erxes)}
@@ -363,6 +411,89 @@ export default function PosReconPage({ embedded = false }: { embedded?: boolean 
             )}
           </div>
         )}
+
+        {/* Төлөгдөөгүй захиалга */}
+        <div className="mt-5 overflow-hidden rounded-2xl border border-violet-200 bg-white">
+          <div className="flex flex-wrap items-center gap-2 border-b border-violet-100 bg-violet-50/70 px-3 py-2">
+            <ShoppingCart size={13} className="text-violet-700"/>
+            <span className="text-[12.5px] font-bold text-violet-900">
+              Төлөгдөөгүй захиалга — erxes рүү ороогүй
+            </span>
+            <span className="text-[11.5px] text-violet-700">
+              {sel ? `${sel}` : `${year} · ${MONTHS[month - 1]}`}
+              {unpaid && ` · ${unpaidShown.length} захиалга · ${fmt(unpaidShown.reduce((a, o) => a + o.amount, 0))}₮`}
+            </span>
+            {unpaidLoading && <Loader2 size={12} className="animate-spin text-violet-500"/>}
+            <button onClick={loadUnpaid} disabled={unpaidLoading}
+              className="ml-auto flex items-center gap-1 rounded-lg border border-violet-200 bg-white px-2 py-1 text-[11px] font-semibold text-violet-700 hover:bg-violet-50 disabled:opacity-50">
+              <RefreshCw size={11}/>Шинэчлэх
+            </button>
+          </div>
+          <p className="border-b border-violet-50 px-3 py-1.5 text-[11px] leading-relaxed text-gray-500">
+            Кассчин бараа уншуулаад төлбөр авалгүй орхисон захиалга локал кассад «төлөгдөөгүй» хэвээр үлддэг.
+            erxes зөвхөн төлөгдсөн захиалгыг хүлээж авдаг тул эдгээр нь тулгалтын тоонд ордоггүй.
+            Өнөөдрийнх нь кассад одоо үйлчилж буй сагс байж болно.
+          </p>
+          {(unpaid?.errors ?? []).map(e => (
+            <p key={e} className="px-3 py-1 text-[11.5px] text-rose-600">{e}</p>
+          ))}
+          {unpaid && unpaidShown.length === 0 ? (
+            <p className="py-4 text-center text-[12px] text-gray-400">Төлөгдөөгүй захиалга алга.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[12px]">
+                <thead>
+                  <tr className="bg-violet-50/40">
+                    {["Огноо", "Касс", "Дугаар", "Кассчин", "Төлөв", "Дүн ₮", "erxes"].map((h, i) => (
+                      <th key={h} className={`whitespace-nowrap px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-violet-700 ${i === 5 ? "text-right" : "text-left"}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {unpaidShown.map(o => (
+                    <Fragment key={o._id}>
+                      <tr onClick={() => setUnpaidOpen(v => v === o._id ? "" : o._id)}
+                        className="cursor-pointer border-t border-violet-50 hover:bg-violet-50/40">
+                        <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-gray-600">
+                          <ChevronDown size={11} className={`mr-1 inline transition ${unpaidOpen === o._id ? "rotate-180" : ""}`}/>
+                          {ubDate(o.created_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] text-gray-700">{o.pos_name}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-gray-700">{o.number}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] text-gray-700">{o.cashier || "—"}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] text-gray-600">{SALE_STATUS[o.sale_status] ?? o.sale_status}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] font-semibold text-gray-900">{fmt(o.amount)}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-[11px]">
+                          {o.in_erxes === false ? <span className="font-semibold text-rose-600">ороогүй</span>
+                            : o.in_erxes ? <span className="text-emerald-600">байгаа</span>
+                            : <span className="text-gray-400">шалгаж чадсангүй</span>}
+                        </td>
+                      </tr>
+                      {unpaidOpen === o._id && (
+                        <tr className="bg-gray-50/70">
+                          <td colSpan={7} className="px-6 py-1.5">
+                            {o.items.length === 0 ? <span className="text-[11px] text-gray-400">Бараагүй сагс</span> : (
+                              <ul className="space-y-0.5">
+                                {o.items.map((it, k) => (
+                                  <li key={k} className="flex gap-2 text-[11.5px] text-gray-700">
+                                    <span className="min-w-0 flex-1 truncate">{it.name}</span>
+                                    <span className="font-mono text-gray-500">{it.count} × {fmt(it.price)}</span>
+                                    <span className="w-20 text-right font-mono font-semibold">{fmt(it.count * it.price)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            <p className="mt-1 text-[10.5px] text-gray-400">Сүүлд өөрчилсөн: {ubDate(o.modified_at)}</p>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Лог */}

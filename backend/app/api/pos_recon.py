@@ -2,6 +2,7 @@
 
     GET  /pos-recon/month?year=&month=   → календарийн өдөр тутмын төлөв
     GET  /pos-recon/day?day=             → өдрийн дэлгэрэнгүй + буцаалтууд
+    GET  /pos-recon/unpaid?start=&end=   → кассын төлөгдөөгүй (erxes-д ороогүй) захиалга
     POST /pos-recon/run                  → нэг өдөр эсвэл хугацааг дахин шалгах
     GET  /pos-recon/run-status           → явц
     POST /pos-recon/cancel               → зогсоох
@@ -66,6 +67,20 @@ def day(
     POS тус бүрээр: кассын нийт = erxes дээрх + буцаалт.
     Буцаалт байвал хэн, хэдэн цагт, ямар баримт буцаасныг харуулна."""
     return pos_reconcile.day_detail(db, day)
+
+
+@router.get("/unpaid")
+def unpaid(
+    start: str = Query("", max_length=10),
+    end: str = Query("", max_length=10),
+    _: User = Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Локал кассын ТӨЛӨГДӨӨГҮЙ захиалга (erxes рүү ороогүй) — анхдагч сүүлийн 30 хоног."""
+    end = (end or date.today().isoformat())[:10]
+    start = (start or (date.fromisoformat(end) - timedelta(days=30)).isoformat())[:10]
+    if start > end:
+        raise HTTPException(400, "Эхлэх огноо дуусахаас хойш байна")
+    return pos_reconcile.unpaid_orders(start, end)
 
 
 class RunIn(BaseModel):

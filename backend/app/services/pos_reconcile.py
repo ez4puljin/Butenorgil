@@ -77,6 +77,78 @@ def _paid_ids(url: str, day: str, per_page: int = 5000) -> set[str]:
     return {o["_id"] for o in (data.get("orders") or []) if o.get("_id")}
 
 
+# ── Төлөгдөөгүй захиалга ─────────────────────────────────────────────
+# Кассчин сагсанд бараа уншуулаад төлбөр авалгүй орхисон (эсвэл баталгаажуулаад төлөөгүй)
+# захиалга локал POS-д `isPaid:false`, paidDate=null-оор үлддэг; erxes зөвхөн төлөгдсөнийг
+# хүлээж авдаг тул тэнд ОГТ байхгүй (2026-10-22: 4/4 нь posOrderDetail → «not found»).
+# Дугаараар (number) хайж болохгүй — 10-10…15-ны онлайн касс ижил дугаар ашигласан.
+_UNPAID_Q = ("query($a:Date,$b:Date){ orders(statuses:[],isPaid:false,startDate:$a,endDate:$b,"
+             "page:1,perPage:2000){ _id number status saleStatus createdAt modifiedAt totalAmount "
+             "items{ productName count unitPrice } user{ details{ fullName } } } }")
+_ERXES_SEEN: dict[str, tuple[float, bool | None]] = {}
+_ERXES_TTL = 600
+
+
+def _in_erxes(ex, oid: str) -> bool | None:
+    """erxes-д тэр _id-тай захиалга бий эсэх. None = шалгаж чадсангүй."""
+    hit = _ERXES_SEEN.get(oid)
+    if hit and time.monotonic() - hit[0] < _ERXES_TTL:
+        return hit[1]
+    try:
+        d = ex.gql("query($id:String!){ posOrderDetail(_id:$id){ _id } }", {"id": oid})
+        val: bool | None = bool((d or {}).get("posOrderDetail"))
+    except Exception as e:      # noqa: BLE001
+        val = False if "not found" in str(e).lower() else None
+    _ERXES_SEEN[oid] = (time.monotonic(), val)
+    return val
+
+
+def unpaid_orders(start: str, end: str, urls: list[str] | None = None) -> dict:
+    """Локал касс бүрийн ТӨЛӨГДӨӨГҮЙ захиалга (үүсгэсэн огноогоор) + erxes-д байгаа эсэх."""
+    from app.services.erxes_client import get_client
+
+    urls = urls if urls is not None else local_urls()
+    ex = None
+    out, errors = [], []
+    for url in urls:
+        try:
+            name = (_gql(url, _CONFIG_Q).get("currentConfig") or {}).get("name") or url
+            rows = _gql(url, _UNPAID_Q, {"a": f"{start}T00:00:00.000Z",
+                                         "b": f"{end}T23:59:59.999Z"}).get("orders") or []
+        except Exception as e:  # noqa: BLE001 — нэг касс унтарсан ч нөгөөг харуулна
+            errors.append(f"{url}: {str(e)[:120]}")
+            continue
+        for o in rows:
+            if ex is None:
+                ex = get_client()
+            items = o.get("items") or []
+            out.append({
+                "pos_name": name,
+                "_id": o.get("_id"),
+                "number": o.get("number") or "",
+                "status": o.get("status") or "",
+                "sale_status": o.get("saleStatus") or "",
+                "created_at": o.get("createdAt") or "",
+                "modified_at": o.get("modifiedAt") or "",
+                "amount": o.get("totalAmount") or 0,
+                "cashier": ((o.get("user") or {}).get("details") or {}).get("fullName", "").strip(),
+                "items": [{"name": i.get("productName") or "", "count": i.get("count") or 0,
+                           "price": i.get("unitPrice") or 0} for i in items],
+                "in_erxes": _in_erxes(ex, o.get("_id") or ""),
+            })
+    out.sort(key=lambda r: r["created_at"], reverse=True)
+    return {"start": start, "end": end, "orders": out, "errors": errors,
+            "total_amount": sum(r["amount"] for r in out),
+            "not_in_erxes": sum(1 for r in out if r["in_erxes"] is False)}
+
+
+def _visible(recs: list) -> list:
+    """Холболтын алдаагаар url-ээр түлхүүрлэгдсэн мөрийг тухайн өдөр жинхэнэ (token-той) мөр
+    гарсан бол нууна — 10-12…14-нд хуучин «HTTPConnectionPool» мөрүүд үлдсэн байсан."""
+    good = {r.day for r in recs if not (r.pos_token or "").startswith("http")}
+    return [r for r in recs if not ((r.pos_token or "").startswith("http") and r.day in good)]
+
+
 # ── Тулгалт ──────────────────────────────────────────────────────────
 def _status_of(unexplained: int, unsynced: int, error: str) -> str:
     if error:
@@ -222,7 +294,7 @@ def load_rows(db, day: str) -> list[dict]:
 
     recs = (db.query(PosReconDay).filter(PosReconDay.day == (day or "")[:10])
             .order_by(PosReconDay.pos_name).all())
-    return [_row_dict(r) for r in recs]
+    return [_row_dict(r) for r in _visible(recs)]
 
 
 def worst(statuses: list[str]) -> str:
@@ -243,6 +315,7 @@ def month_summary(db, year: int, month: int) -> dict:
             .filter(PosReconDay.day >= start.isoformat(),
                     PosReconDay.day < end.isoformat())
             .all())
+    recs = _visible(recs)
     by_day: dict[str, list] = {}
     for r in recs:
         by_day.setdefault(r.day, []).append(r)
@@ -274,8 +347,8 @@ def day_detail(db, day: str) -> dict:
     from app.models.pos_recon import PosReconDay
 
     day = (day or "")[:10]
-    recs = (db.query(PosReconDay).filter(PosReconDay.day == day)
-            .order_by(PosReconDay.pos_name).all())
+    recs = _visible(db.query(PosReconDay).filter(PosReconDay.day == day)
+                    .order_by(PosReconDay.pos_name).all())
 
     returns: list[dict] = []
     try:
