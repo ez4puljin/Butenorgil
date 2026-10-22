@@ -34,6 +34,7 @@ def get_me(
     return TokenOut(
         access_token=token,
         role=u.role,
+        role_label=(role_obj.label if role_obj else "") or u.role,
         base_role=u.base_role or u.role,
         username=u.username,
         nickname=u.nickname or "",
@@ -61,6 +62,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     return TokenOut(
         access_token=token,
         role=u.role,
+        role_label=(role_obj.label if role_obj else "") or u.role,
         base_role=u.base_role or u.role,
         username=u.username,
         nickname=u.nickname or "",

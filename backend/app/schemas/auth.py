@@ -4,6 +4,7 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     role: str
+    role_label: str = ""
     base_role: str = ""
     username: str
     nickname: str = ""

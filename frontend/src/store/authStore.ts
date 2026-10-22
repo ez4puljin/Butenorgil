@@ -7,12 +7,13 @@ type AuthState = {
   username: string | null;
   nickname: string | null;
   role: string | null;
+  roleLabel: string | null;
   baseRole: UserRole | null;
   permissions: string[];
   universalPages: string[];
   tagIds: number[];
   userId: number | null;
-  setAuth: (p: { token: string; username: string; nickname?: string; role: string; base_role?: string; permissions?: string[]; universalPages?: string[]; tagIds: number[]; userId?: number }) => void;
+  setAuth: (p: { token: string; username: string; nickname?: string; role: string; role_label?: string; base_role?: string; permissions?: string[]; universalPages?: string[]; tagIds: number[]; userId?: number }) => void;
   logout: () => void;
 };
 
@@ -21,6 +22,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   username: localStorage.getItem("username"),
   nickname: localStorage.getItem("nickname"),
   role: localStorage.getItem("role"),
+  roleLabel: localStorage.getItem("roleLabel"),
   baseRole: (localStorage.getItem("baseRole") as UserRole | null) ?? null,
   permissions: JSON.parse(localStorage.getItem("permissions") ?? "[]"),
   // Default — backend /auth/me ачаалагдах хүртэл (хуучин session-д ч цэс алга болохгүй)
@@ -35,15 +37,16 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.setItem("username", p.username);
     localStorage.setItem("nickname", p.nickname ?? "");
     localStorage.setItem("role", p.role);
+    localStorage.setItem("roleLabel", p.role_label ?? "");
     localStorage.setItem("baseRole", baseRole);
     localStorage.setItem("permissions", JSON.stringify(permissions));
     localStorage.setItem("universalPages", JSON.stringify(universalPages));
     localStorage.setItem("tagIds", JSON.stringify(p.tagIds));
     if (p.userId != null) localStorage.setItem("userId", String(p.userId));
-    set({ token: p.token, username: p.username, nickname: p.nickname ?? "", role: p.role, baseRole, permissions, universalPages, tagIds: p.tagIds, userId: p.userId ?? null });
+    set({ token: p.token, username: p.username, nickname: p.nickname ?? "", role: p.role, roleLabel: p.role_label ?? "", baseRole, permissions, universalPages, tagIds: p.tagIds, userId: p.userId ?? null });
   },
   logout: () => {
     localStorage.clear();
-    set({ token: null, username: null, nickname: null, role: null, baseRole: null, permissions: [], universalPages: ["expiration_tracking", "attendance"], tagIds: [], userId: null });
+    set({ token: null, username: null, nickname: null, role: null, roleLabel: null, baseRole: null, permissions: [], universalPages: ["expiration_tracking", "attendance"], tagIds: [], userId: null });
   },
 }));

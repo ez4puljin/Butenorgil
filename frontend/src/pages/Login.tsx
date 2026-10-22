@@ -32,6 +32,7 @@ export default function Login() {
         username: res.data.username,
         nickname: res.data.nickname ?? "",
         role: res.data.role,
+        role_label: res.data.role_label,
         base_role: res.data.base_role ?? res.data.role,
         permissions: perms,
         tagIds: res.data.tag_ids,

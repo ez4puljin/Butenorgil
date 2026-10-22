@@ -61,7 +61,7 @@ const BOTTOM_NAV_MAX = 4;
 
 export default function Shell(props: { children: React.ReactNode }) {
   const loc = useLocation();
-  const { role, baseRole, permissions, universalPages, logout, username, nickname } = useAuthStore();
+  const { role, roleLabel: dbRoleLabel, baseRole, permissions, universalPages, logout, username, nickname } = useAuthStore();
   const displayName = nickname || username;
   const effectiveRole = baseRole || role;
 
@@ -108,12 +108,13 @@ export default function Shell(props: { children: React.ReactNode }) {
     });
   }
 
-  const roleLabel =
-    effectiveRole === "admin"           ? "Админ" :
+  // DB дахь дүрийн нэр (Худалдагч, Кассир …); хуучин session-д л доорх fallback
+  const roleLabel = dbRoleLabel ||
+    (effectiveRole === "admin"           ? "Админ" :
     effectiveRole === "supervisor"      ? "Хянагч" :
     effectiveRole === "manager"         ? "Менежер" :
     effectiveRole === "warehouse_clerk" ? "Агуулахын нярав" :
-    effectiveRole === "accountant"      ? "Нягтлан" : (role ?? "-");
+    effectiveRole === "accountant"      ? "Нягтлан" : (role ?? "-"));
 
   // Universal цэс (админ тохируулдаг) эсвэл role-ийн permission-д байгаа цэс харагдана
   const visible = navItems.filter(

@@ -188,6 +188,7 @@ export default function App() {
         username: d.username,
         nickname: d.nickname,
         role: d.role,
+        role_label: d.role_label,
         base_role: d.base_role,
         permissions: d.permissions ?? [],
         universalPages: d.universal_pages ?? ["expiration_tracking", "attendance"],
@@ -252,24 +253,25 @@ export default function App() {
                   path="/dashboard"
                   element={can("dashboard") ? <Dashboard /> : <DefaultRedirect />}
                 />
-                <Route path="/imports" element={<Imports />} />
-                <Route path="/imports/product-monthly-sales" element={<ProductSalesImport />} />
-                <Route path="/imports/product-movement" element={<ProductMovementImport />} />
-                <Route path="/imports/income-file" element={<IncomeFileImport />} />
-                <Route path="/imports/balance-file" element={<BalanceFileImport />} />
-                <Route path="/reports" element={<Reports />} />
+                <Route path="/imports" element={can("imports") ? <Imports /> : <DefaultRedirect />} />
+                <Route path="/imports/product-monthly-sales" element={can("imports") ? <ProductSalesImport /> : <DefaultRedirect />} />
+                <Route path="/imports/product-movement" element={can("imports") ? <ProductMovementImport /> : <DefaultRedirect />} />
+                <Route path="/imports/income-file" element={can("imports") ? <IncomeFileImport /> : <DefaultRedirect />} />
+                <Route path="/imports/balance-file" element={can("imports") ? <BalanceFileImport /> : <DefaultRedirect />} />
+                <Route path="/reports" element={can("reports") ? <Reports /> : <DefaultRedirect />} />
                 <Route path="/reports/erkhet-sync" element={<Navigate to="/pos-recon?tab=deal" replace />} />
                 <Route path="/admin/aclas" element={can("aclas") ? <AclasScalePage /> : <DefaultRedirect />} />
                 <Route
                   path="/order"
                   element={
-                    (baseRole ?? role) === "supervisor"
+                    !can("order") ? <DefaultRedirect />
+                    : (baseRole ?? role) === "supervisor"
                       ? <OrderSupervisor />
                       : <PurchaseOrderList />
                   }
                 />
-                <Route path="/order/:id/dashboard" element={<OrderDashboard />} />
-                <Route path="/order/:id" element={<PurchaseOrderDetail />} />
+                <Route path="/order/:id/dashboard" element={can("order") ? <OrderDashboard /> : <DefaultRedirect />} />
+                <Route path="/order/:id" element={can("order") ? <PurchaseOrderDetail /> : <DefaultRedirect />} />
                 <Route
                   path="/receivings"
                   element={can("receivings") ? <ReceivingList /> : <DefaultRedirect />}
@@ -278,8 +280,8 @@ export default function App() {
                   path="/receivings/:id"
                   element={can("receivings") ? <ReceivingDetail /> : <DefaultRedirect />}
                 />
-                <Route path="/calendar" element={<CalendarPage />} />
-                <Route path="/accounts-receivable" element={<AccountsReceivable />} />
+                <Route path="/calendar" element={can("calendar") ? <CalendarPage /> : <DefaultRedirect />} />
+                <Route path="/accounts-receivable" element={can("accounts_receivable") ? <AccountsReceivable /> : <DefaultRedirect />} />
                 <Route
                   path="/suppliers"
                   element={can("suppliers") ? <Suppliers /> : <DefaultRedirect />}
@@ -304,7 +306,7 @@ export default function App() {
                   path="/kpi/checklist"
                   element={can("kpi_checklist") ? <KpiChecklist /> : <DefaultRedirect />}
                 />
-                <Route path="/kpi/approvals" element={<KpiApprovals />} />
+                <Route path="/kpi/approvals" element={can("kpi_approvals") ? <KpiApprovals /> : <DefaultRedirect />} />
                 <Route
                   path="/kpi/admin"
                   element={can("kpi_admin") ? <KpiAdmin /> : <DefaultRedirect />}
