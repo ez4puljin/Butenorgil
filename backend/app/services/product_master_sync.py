@@ -123,9 +123,10 @@ def _barcodes(s) -> set[str]:
 
 def _num(v) -> float:
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return 0.0
+    return 0.0 if f != f or f in (float("inf"), float("-inf")) else f     # NaN JSON-ийг эвдэнэ
 
 
 def compare(erk_active: pd.DataFrame, erk_all: pd.DataFrame, erx_rows: list[dict]) -> dict:
