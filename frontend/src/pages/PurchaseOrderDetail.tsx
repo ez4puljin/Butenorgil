@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Fragment, memo } from "react";
+import StockBadge from "../components/StockBadge";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -3010,8 +3011,9 @@ export default function PurchaseOrderDetail() {
                             <span className="font-mono text-[11px] text-gray-400">{l.item_code}</span>
                           </td>
                           <td className="min-w-[140px] px-2 py-2 md:min-w-[180px] md:px-4 md:py-2.5">
-                            <div className="flex items-start gap-1.5">
+                            <div className="flex flex-wrap items-start gap-1.5">
                               <span className="block whitespace-normal break-words text-xs font-medium text-gray-800">{l.name}</span>
+                              {l.item_code && <StockBadge code={l.item_code} />}
                               {(l as any).override_brand && (l as any).original_brand && (
                                 <span
                                   title={`Оригинал бренд: ${(l as any).original_brand} (онцгой тохиолдол)`}

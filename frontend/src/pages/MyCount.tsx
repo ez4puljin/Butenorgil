@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import StockBadge from "../components/StockBadge";
 import {
   Camera, Keyboard, Loader2, Plus, Search, X, Check, Download, Trash2, ArrowLeft, Pencil,
   RotateCcw, ScanLine, CheckCircle2, Users, AlertCircle, ClipboardList, ChevronRight,
@@ -535,6 +536,7 @@ export default function MyCountPanel({ header }: { header?: ReactNode }) {
                       <span className="font-mono font-semibold text-gray-700">{p.code}</span>
                       {pending?.query && pending.query !== p.code && <span className="font-mono">· {pending.query}</span>}
                     </div>
+                    <StockBadge code={p.code} variant="block" className="mt-1" />
                   </div>
                   <button onClick={clearPending} className="text-gray-400"><X size={16}/></button>
                 </div>

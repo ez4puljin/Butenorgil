@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import StockBadge from "../components/StockBadge";
 import { Link } from "react-router-dom";
 import {
   ScanBarcode, Camera, Keyboard, Loader2, RefreshCw, Check, AlertCircle, X, Plus, Minus,
@@ -719,6 +720,7 @@ function SharedHallCount({ modeSwitch }: { modeSwitch: ReactNode }) {
             </button>
           </div>
 
+          {(pItem?.code || pProd?.code) && <StockBadge code={(pItem?.code || pProd?.code) as string} variant="block" className="mt-2" />}
           <div className="mt-3 grid grid-cols-3 gap-2 text-center">
             <div className="rounded-xl bg-white p-2 shadow-sm">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Үлдэгдэл</div>

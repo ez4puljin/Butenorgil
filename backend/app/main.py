@@ -1301,6 +1301,20 @@ async def _payments_scan_loop():
 
 
 @app.on_event("startup")
+async def warm_stock_live():
+    """Эрхэтийн үлдэгдлийн «код → erxes бараа» индекс, байршлын тохиргоог урьдчилж ачаална (~7 сек)."""
+    async def _warm():
+        await asyncio.sleep(90)
+        try:
+            from app.services import erkhet_stock_live
+            await asyncio.to_thread(erkhet_stock_live._product_index)
+            await asyncio.to_thread(erkhet_stock_live._load_meta)
+        except Exception as e:
+            print(f"[үлдэгдэл] индекс ачаалж чадсангүй: {e}")
+    asyncio.create_task(_warm())
+
+
+@app.on_event("startup")
 async def schedule_payments_scan():
     asyncio.create_task(_payments_scan_loop())
 

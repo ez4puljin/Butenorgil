@@ -129,10 +129,35 @@ def search(q: str, limit: int = 20) -> list[dict]:
     return _with_stock(prods)
 
 
+_index: dict = {"at": 0.0, "by_code": {}}
+_index_lock = threading.Lock()
+INDEX_TTL = 3600
+
+
+def _product_index() -> dict[str, dict]:
+    """Идэвхтэй бүх бараа код → erxes бараа (≈13 хуудас, ~3 сек; 1 цаг кэш) — код бүрийг хайхгүйн тулд."""
+    if _index["by_code"] and time.monotonic() - _index["at"] < INDEX_TTL:
+        return _index["by_code"]
+    with _index_lock:
+        if _index["by_code"] and time.monotonic() - _index["at"] < INDEX_TTL:
+            return _index["by_code"]
+        by: dict[str, dict] = {}
+        page = 1
+        while True:
+            rows = _gql('query($p:Int){ products(status:"active", perPage:1000, page:$p){ _id code name unitPrice '
+                        'barcodes uom category{ name } } }', {"p": page}).get("products") or []
+            for p in rows:
+                if p.get("code"):
+                    by[str(p["code"]).strip()] = p
+            if len(rows) < 1000 or page > 100:
+                break
+            page += 1
+        _index.update(at=time.monotonic(), by_code=by)
+        return by
+
+
 def by_codes(codes: list[str]) -> list[dict]:
-    """Кодын жагсаалтаар (≤ 50) — бусад хуудсанд (Үнэ харах г.м.) нэг бараа харуулахад."""
-    out = []
-    for c in list(dict.fromkeys(x.strip() for x in codes if x and x.strip()))[:BATCH]:
-        ps = _gql(_PQ, {"q": c, "n": 5}).get("products") or []
-        out += [p for p in ps if p.get("code") == c][:1]
-    return _with_stock(out)
+    """Кодын жагсаалтаар (≤ 50) — захиалга, тооллогын мөрөнд харуулахад."""
+    idx = _product_index()
+    prods = [idx[c] for c in dict.fromkeys(x.strip() for x in codes if x and x.strip()) if c in idx][:BATCH]
+    return _with_stock(prods)
