@@ -30,6 +30,7 @@ PERMISSION_MANIFEST = [
     {"key": "pos_sync",            "label": "POS татах"},
     {"key": "pos_recon",           "label": "Sync хяналт (POS тулгалт, Deal sync)"},
     {"key": "price_check",         "label": "Үнэ харах",       "universal": True},
+    {"key": "stock_live",          "label": "Үлдэгдэл (Эрхэт)", "universal": True},
     {"key": "hall_count",          "label": "Заалны тооллого", "universal": True},
     {"key": "pallets",             "label": "Поддон хураалт"},
     {"key": "sales_analytics",     "label": "Борлуулалтын график", "universal": True},

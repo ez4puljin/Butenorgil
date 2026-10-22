@@ -1399,6 +1399,8 @@ from app.api.payments_scan import router as payments_scan_router  # noqa: E402
 app.include_router(payments_scan_router)
 from app.api.product_master import router as product_master_router  # noqa: E402
 app.include_router(product_master_router)
+from app.api.stock_live import router as stock_live_router  # noqa: E402
+app.include_router(stock_live_router)
 app.include_router(aclas_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)

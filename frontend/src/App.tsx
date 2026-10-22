@@ -46,6 +46,7 @@ const EbarimtReport      = page(() => import("./pages/EbarimtReport"));
 const AiChat             = page(() => import("./pages/AiChat"));
 const PosSync            = page(() => import("./pages/PosSync"));
 const PriceCheck         = page(() => import("./pages/PriceCheck"));
+const StockLive          = page(() => import("./pages/StockLive"));
 const HallCount          = page(() => import("./pages/HallCount"));
 const Pallets            = page(() => import("./pages/Pallets"));
 const SalesAnalytics     = page(() => import("./pages/SalesAnalytics"));
@@ -109,6 +110,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "pos_sync",            path: "/pos-sync" },
   { key: "pos_recon",           path: "/pos-recon" },
   { key: "price_check",         path: "/price-check" },
+  { key: "stock_live",          path: "/stock" },
   { key: "hall_count",          path: "/hall-count" },
   { key: "pallets",             path: "/pallets" },
   { key: "sales_analytics",     path: "/sales-analytics" },
@@ -352,6 +354,7 @@ export default function App() {
                   path="/price-check"
                   element={can("price_check") ? <PriceCheck /> : <DefaultRedirect />}
                 />
+                <Route path="/stock" element={can("stock_live") ? <StockLive /> : <DefaultRedirect />} />
                 <Route
                   path="/hall-count"
                   element={can("hall_count") ? <HallCount /> : <DefaultRedirect />}

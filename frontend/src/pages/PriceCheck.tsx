@@ -69,6 +69,7 @@ export default function PriceCheckPage() {
   const [printErr, setPrintErr] = useState("");
   const [printed, setPrinted] = useState(false);
   const [bulk, setBulk] = useState<BulkInfo | null>(null);
+  const [stock, setStock] = useState<{ total: number; locations: { code: string; name: string; qty: number }[] } | null>(null);
   const [status, setStatus] = useState<PriceStatus | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>(loadQueue);
   const [collect, setCollect] = useState(() => { try { return localStorage.getItem(COLLECT_KEY) === "1"; } catch { return false; } });
@@ -131,9 +132,13 @@ export default function PriceCheckPage() {
       if (collectRef.current && r.data?.product) addToQueue(r.data.product);
       // Бөөний үнэ erxes-ээс ирдэг тул удаан — үндсэн үнийг хүлээлгэхгүйн
       // тулд тусад нь ачаална. Энэ хооронд өөр бараа уншуулсан бол хаяна.
-      setBulk(null);
+      setBulk(null); setStock(null);
       if (r.data?.product?.code) {
         const code = r.data.product.code;
+        // Эрхэтийн үлдэгдэл байршлаар (сервер 60 сек кэшилнэ — Эрхэтэд ачаалалгүй)
+        api.get("/stock-live/codes", { params: { codes: code }, timeout: 30000 })
+          .then(s => { if (lastRef.current.code === c) setStock(s.data.items?.[0] ?? null); })
+          .catch(() => {});
         api.get("/price-check/bulk", { params: { q: code }, timeout: 30000 })
           .then(b => { if (lastRef.current.code === c) setBulk(b.data); })
           .catch(() => {});
@@ -411,6 +416,15 @@ export default function PriceCheckPage() {
                   Бөөний <span className="text-[17px] font-bold text-emerald-600">{bulk.quantity} ш</span>
                   {" — "}
                   <span className="text-[17px] font-bold text-emerald-600">{bulk.price}₮</span>
+                </div>
+              )}
+
+              {stock && (
+                <div className="-mt-1 mb-3 flex flex-wrap justify-center gap-1 text-[11.5px]">
+                  <span className="text-gray-500">Үлдэгдэл <b className="text-teal-700">{Math.round(stock.total).toLocaleString("en-US")}</b>:</span>
+                  {stock.locations.filter(l => l.qty).map(l => (
+                    <span key={l.code} className="rounded-md bg-teal-50 px-1.5 text-teal-800">{l.name} {Math.round(l.qty).toLocaleString("en-US")}</span>
+                  ))}
                 </div>
               )}
 
