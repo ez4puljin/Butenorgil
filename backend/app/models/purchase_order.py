@@ -17,6 +17,8 @@ class PurchaseOrder(Base):
     # Захиалга үүсгэхэд сонгоно (ирээдүйн төлөвлөж буй сарын өмнөх оны борлуулалтыг харах).
     # (vehicle_id-тэй адил Column хэлбэрээр — Mapped[int|None] нь Py3.14-д typing алдаа өгдөг)
     stat_month = Column(Integer, nullable=True)
+    # Эрхэтийн үлдэгдлийг аль байршлуудаас харуулах ("02,11"); NULL/хоосон = бүгд
+    stock_locations = Column(String(60), nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     notes: Mapped[str] = mapped_column(String(1000), default="")

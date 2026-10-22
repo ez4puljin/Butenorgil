@@ -135,6 +135,7 @@ def _serialize_order_detail(
         "is_archived": bool(o.is_archived),
         "location": o.location or "warehouse",
         "stat_month": o.stat_month,
+        "stock_locations": o.stock_locations or "",
     }
 
     # Load lines via explicit query (NOT lazy o.lines which loads ALL 10K+ rows)
@@ -2955,6 +2956,27 @@ def set_order_stat_month(
     po.stat_month = sm if (sm and 1 <= sm <= 12) else None
     db.commit()
     return {"ok": True, "stat_month": po.stat_month}
+
+
+class POStockLocationsIn(BaseModel):
+    locations: list[str] = []
+
+
+@router.put("/{order_id}/stock-locations")
+def set_order_stock_locations(
+    order_id: int,
+    body: POStockLocationsIn,
+    db: Session = Depends(get_db),
+    u: User = Depends(require_role("manager", "admin", "supervisor")),
+):
+    """Эрхэтийн үлдэгдлийг аль байршлуудаас харуулахыг захиалга бүрт тохируулна (хоосон = бүгд)."""
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
+    if not po:
+        raise HTTPException(404, "Захиалга олдсонгүй")
+    codes = sorted({c.strip() for c in body.locations if c and c.strip().isdigit() and len(c.strip()) <= 3})
+    po.stock_locations = ",".join(codes)[:60] or None
+    db.commit()
+    return {"ok": True, "stock_locations": po.stock_locations or ""}
 
 
 # ── Extra lines (supplier-added items not in product catalog) ──────────────────

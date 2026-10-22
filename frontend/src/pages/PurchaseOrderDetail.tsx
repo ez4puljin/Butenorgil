@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Fragment, memo } from "react";
-import StockBadge from "../components/StockBadge";
+import StockBadge, { SHORT as STOCK_LOC } from "../components/StockBadge";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -505,6 +505,7 @@ export default function PurchaseOrderDetail() {
   const [filterSearch, setFilterSearch] = useState("");
   const [onlyOrdered, setOnlyOrdered] = useState(false);
   const [onlyReorder, setOnlyReorder] = useState(false);
+  const [stockLocOpen, setStockLocOpen] = useState(false);
 
   const flash = (text: string, ok = true) => {
     setMsg({ text, ok });
@@ -738,6 +739,9 @@ export default function PurchaseOrderDetail() {
   // Бусад role-д backend зөвхөн эдгээр статуст хадгалахыг зөвшөөрдөг —
   // UI нь серверт татгалзах засварыг санал болгох ёсгүй.
   const SAVABLE_STATUSES = ["preparing", "reviewing", "loading", "arrived", "accounting"];
+
+  // Эрхэтийн үлдэгдлийн байршлууд (захиалга бүрийн тохиргоо) — хоосон = бүгд
+  const stockLocs: string[] = (((order as any)?.stock_locations as string) || "").split(",").filter(Boolean);
 
   const canEdit = (() => {
     if (!order) return false;
@@ -1997,6 +2001,36 @@ export default function PurchaseOrderDetail() {
             )
           )}
 
+          {/* Эрхэтийн үлдэгдлийг аль байршлаас харуулах — захиалга бүрт тохируулна (хоосон = бүгд) */}
+          <span className="relative">
+            <button
+              onClick={() => setStockLocOpen(v => !v)}
+              title="Мөр бүрийн «Эрхэт» үлдэгдлийг аль агуулахаас харуулах"
+              className="rounded-full border border-teal-200 bg-teal-50 px-2.5 py-0.5 text-[11px] font-semibold text-teal-700"
+            >
+              📦 Үлдэгдэл: {stockLocs.length ? stockLocs.map(c => STOCK_LOC[c] ?? c).join(", ") : "бүх агуулах"}
+            </button>
+            {stockLocOpen && (
+              <div className="absolute left-0 top-7 z-30 w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
+                {Object.entries(STOCK_LOC).map(([c, n]) => (
+                  <label key={c} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-[12px] hover:bg-gray-50">
+                    <input type="checkbox" disabled={!(isAdmin || eff === "manager" || eff === "supervisor")} checked={stockLocs.includes(c)}
+                      onChange={async () => {
+                        const next = stockLocs.includes(c) ? stockLocs.filter(x => x !== c) : [...stockLocs, c];
+                        try {
+                          await api.put(`/purchase-orders/${order.id}/stock-locations`, { locations: next });
+                          await loadOrder();
+                        } catch (err: any) { flash(err?.response?.data?.detail ?? "Алдаа гарлаа", false); }
+                      }} />
+                    <span className="font-mono text-[10.5px] text-gray-400">{c}</span>{n}
+                  </label>
+                ))}
+                <p className="mt-1 px-2 text-[10.5px] text-gray-400">Сонгоогүй бол бүх агуулахын нийт.</p>
+                <button onClick={() => setStockLocOpen(false)} className="mt-1 w-full rounded-lg bg-gray-100 py-1 text-[11.5px]">Хаах</button>
+              </div>
+            )}
+          </span>
+
           {/* Статистикийн сар — харьцуулах сар. Үргэлж харагдана, өөрчлөх нь
               зөвхөн төлөвлөх үе шатанд. */}
           {(
@@ -3013,7 +3047,7 @@ export default function PurchaseOrderDetail() {
                           <td className="min-w-[140px] px-2 py-2 md:min-w-[180px] md:px-4 md:py-2.5">
                             <div className="flex flex-wrap items-start gap-1.5">
                               <span className="block whitespace-normal break-words text-xs font-medium text-gray-800">{l.name}</span>
-                              {l.item_code && <StockBadge code={l.item_code} />}
+                              {l.item_code && <StockBadge code={l.item_code} locations={stockLocs} />}
                               {(l as any).override_brand && (l as any).original_brand && (
                                 <span
                                   title={`Оригинал бренд: ${(l as any).original_brand} (онцгой тохиолдол)`}

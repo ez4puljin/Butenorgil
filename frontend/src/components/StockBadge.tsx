@@ -12,7 +12,7 @@ export interface LiveStock { total: number; locations: { code: string; name: str
 type Val = LiveStock | null | "error";
 
 // Байршлын товч нэр (мөрөнд багтаах) — «11:12» гэх мэт цаг шиг харагдахаас сэргийлнэ
-const SHORT: Record<string, string> = {
+export const SHORT: Record<string, string> = {
   "01": "Бөөний", "02": "Ус ундаа", "05": "Хархорин", "08": "Заал архи", "10": "Хөргүүр", "11": "Жижиглэн", "12": "Гэрээт",
 };
 
@@ -52,8 +52,8 @@ export function fetchLiveStock(code: string): Promise<Val> {
 
 function q(n: number) { return Math.round(n).toLocaleString("en-US"); }
 
-export default function StockBadge({ code, variant = "inline", className = "" }:
-  { code: string; variant?: "inline" | "block"; className?: string }) {
+export default function StockBadge({ code, variant = "inline", className = "", locations }:
+  { code: string; variant?: "inline" | "block"; className?: string; locations?: string[] }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [v, setV] = useState<Val | undefined>(undefined);
 
@@ -69,7 +69,12 @@ export default function StockBadge({ code, variant = "inline", className = "" }:
     return () => { alive = false; io.disconnect(); };
   }, [code]);
 
-  const ok = v && v !== "error" ? v : null;
+  // locations өгсөн бол (захиалгын тохиргоо) зөвхөн тэдгээр байршлыг харуулж, нийтийг дахин тооцно
+  const raw = v && v !== "error" ? v : null;
+  const ok = raw && locations && locations.length
+    ? (() => { const ls = raw.locations.filter(l => locations.includes(l.code));
+               return { total: ls.reduce((a, l) => a + l.qty, 0), locations: ls }; })()
+    : raw;
   const locs = (ok?.locations ?? []).filter(l => l.qty);
   const title = ok
     ? `Эрхэтийн үлдэгдэл: ${q(ok.total)}\n` + ok.locations.map(l => `${l.code} ${l.name}: ${q(l.qty)}`).join("\n")

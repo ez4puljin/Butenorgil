@@ -626,6 +626,8 @@ def ensure_po_location_schema():
         # "Өмнөх оны энэ сард" баганад харьцуулах сар (NULL = order_date-ийн сар)
         if cols and "stat_month" not in cols:
             conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN stat_month INTEGER"))
+        if cols and "stock_locations" not in cols:
+            conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN stock_locations VARCHAR(60)"))
 
 def ensure_po_brand_status_table():
     """po_brand_statuses хүснэгт үүсгэж, одоо байгаа PO-уудад backfill хийнэ."""
@@ -1300,6 +1302,27 @@ async def _payments_scan_loop():
         await asyncio.sleep(payments_scan.AUTO_EVERY_MIN * 60)
 
 
+async def _red_report_loop():
+    """Улайлтын тайлан — ажлын цагаар тохируулсан завсараар (анхдагч 1 цаг) Эрхэтээс байршлаар татна."""
+    from app.core.config import settings
+    from app.services import erkhet_red_report
+    if not (settings.erkhet_username and settings.erkhet_password):
+        return
+    await asyncio.sleep(240)
+    while True:
+        try:
+            if erkhet_red_report.due():
+                await asyncio.to_thread(erkhet_red_report.run)
+        except Exception as e:
+            print(f"[улайлт] алдаа: {e}")
+        await asyncio.sleep(300)
+
+
+@app.on_event("startup")
+async def schedule_red_report():
+    asyncio.create_task(_red_report_loop())
+
+
 @app.on_event("startup")
 async def warm_stock_live():
     """Эрхэтийн үлдэгдлийн «код → erxes бараа» индекс, байршлын тохиргоог урьдчилж ачаална (~7 сек)."""
@@ -1415,6 +1438,8 @@ from app.api.product_master import router as product_master_router  # noqa: E402
 app.include_router(product_master_router)
 from app.api.stock_live import router as stock_live_router  # noqa: E402
 app.include_router(stock_live_router)
+from app.api.red_report import router as red_report_router  # noqa: E402
+app.include_router(red_report_router)
 app.include_router(aclas_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
 import ProductSyncCard from "../components/ProductSyncCard";
+import RedReportCard from "../components/RedReportCard";
 import {
   AlertTriangle,
   Image,
@@ -652,6 +653,9 @@ export default function Dashboard() {
       )}
 
       {/* ── Барааны мэдээлэл: erxes ↔ Эрхэт тулгалт ─────────────────────── */}
+      {/* ── Улайлтын тайлан: Эрхэтэд сөрөг үлдэгдэл ─────────────────────── */}
+      <RedReportCard />
+
       <ProductSyncCard />
 
       {/* ── Захиалгын тайлан ────────────────────────────────────────────── */}
