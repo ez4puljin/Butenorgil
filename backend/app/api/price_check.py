@@ -70,12 +70,31 @@ class PrintIn(BaseModel):
 
 @router.post("/label/print")
 def label_print(body: PrintIn, _: User = Depends(get_current_user)):
-    """Шошгыг заалны XP-80C (\\192.168.1.106\XP-80C Zaal) принтер рүү шууд хэвлэнэ — харилцах цонхгүй."""
+    """Шошгыг заалны XP-80C (192.168.1.106 «XP-80C Zaal») принтер рүү шууд хэвлэнэ — харилцах цонхгүй."""
     p = (pos_price.lookup((body.q or "").strip()) or {}).get("product")
     if not p:
         raise HTTPException(404, "Бараа олдсонгүй.")
     try:
         return label_printer.print_label(p, body.copies)
+    except (label_printer.PrintError, pos_label.LabelError) as e:
+        raise HTTPException(502, str(e))
+
+
+class BatchIn(BaseModel):
+    items: list[PrintIn]
+
+
+@router.post("/label/print-batch")
+def label_print_batch(body: BatchIn, _: User = Depends(get_current_user)):
+    """Худалдагчийн уншуулсан олон барааны шошгыг нэг дор — шошго бүр тусдаа хайчлагдана."""
+    items, missing = [], []
+    for it in body.items:
+        p = (pos_price.lookup((it.q or "").strip()) or {}).get("product")
+        (items.append((p, it.copies)) if p else missing.append(it.q))
+    if missing:
+        raise HTTPException(404, "Бараа олдсонгүй: " + ", ".join(missing[:5]))
+    try:
+        return label_printer.print_labels(items)
     except (label_printer.PrintError, pos_label.LabelError) as e:
         raise HTTPException(502, str(e))
 

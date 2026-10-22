@@ -1,3 +1,4 @@
+import { startHtml5Scanner, cameraBlockedReason } from "./html5Scanner";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const NATIVE_FORMATS = ["ean_13", "ean_8", "code_128", "code_39", "code_93", "upc_a", "upc_e", "itf", "codabar"];
@@ -54,7 +55,14 @@ export function useBarcodeCamera(onCode: (code: string) => void, pausedRef: Reac
     setCamErr(""); setStarting(true);
     stop();
     try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Камерын API байхгүй байна.");
+      const blocked = cameraBlockedReason();
+      if (blocked) throw new Error(blocked);
+      // iPhone/Safari: BarcodeDetector байхгүй — камерыг хоёр дахин нээхгүй, шууд html5-qrcode
+      if (!("BarcodeDetector" in window)) {
+        qrRef.current = await startHtml5Scanner(boxId, (decoded: string) => { if (!pausedRef.current) onCodeRef.current(decoded); });
+        setStarting(false); setCamOn(true);
+        return;
+      }
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
@@ -76,15 +84,7 @@ export function useBarcodeCamera(onCode: (code: string) => void, pausedRef: Reac
         return;
       }
       stream.getTracks().forEach((t) => t.stop());
-      const { Html5Qrcode } = await import("html5-qrcode");
-      const devs = await Html5Qrcode.getCameras();
-      if (!devs?.length) throw new Error("Камер олдсонгүй");
-      const back = devs.find((d: any) => /back|rear|environment/i.test(d.label || ""));
-      const qr = new Html5Qrcode(boxId, false);
-      qrRef.current = qr;
-      await qr.start((back || devs[0]).id,
-        { fps: 10, qrbox: { width: 280, height: 180 }, aspectRatio: 1.4 },
-        (decoded: string) => { if (!pausedRef.current) onCodeRef.current(decoded); }, () => {});
+      qrRef.current = await startHtml5Scanner(boxId, (decoded: string) => { if (!pausedRef.current) onCodeRef.current(decoded); });
       setStarting(false); setCamOn(true);
     } catch (e: any) {
       const n = e?.name || "";

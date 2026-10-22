@@ -14,6 +14,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from app.core.config import settings
@@ -25,6 +26,8 @@ BROWSERS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 _lock = threading.Lock()
+BATCH = 15                    # нэг дэлгэцийн зурагт багтаах шошго (өндрийн хязгаар)
+MAX_LABELS = 100              # нэг удаагийн хэвлэлтийн дээд хэмжээ
 
 
 class PrintError(RuntimeError):
@@ -44,32 +47,77 @@ def _browser() -> str:
 
 
 def render_png(html: str) -> "Image.Image":  # noqa: F821
-    """HTML → принтерийн өргөнтэй (576 цэг) зураг. Хоосон доод хэсгийг тайрна."""
-    from PIL import Image, ImageChops
+    """HTML → принтерийн өргөнтэй (576 цэг) зураг, хүрээгээр яг тайрсан."""
+    img = _shot(html, 1400)
+    box = _ink(img).getbbox()
+    if not box:
+        raise PrintError("Шошго хоосон зурагдлаа.")
+    return img.crop((0, box[1], DOTS, box[3]))
+
+
+def render_many(htmls: list[str]) -> list:
+    """Олон шошгыг НЭГ хөтчийн дуудлагаар зурна (шошго бүрд Edge асаахаас ~10 дахин хурдан):
+    дунд нь хоосон зай тавиад цагаан мөрөөр нь хуваана. Шошгоны дотор хүрээний хажуу шугам
+    бүх мөрөнд байдаг тул бүтэн цагаан мөр зөвхөн шошго хоорондох зайд л гарна."""
+    out = []
+    for i in range(0, len(htmls), BATCH):
+        part = htmls[i:i + BATCH]
+        img = _shot("".join(f"<div style='margin-bottom:30px'>{h}</div>" for h in part), 260 * len(part) + 200)
+        ink = _ink(img)
+        rows, y0 = [], None
+        for y in range(img.height):
+            has = ink.crop((0, y, DOTS, y + 1)).getbbox() is not None
+            if has and y0 is None:
+                y0 = y
+            elif not has and y0 is not None:
+                rows.append((y0, y)); y0 = None
+        if y0 is not None:
+            rows.append((y0, img.height))
+        if len(rows) != len(part):                          # таамаг таарсангүй — нэг нэгээр нь
+            out += [render_png(h) for h in part]
+        else:
+            out += [img.crop((0, a, DOTS, b)) for a, b in rows]
+    return out
+
+
+def _ink(img):
+    from PIL import ImageChops
+    return ImageChops.invert(img)                           # хар зурагтай хэсэг ≠ 0
+
+
+def _shot(html: str, height: int) -> "Image.Image":  # noqa: F821
+    from PIL import Image
     page = ("<!doctype html><html><head><meta charset='utf-8'><style>"
             f"html,body{{margin:0;padding:0;background:#fff;width:{CSS_W}px}}</style></head><body>"
             + html + "</body></html>")
-    with tempfile.TemporaryDirectory(prefix="lbl_") as d:
+    with tempfile.TemporaryDirectory(prefix="lbl_", ignore_cleanup_errors=True) as d:
         src, out = Path(d) / "label.html", Path(d) / "label.png"
         src.write_text(page, encoding="utf-8")
         cmd = [_browser(), "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
                "--no-default-browser-check", f"--user-data-dir={Path(d) / 'prof'}",
-               f"--force-device-scale-factor={SCALE:.4f}", f"--window-size={CSS_W},1400",
+               f"--force-device-scale-factor={SCALE:.4f}", f"--window-size={CSS_W},{height}",
                f"--screenshot={out}", src.as_uri()]
         try:
-            subprocess.run(cmd, capture_output=True, timeout=40,
+            subprocess.run(cmd, capture_output=True, timeout=60,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except subprocess.TimeoutExpired:
             raise PrintError("Шошго зурах хугацаа хэтэрлээ.")
-        if not out.exists():
+        # 2026-10-22: Edge 155-ийн launcher 0.1с-д буцаад зургийг хүүхэд процесс ард нь бичдэг —
+        # файл гарч, хэмжээ нь тогтвортой болтол хүлээнэ.
+        deadline, last = time.monotonic() + 45, -1
+        while time.monotonic() < deadline:
+            size = out.stat().st_size if out.exists() else -1
+            if size > 0 and size == last:
+                break
+            last = size
+            time.sleep(0.3)
+        else:
             raise PrintError("Шошго зурагдсангүй (headless хөтөч).")
         img = Image.open(out).convert("L")
+        img.load()
     if img.width != DOTS:
         img = img.resize((DOTS, round(img.height * DOTS / img.width)))
-    box = ImageChops.invert(img).getbbox()                 # хар зурагтай хэсэг — хүрээгээр яг тайрна
-    if not box:
-        raise PrintError("Шошго хоосон зурагдлаа.")
-    return img.crop((0, box[1], DOTS, box[3]))
+    return img
 
 
 def escpos(img, cut: bool = True) -> bytes:
@@ -148,3 +196,18 @@ def print_label(product: dict, copies: int = 1) -> dict:
         one = escpos(img)
         send(one * copies)
     return {"ok": True, "printer": printer_path(), "copies": copies, "height_dots": img.height}
+
+
+def print_labels(items: list[tuple[dict, int]]) -> dict:
+    """Олон барааны шошгыг нэг дор — шошго бүр (хувь бүр) тусдаа хайчлагдана."""
+    from app.services import pos_label
+    items = [(p, max(1, min(int(c or 1), 20))) for p, c in items if p]
+    total = sum(c for _, c in items)
+    if not items:
+        raise PrintError("Хэвлэх бараа алга.")
+    if total > MAX_LABELS:
+        raise PrintError(f"Нэг удаад {MAX_LABELS}-аас ихгүй шошго ({total}).")
+    with _lock:
+        imgs = render_many([pos_label.label_inner(p) for p, _ in items])
+        send(b"".join(escpos(img) * c for img, (_, c) in zip(imgs, items)))
+    return {"ok": True, "printer": printer_path(), "products": len(items), "labels": total}

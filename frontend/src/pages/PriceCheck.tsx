@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Tag, Camera, Loader2, RefreshCw, Keyboard, SearchX, ScanLine, X, Printer, Wifi, WifiOff,
+  ListPlus, Minus, Plus, Trash2,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { startHtml5Scanner, cameraBlockedReason } from "../lib/html5Scanner";
 
 /* Заалны таблетад зориулсан үнийн лавлагаа — offline POS (192.168.1.254:7000)-оос.
    Камер БАЙНГА ажиллана — үйлчлүүлэгч ирээд шууд уншуулна. Тиймээс нийтлэг
@@ -32,6 +34,14 @@ const NATIVE_FORMATS = ["ean_13", "ean_8", "code_128", "code_39", "code_93",
 const REPEAT_MS = 2500;    // ижил баркодыг дахин асуухгүй байх хугацаа
 const CLEAR_MS = 30000;    // үр дүнг автоматаар цэвэрлэх
 
+// Олноор хэвлэх жагсаалт — худалдагч тавиураар явж уншуулаад нэг дор хэвлэнэ
+interface QueueItem { code: string; name: string; price: number | null; copies: number }
+const QUEUE_KEY = "pricecheck_queue";
+const COLLECT_KEY = "pricecheck_collect";
+function loadQueue(): QueueItem[] {
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch { return []; }
+}
+
 function money(n: number | null | undefined) {
   if (n == null) return "—";
   return Math.round(n).toLocaleString("mn-MN");
@@ -60,6 +70,42 @@ export default function PriceCheckPage() {
   const [printed, setPrinted] = useState(false);
   const [bulk, setBulk] = useState<BulkInfo | null>(null);
   const [status, setStatus] = useState<PriceStatus | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>(loadQueue);
+  const [collect, setCollect] = useState(() => { try { return localStorage.getItem(COLLECT_KEY) === "1"; } catch { return false; } });
+  const collectRef = useRef(collect);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchMsg, setBatchMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(queue)); } catch { /* хувийн горим */ } }, [queue]);
+  useEffect(() => {
+    collectRef.current = collect;
+    try { localStorage.setItem(COLLECT_KEY, collect ? "1" : "0"); } catch { /* хувийн горим */ }
+  }, [collect]);
+
+  const addToQueue = useCallback((p: { code: string; name: string; price: number | null }, n = 1) => {
+    setBatchMsg(null);
+    setQueue(q => {
+      const i = q.findIndex(x => x.code === p.code);
+      if (i < 0) return [{ code: p.code, name: p.name, price: p.price, copies: n }, ...q];
+      const c = [...q];
+      c[i] = { ...c[i], copies: Math.min(20, c[i].copies + n), price: p.price, name: p.name };
+      return c;
+    });
+  }, []);
+  const queueLabels = queue.reduce((a, x) => a + x.copies, 0);
+
+  async function printBatch() {
+    if (!queue.length) return;
+    setBatchBusy(true); setBatchMsg(null);
+    try {
+      await api.post("/price-check/label/print-batch",
+        { items: queue.map(x => ({ q: x.code, copies: x.copies })) }, { timeout: 180000 });
+      setBatchMsg({ ok: true, text: `${queueLabels} шошго хэвлэгдлээ ✓` });
+      setQueue([]);
+    } catch (e: any) {
+      setBatchMsg({ ok: false, text: e?.response?.data?.detail ?? "Принтер рүү хэвлэж чадсангүй" });
+    } finally { setBatchBusy(false); }
+  }
 
   // Offline POS-той холбогдож байгаа эсэх — алдаатай бол дээр нь анхааруулна
   const loadStatus = useCallback(() => {
@@ -82,6 +128,7 @@ export default function PriceCheckPage() {
     try {
       const r = await api.get("/price-check/lookup", { params: { q: c }, timeout: 20000 });
       setRes(r.data);
+      if (collectRef.current && r.data?.product) addToQueue(r.data.product);
       // Бөөний үнэ erxes-ээс ирдэг тул удаан — үндсэн үнийг хүлээлгэхгүйн
       // тулд тусад нь ачаална. Энэ хооронд өөр бараа уншуулсан бол хаяна.
       setBulk(null);
@@ -100,7 +147,7 @@ export default function PriceCheckPage() {
       if (clearRef.current) clearTimeout(clearRef.current);
       clearRef.current = setTimeout(() => setRes(null), CLEAR_MS);
     }
-  }, []);
+  }, [addToQueue]);
 
   // Заалны XP-80C (\\192.168.1.106\XP-80C Zaal) принтер рүү ШУУД — сервер зураад RAW илгээнэ.
   async function printLabel(code: string) {
@@ -156,7 +203,14 @@ export default function PriceCheckPage() {
   const start = useCallback(async () => {
     setCamErr(""); setStarting(true); stopAll();
     try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Камерын API байхгүй байна.");
+      const blocked = cameraBlockedReason();
+      if (blocked) throw new Error(blocked);
+      // iPhone/Safari-д BarcodeDetector байхгүй — камерыг хоёр дахин нээхгүйн тулд шууд html5-qrcode
+      if (!("BarcodeDetector" in window)) {
+        qrRef.current = await startHtml5Scanner("pricecheck-cam", (decoded: string) => lookup(decoded));
+        setMode("html5"); setStarting(false);
+        return;
+      }
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -166,33 +220,16 @@ export default function PriceCheckPage() {
       }
       streamRef.current = stream;
 
-      if ("BarcodeDetector" in window) {
-        const D = (window as any).BarcodeDetector;
-        const sup = await D.getSupportedFormats().catch(() => NATIVE_FORMATS);
-        const fmts = NATIVE_FORMATS.filter(f => sup.includes(f));
-        detectorRef.current = new D({ formats: fmts.length ? fmts : NATIVE_FORMATS });
-        const v = videoRef.current!;
-        v.srcObject = stream;
-        v.setAttribute("playsinline", "true");
-        await v.play().catch(() => {});
-        setMode("native"); setStarting(false);
-        rafRef.current = requestAnimationFrame(detectLoop);
-        return;
-      }
-
-      // html5-qrcode нь өөрийн stream үүсгэдэг тул энэийг чөлөөлнө
-      stream.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
-      const { Html5Qrcode } = await import("html5-qrcode");
-      const devices = await Html5Qrcode.getCameras();
-      if (!devices?.length) throw new Error("Камер олдсонгүй");
-      const back = devices.find((d: any) => /back|rear|environment/i.test(d.label || ""));
-      const qr = new Html5Qrcode("pricecheck-cam", false);
-      qrRef.current = qr;
-      await qr.start((back || devices[0]).id,
-        { fps: 10, qrbox: { width: 300, height: 200 }, aspectRatio: 1.4 },
-        (decoded: string) => lookup(decoded), () => {});
-      setMode("html5"); setStarting(false);
+      const D = (window as any).BarcodeDetector;
+      const sup = await D.getSupportedFormats().catch(() => NATIVE_FORMATS);
+      const fmts = NATIVE_FORMATS.filter(f => sup.includes(f));
+      detectorRef.current = new D({ formats: fmts.length ? fmts : NATIVE_FORMATS });
+      const v = videoRef.current!;
+      v.srcObject = stream;
+      v.setAttribute("playsinline", "true");
+      await v.play().catch(() => {});
+      setMode("native"); setStarting(false);
+      rafRef.current = requestAnimationFrame(detectLoop);
     } catch (e: any) {
       const n = e?.name || "";
       setCamErr(
@@ -242,6 +279,12 @@ export default function PriceCheckPage() {
           <h1 className="text-[15px] font-bold leading-tight tracking-tight text-gray-900">Үнэ харах</h1>
           <p className="text-[11px] leading-tight text-gray-500">Барааны баркодыг камерт уншуулна уу</p>
         </div>
+        <button onClick={() => setCollect(v => !v)}
+          title="Асаалттай үед уншуулсан бараа бүр жагсаалтад нэмэгдэж, дараа нь нэг дор хэвлэнэ"
+          className={`flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold ${
+            collect ? "bg-violet-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+          <ListPlus size={12}/>Олноор{queue.length > 0 && ` · ${queueLabels}`}
+        </button>
         {status && (
           <span title={statusBad ? status.error : `Үнэ: ${status.site} — ${status.pos.join(", ")}`}
             className={`hidden shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium sm:flex ${
@@ -381,6 +424,12 @@ export default function PriceCheckPage() {
                   {printing ? <Loader2 size={14} className="animate-spin"/> : <Printer size={14}/>}
                   {printed ? "Хэвлэгдлээ ✓" : "Шошго хэвлэх"}
                 </button>
+                {!collect && (
+                  <button onClick={() => addToQueue(p, copies)} title="Жагсаалтад нэмээд дараа нь нэг дор хэвлэх"
+                    className="flex items-center gap-1 rounded-xl border border-violet-200 bg-white px-3 py-2 text-[12.5px] font-semibold text-violet-700 hover:bg-violet-50">
+                    <ListPlus size={14}/>Жагсаалт
+                  </button>
+                )}
               </div>
               {printErr && (
                 <p className="mt-1.5 text-center text-[11.5px] text-rose-600">
@@ -419,6 +468,54 @@ export default function PriceCheckPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {(queue.length > 0 || collect || batchMsg) && (
+            <div className="mt-3 shrink-0 rounded-2xl border border-gray-200 bg-white">
+              <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
+                <span className="text-[12.5px] font-bold text-gray-800">
+                  Хэвлэх жагсаалт <span className="font-normal text-gray-500">· {queue.length} бараа, {queueLabels} шошго</span>
+                </span>
+                {queue.length > 0 && (
+                  <button onClick={() => { if (confirm("Жагсаалтыг цэвэрлэх үү?")) setQueue([]); }}
+                    className="text-[11.5px] text-gray-400 hover:text-rose-600">Цэвэрлэх</button>
+                )}
+              </div>
+              {queue.length === 0 ? (
+                <p className="px-3 py-3 text-center text-[11.5px] text-gray-400">
+                  {collect ? "Уншуулсан бараа энд нэмэгдэнэ." : "Жагсаалт хоосон."}
+                </p>
+              ) : (
+                <ul className="max-h-64 divide-y divide-gray-50 overflow-auto">
+                  {queue.map((x, i) => (
+                    <li key={x.code} className="flex items-center gap-2 px-3 py-1.5">
+                      <span className="w-14 shrink-0 font-mono text-[11px] text-gray-500">{x.code}</span>
+                      <span className="min-w-0 flex-1 truncate text-[12.5px] text-gray-800">{x.name}</span>
+                      <span className="shrink-0 font-mono text-[12px] font-semibold text-violet-700">{money(x.price)}₮</span>
+                      <div className="flex shrink-0 items-center rounded-lg border border-gray-200">
+                        <button onClick={() => setQueue(q => q.map((y, j) => j === i ? { ...y, copies: Math.max(1, y.copies - 1) } : y))}
+                          className="px-1.5 py-1 text-gray-500 hover:text-gray-800"><Minus size={11}/></button>
+                        <span className="w-5 text-center text-[12px] font-semibold">{x.copies}</span>
+                        <button onClick={() => setQueue(q => q.map((y, j) => j === i ? { ...y, copies: Math.min(20, y.copies + 1) } : y))}
+                          className="px-1.5 py-1 text-gray-500 hover:text-gray-800"><Plus size={11}/></button>
+                      </div>
+                      <button onClick={() => setQueue(q => q.filter((_, j) => j !== i))}
+                        className="shrink-0 p-1 text-gray-300 hover:text-rose-600"><Trash2 size={13}/></button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex items-center gap-2 border-t border-gray-100 px-3 py-2">
+                {batchMsg && (
+                  <span className={`min-w-0 flex-1 truncate text-[11.5px] ${batchMsg.ok ? "text-emerald-600" : "text-rose-600"}`}>{batchMsg.text}</span>
+                )}
+                <button onClick={printBatch} disabled={batchBusy || queue.length === 0}
+                  className="ml-auto flex items-center gap-1.5 rounded-xl bg-violet-600 px-4 py-2 text-[13px] font-semibold text-white hover:bg-violet-700 disabled:opacity-50">
+                  {batchBusy ? <Loader2 size={14} className="animate-spin"/> : <Printer size={14}/>}
+                  Бүгдийг хэвлэх{queueLabels > 0 && ` (${queueLabels})`}
+                </button>
+              </div>
             </div>
           )}
         </div>

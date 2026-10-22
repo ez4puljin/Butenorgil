@@ -371,6 +371,25 @@
     // Камер дэмжихгүй бол хөтөч хамгийн ойрыг өгнө; бүр болохгүй бол энгийнээр.
     var hi = { facingMode: { ideal: want }, width: { ideal: 1920 }, height: { ideal: 1080 },
                frameRate: { ideal: 30 } };
+    // iPhone/Safari: BarcodeDetector байхгүй. Камерыг нээгээд хааж дахин нээх нь iOS-д хар дэлгэц
+    // өгдөг, aspectRatio/advanced хязгаарлалт OverconstrainedError өгдөг — шууд НЭГ удаа нээнэ.
+    if (!("BarcodeDetector" in window)) {
+      video.style.display = "none";
+      loadScript("vendor/html5-qrcode.min.js").then(function () {
+        if (!window.Html5Qrcode) throw new Error("Камерын сан ачаалагдсангүй");
+        qr = new window.Html5Qrcode("cam", false);
+        return qr.start({ facingMode: want },
+          { fps: 15, qrbox: function (w, h) {
+              return { width: Math.max(50, Math.floor(Math.min(320, w * 0.85))),
+                       height: Math.max(50, Math.floor(Math.min(200, h * 0.6))) }; } },
+          function (t) { lookup(t); }, function () {});
+      }).catch(function (e) {
+        var n = (e && e.name) || "";
+        camFail(n === "NotAllowedError" ? "Камер зөвшөөрөгдөөгүй. Тохиргоо → Safari → Камер → «Зөвшөөрөх»."
+          : (e && e.message) || String(e || "Камер нээгдсэнгүй"));
+      });
+      return;
+    }
     navigator.mediaDevices.getUserMedia({ video: hi, audio: false })
       .catch(function () { return navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: want } }, audio: false }); })
       .catch(function () { return navigator.mediaDevices.getUserMedia({ video: true, audio: false }); })

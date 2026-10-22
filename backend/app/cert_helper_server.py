@@ -5,6 +5,7 @@ Listens on port 8080 (plain HTTP) and exposes ONLY:
   GET /                  -> setup page with install instructions + QR
   GET /rootCA.crt        -> the local CA cert
   GET /rootca.crt        -> alias
+  GET /apk               -> Android апп (репо үндсэн Buten-Orgil-ERP.apk) — утасны browser-оор шууд татна
 
 This exists so a phone that has not yet installed the local CA can still
 download it (the main server runs HTTPS only and would otherwise show a
@@ -21,6 +22,9 @@ from pathlib import Path
 
 CERT_PATH = Path(__file__).resolve().parent / "data" / "certs" / "rootCA.crt"
 PORT = 8080
+# build_apk.bat-ийн гаргадаг файл; HTTP дээр өгдөг нь утасны Chrome self-signed HTTPS-ийн
+# анхааруулгагүйгээр шууд татаж чаддаг тул (2026-10-22 хэрэглэгчийн хүсэлт).
+APK_PATH = Path(__file__).resolve().parents[2] / "Buten-Orgil-ERP.apk"
 
 
 def _local_ips() -> list[str]:
@@ -32,6 +36,15 @@ def _local_ips() -> list[str]:
     except Exception:
         pass
     return ips or ["<server-ip>"]
+
+
+def _apk_info() -> str:
+    try:
+        from datetime import datetime
+        st = APK_PATH.stat()
+        return f"{st.st_size / 1048576:.1f} MB · {datetime.fromtimestamp(st.st_mtime):%Y-%m-%d %H:%M} шинэчилсэн. "
+    except OSError:
+        return "APK файл серверт алга байна. "
 
 
 def _setup_html() -> bytes:
@@ -52,7 +65,11 @@ hr{{border:0;border-top:1px solid #eee;margin:24px 0}}
 .muted{{color:#777;font-size:13px}}
 </style></head><body>
 <h1>ERP — Setup</h1>
-<p class="muted">Утсан дээр аппыг анх удаа суулгахад дараах 2 алхмыг хийнэ.</p>
+<p class="muted">Утсан дээр аппыг анх удаа суулгахад дараах алхмуудыг хийнэ.</p>
+
+<h2>0. Android апп татах</h2>
+<p><a class="btn" href="/apk">📱 Buten-Orgil-ERP.apk татах</a></p>
+<p class="muted">{_apk_info()}Татсаны дараа файлыг нээж «Суулгах» дарна. «Тодорхойгүй эх сурвалж» гэж асуувал Chrome-д зөвшөөрнө.</p>
 
 <h2>1. Сертификат суулгах</h2>
 <p>Энэ товчийг даран файл татна:</p>
@@ -97,6 +114,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            return
+        if path in ("/apk", "/buten-orgil-erp.apk"):
+            if not APK_PATH.exists():
+                self.send_error(404, "APK not built yet")
+                return
+            size = APK_PATH.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.android.package-archive")
+            self.send_header("Content-Disposition", 'attachment; filename="Buten-Orgil-ERP.apk"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            with APK_PATH.open("rb") as f:
+                while chunk := f.read(256 * 1024):
+                    self.wfile.write(chunk)
             return
         if path in ("/", "/setup", "/index.html"):
             data = _setup_html()
