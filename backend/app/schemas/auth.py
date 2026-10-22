@@ -10,5 +10,6 @@ class TokenOut(BaseModel):
     nickname: str = ""
     permissions: list[str] = []
     universal_pages: list[str] = []
+    mobile_pages: list[str] | None = None   # APK-д л: None = вэбтэй ижил
     tag_ids: list[int]
     user_id: int = 0

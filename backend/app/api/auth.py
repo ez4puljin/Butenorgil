@@ -40,6 +40,8 @@ def get_me(
         nickname=u.nickname or "",
         permissions=permissions,
         universal_pages=get_universal_pages(),
+        mobile_pages=([p for p in role_obj.mobile_permissions.split(",") if p]
+                      if role_obj and role_obj.mobile_permissions is not None else None),
         tag_ids=parse_tag_ids(u.tag_ids),
         user_id=u.id,
     )
@@ -68,6 +70,8 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         nickname=u.nickname or "",
         permissions=permissions,
         universal_pages=get_universal_pages(),
+        mobile_pages=([p for p in role_obj.mobile_permissions.split(",") if p]
+                      if role_obj and role_obj.mobile_permissions is not None else None),
         tag_ids=parse_tag_ids(u.tag_ids),
         user_id=u.id,
     )

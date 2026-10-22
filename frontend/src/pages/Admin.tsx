@@ -31,6 +31,7 @@ type RoleT = {
   base_role: string;
   permissions: string;
   is_system: boolean;
+  mobile_permissions: string | null;
 };
 
 const BASE_ROLES = [
@@ -210,7 +211,8 @@ export default function Admin() {
   const [roleCreateLoading, setRoleCreateLoading] = useState(false);
   const [roleCreateMsg, setRoleCreateMsg] = useState<Msg | null>(null);
   const [editRoleTarget, setEditRoleTarget] = useState<RoleT | null>(null);
-  const [editRoleForm, setEditRoleForm] = useState({ label: "", color: "", base_role: "", permissions: [] as string[] });
+  const [editRoleForm, setEditRoleForm] = useState({ label: "", color: "", base_role: "", permissions: [] as string[],
+    mobile_custom: false, mobile_permissions: [] as string[] });
   const [editRoleLoading, setEditRoleLoading] = useState(false);
   const [editRoleMsg, setEditRoleMsg] = useState<Msg | null>(null);
   const [deleteRoleTarget, setDeleteRoleTarget] = useState<RoleT | null>(null);
@@ -706,7 +708,8 @@ export default function Admin() {
                     </div>
                   </div>
                   <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                    <button onClick={() => { setEditRoleTarget(r); setEditRoleForm({ label: r.label, color: r.color, base_role: r.base_role, permissions: (r.permissions || "").split(",").filter(Boolean) }); setEditRoleMsg(null); }}
+                    <button onClick={() => { setEditRoleTarget(r); setEditRoleForm({ label: r.label, color: r.color, base_role: r.base_role, permissions: (r.permissions || "").split(",").filter(Boolean),
+                      mobile_custom: r.mobile_permissions != null, mobile_permissions: (r.mobile_permissions ?? "").split(",").filter(Boolean) }); setEditRoleMsg(null); }}
                       className="grid h-7 w-7 place-items-center rounded-lg text-gray-400 hover:bg-indigo-50 hover:text-indigo-600" title="Засах">
                       <Pencil size={13}/>
                     </button>
@@ -961,6 +964,34 @@ export default function Admin() {
                       </label>
                     ))}
                   </div>
+                </div>
+                <div>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-gray-600">
+                    <input type="checkbox" className="h-3.5 w-3.5 rounded accent-indigo-600"
+                      checked={editRoleForm.mobile_custom}
+                      onChange={() => setEditRoleForm((prev) => ({ ...prev, mobile_custom: !prev.mobile_custom,
+                        mobile_permissions: prev.mobile_custom ? prev.mobile_permissions
+                          : prev.mobile_permissions.length ? prev.mobile_permissions
+                          : Array.from(new Set([...prev.permissions, ...universalSel])) }))} />
+                    APK (утас) дээр тусдаа цэс
+                  </label>
+                  <p className="mt-0.5 text-[11px] text-gray-400">
+                    {editRoleForm.mobile_custom
+                      ? "APK-д зөвхөн сонгосон цэс харагдана (дээрх «Харагдах цэс» эсвэл бүх хүнд нээлттэй цэс байх ёстой)."
+                      : "Унтраалттай: APK дээр вэбтэй ижил цэс харагдана."}
+                  </p>
+                  {editRoleForm.mobile_custom && (
+                    <div className="mt-1.5 grid grid-cols-2 gap-1.5 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                      {pageKeys.filter((p) => editRoleForm.permissions.includes(p.key) || universalSel.includes(p.key)).map((p) => (
+                        <label key={p.key} className="flex cursor-pointer items-center gap-2 text-xs text-gray-700">
+                          <input type="checkbox" className="h-3.5 w-3.5 rounded accent-indigo-600"
+                            checked={editRoleForm.mobile_permissions.includes(p.key)}
+                            onChange={() => setEditRoleForm((prev) => ({ ...prev, mobile_permissions: prev.mobile_permissions.includes(p.key) ? prev.mobile_permissions.filter((k) => k !== p.key) : [...prev.mobile_permissions, p.key] }))} />
+                          {p.label}
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               {editRoleMsg && <div className="mt-3"><StatusMsg msg={editRoleMsg} /></div>}

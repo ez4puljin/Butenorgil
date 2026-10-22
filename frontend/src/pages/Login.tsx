@@ -35,11 +35,13 @@ export default function Login() {
         role_label: res.data.role_label,
         base_role: res.data.base_role ?? res.data.role,
         permissions: perms,
+        universalPages: res.data.universal_pages,
+        mobilePages: res.data.mobile_pages ?? null,
         tagIds: res.data.tag_ids,
         userId: res.data.user_id,
       });
       // Эхний зөвшөөрөгдсөн хуудас руу redirect (dashboard биш байж болно)
-      window.location.href = firstPermittedPath(perms);
+      window.location.href = firstPermittedPath(useAuthStore.getState().permissions);
     } catch (e: any) {
       if (!e?.response) {
         setErr("Серверт холбогдох боломжгүй байна. Backend асаагүй байж магадгүй.");

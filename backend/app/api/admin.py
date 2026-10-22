@@ -57,6 +57,9 @@ class RoleEditPayload(BaseModel):
     color: str | None = None
     base_role: str | None = None
     permissions: list[str] | None = None
+    # APK-ийн цэс: mobile_custom=False → вэбтэй ижил (NULL), True → mobile_permissions
+    mobile_custom: bool | None = None
+    mobile_permissions: list[str] | None = None
 
 class UniversalPagesPayload(BaseModel):
     keys: list[str] = []
@@ -96,6 +99,7 @@ def _role_dict(r: Role) -> dict:
     return {
         "id": r.id, "value": r.value, "label": r.label, "color": r.color,
         "base_role": r.base_role, "permissions": r.permissions or "", "is_system": r.is_system,
+        "mobile_permissions": r.mobile_permissions,
     }
 
 
@@ -159,6 +163,11 @@ def edit_role(role_id: int, payload: RoleEditPayload, db: Session = Depends(get_
     if payload.permissions is not None:
         perms = _clean_permissions(payload.permissions, role_value=r.value, base_role=r.base_role)
         r.permissions = ",".join(perms)
+    if payload.mobile_custom is False:
+        r.mobile_permissions = None
+    elif payload.mobile_custom:
+        r.mobile_permissions = ",".join(
+            _clean_permissions(payload.mobile_permissions or [], role_value=r.value, base_role=r.base_role))
     db.commit()
     db.refresh(r)
     return _role_dict(r)

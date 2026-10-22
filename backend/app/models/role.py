@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, Boolean
+from sqlalchemy import String, Integer, Boolean, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.db import Base
 
@@ -12,4 +12,6 @@ class Role(Base):
     color: Mapped[str] = mapped_column(String(150), default="bg-gray-100 text-gray-600")  # Tailwind badge classes
     base_role: Mapped[str] = mapped_column(String(50), default="manager")     # system permission level
     permissions: Mapped[str] = mapped_column(String(500), default="")         # comma-separated page keys
+    # APK-д харагдах цэс (таслалаар). NULL = вэбтэй ижил (permissions + universal)
+    mobile_permissions: Mapped[str] = mapped_column(Text, nullable=True, default=None)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)            # system roles can't be deleted

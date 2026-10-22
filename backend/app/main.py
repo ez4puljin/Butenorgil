@@ -232,6 +232,8 @@ def ensure_roles_schema():
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(roles)")).fetchall()]
         if cols and "permissions" not in cols:
             conn.execute(text("ALTER TABLE roles ADD COLUMN permissions VARCHAR(500) DEFAULT ''"))
+        if cols and "mobile_permissions" not in cols:
+            conn.execute(text("ALTER TABLE roles ADD COLUMN mobile_permissions TEXT"))
 
 def ensure_roles_seeded():
     """5 системийн role-ийг ЗӨВХӨН эхний удаа (DB хоосон үед) seed хийнэ.

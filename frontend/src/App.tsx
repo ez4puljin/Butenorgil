@@ -192,6 +192,7 @@ export default function App() {
         base_role: d.base_role,
         permissions: d.permissions ?? [],
         universalPages: d.universal_pages ?? ["expiration_tracking", "attendance"],
+        mobilePages: d.mobile_pages ?? null,
         tagIds: d.tag_ids ?? [],
         userId: d.user_id,
       });
