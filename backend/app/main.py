@@ -40,6 +40,7 @@ from app.models.balance_file import BalanceFile  # noqa: F401 – registers tabl
 from app.models.hall_count import HallCountSession, HallCountItem, HallCountScan  # noqa: F401 – registers tables
 from app.models.master_count import MasterCount, MasterCountLine, MasterCountScan  # noqa: F401 – registers tables
 from app.models.erkhet_sync_check import ErkhetSyncRun, ErkhetSyncItem, ErkhetSyncSetting, ErkhetSyncAction  # noqa: F401
+from app.models.payments_scan import PaymentsScanRun, PaymentsScanItem, PaymentsFixAction  # noqa: F401
 from app.models.aclas import AclasScale, AclasSetting, AclasPluId, AclasJob, AclasBackup  # noqa: F401
 from app.models.pallet import PalletSalesSettings, PalletTemplate, ProductPallet  # noqa: F401 – registers tables
 from app.models.custom_master import CustomField, CustomRecord  # noqa: F401 – registers tables
@@ -1276,6 +1277,27 @@ async def _aclas_loop():
         await asyncio.sleep(60)
 
 
+async def _payments_scan_loop():
+    """paymentsData / Erkhet дүнгийн автомат скан — 30 минут тутам сүүлийн 2 хоногийн deal.
+    Шинэ асуудал гарвал Telegram; ЗАСАХГҮЙ, sync ХИЙХГҮЙ (app/services/payments_scan)."""
+    from app.core.config import settings
+    from app.services import payments_scan
+    if not (settings.erxes_email and settings.erxes_password):
+        return
+    await asyncio.sleep(180)
+    while True:
+        try:
+            await asyncio.to_thread(payments_scan.run_auto_scan)
+        except Exception as e:
+            print(f"[paymentsData скан] алдаа: {e}")
+        await asyncio.sleep(payments_scan.AUTO_EVERY_MIN * 60)
+
+
+@app.on_event("startup")
+async def schedule_payments_scan():
+    asyncio.create_task(_payments_scan_loop())
+
+
 @app.on_event("startup")
 async def schedule_aclas_sync():
     asyncio.create_task(_aclas_loop())
@@ -1366,6 +1388,8 @@ app.include_router(price_check_router)
 app.include_router(hall_count_router)
 app.include_router(master_count_router)
 app.include_router(erkhet_deal_sync_router)
+from app.api.payments_scan import router as payments_scan_router  # noqa: E402
+app.include_router(payments_scan_router)
 app.include_router(aclas_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)

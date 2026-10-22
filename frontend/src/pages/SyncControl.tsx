@@ -1,19 +1,23 @@
 import { useSearchParams } from "react-router-dom";
-import { CalendarCheck, ShieldCheck } from "lucide-react";
+import { CalendarCheck, ShieldCheck, FileWarning } from "lucide-react";
 import PosReconPage from "./PosRecon";
 import ErkhetSyncCheck from "./ErkhetSyncCheck";
+import PaymentsScan from "./PaymentsScan";
 
 // «Sync хяналт» — Эрхэт рүү орж буй хоёр урсгалын хяналт нэг цэсэнд:
 //   POS тулгалт — касс (локал 192.168.1.254) → erxes → Эрхэт, өдөр бүрийн календарь
 //   Deal sync   — erxes борлуулалтын deal → Эрхэт авлага (debtAmount), дахин sync
+//   paymentsData — deal-ийн paymentsData бүтэц + Erxes↔Erkhet дүнгийн тулгалт, засаж sync
 const TABS = [
   { id: "pos", label: "POS тулгалт", icon: CalendarCheck },
   { id: "deal", label: "Deal sync", icon: ShieldCheck },
+  { id: "payments", label: "paymentsData", icon: FileWarning },
 ] as const;
 
 export default function SyncControl() {
   const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") === "deal" ? "deal" : "pos";
+  const t = params.get("tab");
+  const tab = t === "deal" || t === "payments" ? t : "pos";
   return (
     <div className="flex h-[calc(100vh-5rem)] flex-col gap-2 lg:h-[calc(100vh-2.5rem)]">
       <div className="inline-flex shrink-0 self-start rounded-xl bg-gray-100 p-1">
@@ -25,7 +29,9 @@ export default function SyncControl() {
           </button>
         ))}
       </div>
-      {tab === "pos" ? <PosReconPage embedded/> : <div className="min-h-0 flex-1 overflow-auto"><ErkhetSyncCheck embedded/></div>}
+      {tab === "pos" ? <PosReconPage embedded/>
+        : tab === "deal" ? <div className="min-h-0 flex-1 overflow-auto"><ErkhetSyncCheck embedded/></div>
+        : <div className="min-h-0 flex-1 overflow-auto"><PaymentsScan/></div>}
     </div>
   );
 }

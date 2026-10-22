@@ -185,8 +185,9 @@ def parse_history(h: dict, deal_id: str = "") -> dict:
         "customer": o0.get("customerCode") or "",
         "pay_keys": pay_keys, "has_undefined": "undefined" in o0,
         "debt": _num(o0.get("debtAmount")),
-        "details_sum": round(sum(_num(d.get("amount")) - _num(d.get("discount")) for d in details
-                                 if isinstance(d, dict)), 2),
+        # details[].amount нь ХЯМДРАЛЫН ДАРААХ дүн, discount нь зөвхөн мэдээлэл (2026/10/19-0007:
+        # Σamount 600,000 = debtAmount = Эрхэтийн totalAmount; Σ(amount−discount) 576,000 буруу)
+        "details_sum": round(sum(_num(d.get("amount")) for d in details if isinstance(d, dict)), 2),
         "no_response": resp is None,
         "resp_codes": codes, "resp_total": _num(eb.get("totalAmount")) if eb else None,
         "resp_date": eb.get("date") or "",
