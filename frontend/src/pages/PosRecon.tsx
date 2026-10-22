@@ -396,7 +396,7 @@ export default function PosReconPage({ embedded = false }: { embedded?: boolean 
                                 {r.amount == null ? "?" : fmt(r.amount)}
                               </td>
                               <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-gray-500">
-                                {(r.returned_at || "").replace("T", " ").slice(0, 16)}
+                                {ubDate(r.returned_at || "")}
                               </td>
                               <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] font-semibold text-amber-900">{r.returned_by}</td>
                               <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] text-gray-600">{r.cashier || "—"}</td>

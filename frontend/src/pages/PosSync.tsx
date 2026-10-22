@@ -4,6 +4,14 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 
+// erxes-ийн createdAt нь UTC — Улаанбаатарын цагаар (UTC+8) харуулна
+function ubTime(iso?: string) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return iso.replace("T", " ").slice(0, 16);
+  return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
+}
+
 interface Pos { _id: string; name: string; description?: string }
 interface UnsyncedRow { _id: string; number?: string; paidDate?: string; totalAmount?: number }
 interface CheckResult {
@@ -271,7 +279,7 @@ export default function PosSyncPage() {
                         <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono tabular-nums text-[11.5px] font-semibold text-rose-700">
                           {r.amount == null ? "?" : fmt(r.amount)}
                         </td>
-                        <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-gray-500">{(r.returned_at || "").replace("T", " ").slice(0, 16)}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[11px] text-gray-500">{ubTime(r.returned_at)}</td>
                         <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] font-semibold text-amber-900">{r.returned_by}</td>
                         <td className="whitespace-nowrap px-2 py-1.5 text-[11.5px] text-gray-600">{r.cashier || "—"}</td>
                       </tr>
