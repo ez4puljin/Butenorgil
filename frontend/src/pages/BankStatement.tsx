@@ -2133,8 +2133,8 @@ export default function BankStatementPage() {
               <div>
                 <h3 className="text-[15px] font-bold text-gray-900">Эрхэт рүү экспортлох</h3>
                 <p className="mt-0.5 text-[11px] text-gray-400">
-                  {openStmt?.account_number} · {mainTxns.filter(t => t.credit > 0).length} кредит,{" "}
-                  {mainTxns.filter(t => t.debit > 0 && (t.export_type === "kass" || t.export_type === "hariltsah")).length} дебит (таглагдсан)
+                  {openStmt?.account_number} · {mainTxns.filter(t => exportKind(t)).length} гүйлгээ экспортлогдоно
+                  {mainTxns.some(t => !exportKind(t)) && ` · ${mainTxns.filter(t => !exportKind(t)).length} дебит тэмдэглээгүй`}
                 </p>
               </div>
               <button onClick={() => setExportOpen(false)}
@@ -2153,30 +2153,30 @@ export default function BankStatementPage() {
                 className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-[13px] outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
               />
               <p className="mt-1 text-[10px] text-gray-400">
-                Excel-ийн Огноо баганад энэ огноо бичигдэнэ. Хуулгын огноотой өөр байж болно.
+                Excel-ийн «Огноо» багана мөр бүр хуулгын гүйлгээний өөрийн огноогоор бичигдэнэ. Энэ огноо зөвхөн файлын нэрэнд орно.
               </p>
             </div>
 
             {/* What will be exported */}
             <div className="mb-5 rounded-xl border border-gray-100 bg-gray-50 p-3 space-y-1.5 text-[11px] text-gray-600">
-              <div className="flex items-center gap-2">
-                <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 shrink-0">Авлага</span>
-                <span>{mainTxns.filter(t => t.credit > 0).length} кредит гүйлгээ → <span className="font-medium">Авлага өглөгийн гүйлгээ.xlsx</span></span>
-              </div>
-              {mainTxns.some(t => t.debit > 0 && t.export_type === "kass") && (
-                <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700 shrink-0">Касс</span>
-                  <span>{mainTxns.filter(t => t.debit > 0 && t.export_type === "kass").length} гүйлгээ → <span className="font-medium">Кассын гүйлгээ.xlsx</span></span>
-                </div>
-              )}
-              {mainTxns.some(t => t.debit > 0 && t.export_type === "hariltsah") && (
-                <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-700 shrink-0">Харилцах</span>
-                  <span>{mainTxns.filter(t => t.debit > 0 && t.export_type === "hariltsah").length} гүйлгээ → <span className="font-medium">Харилцахын гүйлгээ.xlsx</span></span>
-                </div>
-              )}
-              {!mainTxns.some(t => t.debit > 0 && (t.export_type === "kass" || t.export_type === "hariltsah")) && (
-                <p className="text-gray-400 text-[10px]">Дебит гүйлгээнд Касс/Харилцах таг тавьж хамруулна уу</p>
+              {([
+                ["avlaga", "Авлага", "bg-green-100 text-green-700", "Авлага өглөгийн гүйлгээ.xlsx"],
+                ["kass", "Касс", "bg-violet-100 text-violet-700", "Кассын гүйлгээ.xlsx"],
+                ["hariltsah", "Харилцах", "bg-sky-100 text-sky-700", "Харилцахын гүйлгээ.xlsx"],
+              ] as const).map(([k, label, cls, file]) => {
+                const rows = mainTxns.filter(t => exportKind(t) === k);
+                if (!rows.length) return null;
+                const cr = rows.filter(t => t.credit > 0).length;
+                const db = rows.length - cr;
+                return (
+                  <div key={k} className="flex items-center gap-2">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold shrink-0 ${cls}`}>{label}</span>
+                    <span>{rows.length} гүйлгээ ({[cr && `${cr} кредит`, db && `${db} дебит`].filter(Boolean).join(", ")}) → <span className="font-medium">{file}</span></span>
+                  </div>
+                );
+              })}
+              {mainTxns.some(t => !exportKind(t)) && (
+                <p className="text-gray-400 text-[10px]">Экспорт төрөл сонгоогүй дебит гүйлгээ экспортлогдохгүй.</p>
               )}
             </div>
 
@@ -2187,7 +2187,7 @@ export default function BankStatementPage() {
               </button>
               <button onClick={exportErkhet} disabled={exporting}
                 className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 py-2.5 text-[13px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-60">
-                {exporting ? <><RefreshCw size={13} className="animate-spin"/>Экспортлож байна…</> : <><Download size={13}/>ZIP татах</>}
+                {exporting ? <><RefreshCw size={13} className="animate-spin"/>Экспортлож байна…</> : <><Download size={13}/>Татах</>}
               </button>
             </div>
           </div>
