@@ -1096,11 +1096,11 @@ def export_by_date_manifest(
     stmts = _stmts_for_date(db, date)
     txns = [t for s in stmts for t in s.transactions if not t.is_fee]
 
-    is_kass = lambda t: t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"
-    is_har  = lambda t: t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"
+    is_kass = lambda t: _export_kind(t) == "kass"
+    is_har  = lambda t: _export_kind(t) == "hariltsah"
     return {
         "statements": len(stmts),
-        "avlaga":     sum(1 for t in txns if t.credit > 0),
+        "avlaga":     sum(1 for t in txns if _export_kind(t) == "avlaga"),
         "kass":       sum(1 for t in txns if is_kass(t)),
         "hariltsah":  sum(1 for t in txns if is_har(t)),
     }
@@ -1141,13 +1141,13 @@ def export_by_date(
     txns = [t for s in stmts for t in s.transactions if not t.is_fee]
 
     if file == "avlaga":
-        ts = [t for t in txns if t.credit > 0]
+        ts = [t for t in txns if _export_kind(t) == "avlaga"]
         build = lambda: _build_avlaga_excel(ts, eff_date, "", name_to_code, settlement_account_code, erp_by_stmt)
     elif file == "kass":
-        ts = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"]
+        ts = [t for t in txns if _export_kind(t) == "kass"]
         build = lambda: _build_kass_hariltsah_excel(ts, eff_date, "", name_to_code, erp_by_stmt)
     else:  # hariltsah
-        ts = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"]
+        ts = [t for t in txns if _export_kind(t) == "hariltsah"]
         build = lambda: _build_kass_hariltsah_excel(ts, eff_date, "", name_to_code, erp_by_stmt)
 
     title = _COMBINED_FILE_TITLES[file]
@@ -1325,6 +1325,23 @@ def _resolve_partner_field(t, name_to_code: dict[str, str]) -> str:
     return name
 
 
+def _export_kind(t) -> str:
+    """Гүйлгээ аль Эрхэт файлд орох вэ. Кредит: анхдагч «avlaga», хэрэглэгч kass/hariltsah сонгож болно.
+    Дебит: kass/hariltsah (сонгоогүй бол экспортлохгүй)."""
+    et = (getattr(t, "export_type", "") or "").strip()
+    if et in ("kass", "hariltsah"):
+        return et
+    if t.credit > 0:
+        return "avlaga"
+    return ""
+
+
+def _row_date(t, fallback):
+    """Экспорт файлын «Огноо» — хуулгын гүйлгээний өөрийн огноо (2026-10-23 хэрэглэгчийн хүсэлт:
+    3 сарын хуулгыг нэг өдөр оруулахад мөр бүр өөрийн огноогоор гарна). Огноогүй бол сонгосон өдөр."""
+    return t.txn_date.date() if getattr(t, "txn_date", None) else fallback
+
+
 def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_code: dict[str, str] | None = None, settlement_account_code: str = "120105", erp_by_stmt: dict | None = None) -> bytes:
     """Авлага өглөгийн гүйлгээ Excel (зөвхөн кредит гүйлгээ).
     Энгийн кредит мөр:
@@ -1370,7 +1387,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
 
         if is_pos:
             pos_date  = _extract_date_from_desc(bd)
-            row_date  = pos_date or eff_date
+            row_date  = pos_date or _row_date(t, eff_date)
             partner   = partner_field or "30000"
             # SETTLEMENT POS — "Харьцсан данс" нь үргэлж банкны ERP код байна
             # (хэрэглэгчийн partner_account-ыг override хийнэ)
@@ -1380,7 +1397,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
             # POS-ийн "Дансны код" = settlement clearing данс (Харьцсан нь bank ERP тул)
             main_acct = settlement_account_code or "120105"
         else:
-            row_date  = eff_date
+            row_date  = _row_date(t, eff_date)
             partner   = partner_field
             cross     = t.partner_account or ""
             desc_text = t.custom_description or bd
@@ -1425,22 +1442,23 @@ def _build_kass_hariltsah_excel(txns: list, eff_date, bank_erp_code: str = "", n
         # "Харилцагч" багана: код priority, нэрээр хайж олох, эс бөгөөс нэр
         partner_field = _resolve_partner_field(t, name_to_code)
         row_erp = erp_by_stmt.get(t.statement_id, "") if erp_by_stmt is not None else bank_erp_code
+        is_in = t.credit > 0 and not t.debit       # кредит мөрийг касс/харилцах руу сонгосон бол орлого
         ws.append([
-            eff_date,                # Огноо — date object
+            _row_date(t, eff_date),  # Огноо — гүйлгээний өөрийн огноо (date object)
             desc,                    # Гүйлгээний утга
             partner_field,           # Харилцагч (код)
             t.partner_account or "", # Харьцсан данс
             "",                      # Харьцсан ялгаатай харилцагч (хоосон)
             "", "", "", "",          # НӨАТ 4 col
             "", "", "", "",          # НХАТ 4 col
-            2,                       # Орлого бол 1 Зарлага бол 2 — always 2 (зарлага)
+            1 if is_in else 2,       # Орлого бол 1, Зарлага бол 2
             row_erp,                 # Дансны код — банкны ERP код
             "",                      # Валютын дүн (хоосон — Валют холбоотой)
             "",                      # Авах / Зарах ханш
             "",                      # Олз / Гарзын дансны код
-            t.debit,                 # Дүн
+            t.credit if is_in else t.debit,   # Дүн
         ])
-    if txns and eff_date:
+    if txns:
         _apply_date_format(ws, "A", 2, len(txns) + 1)
     buf = io.BytesIO()
     wb.save(buf)
@@ -1456,9 +1474,10 @@ def export_erkhet(
     _: User = Depends(get_current_user),
 ):
     """Хуулгын гүйлгээг Эрхэт импорт Excel файл(ууд) болгон буцаана.
-    • Кредит гүйлгээ → Авлага өглөгийн гүйлгээ.xlsx
-    • Дебит (export_type=kass) → Мөнгөн хөрөнгийн кассын гүйлгээ.xlsx
-    • Дебит (export_type=hariltsah) → Мөнгөн хөрөнгийн харилцахын гүйлгээ.xlsx
+    • Кредит гүйлгээ (анхдагч) → Авлага өглөгийн гүйлгээ.xlsx
+    • export_type=kass (дебит=зарлага, кредит=орлого) → Мөнгөн хөрөнгийн кассын гүйлгээ.xlsx
+    • export_type=hariltsah → Мөнгөн хөрөнгийн харилцахын гүйлгээ.xlsx
+    Мөр бүрийн «Огноо» = гүйлгээний өөрийн огноо (export_date нь зөвхөн файлын нэрэнд / огноогүй мөрөнд).
 
     `file` параметр өгвөл тухайн нэг файлыг шууд (.xlsx) буцаана.
     Өгөхгүй бол бүгдийг ZIP архивт хийж буцаана (хуучин хэрэглээ).
@@ -1492,9 +1511,9 @@ def export_erkhet(
     name_to_code = _customer_name_to_code()
 
     txns = [t for t in stmt.transactions if not t.is_fee]
-    credit_txns    = [t for t in txns if t.credit > 0]
-    kass_txns      = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "kass"]
-    hariltsah_txns = [t for t in txns if t.debit > 0 and (getattr(t, "export_type", "") or "") == "hariltsah"]
+    credit_txns    = [t for t in txns if _export_kind(t) == "avlaga"]
+    kass_txns      = [t for t in txns if _export_kind(t) == "kass"]
+    hariltsah_txns = [t for t in txns if _export_kind(t) == "hariltsah"]
 
     XLSX_MIME = _XLSX_MIME
 

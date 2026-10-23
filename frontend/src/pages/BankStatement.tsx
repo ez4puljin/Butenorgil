@@ -302,20 +302,30 @@ function ActionSelect({ value, onChange }: { value: string; onChange: (v: string
 
 // ── ExportTypeSelect — дебит гүйлгээний экспорт төрөл ─────────────────────
 
-function ExportTypeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+// Кредит мөр: анхдагч «Авлага» (export_type ""), Касс/Харилцах сонгож болно (орлогоор).
+// Дебит мөр: Касс/Харилцах (зарлагаар); сонгоогүй бол экспортлохгүй.
+function ExportTypeSelect({ value, onChange, credit = false }: { value: string; onChange: (v: string) => void; credit?: boolean }) {
   const cls: Record<string, string> = {
     kass:      "bg-violet-50 text-violet-700 border-violet-300 hover:bg-violet-100 ring-violet-200",
     hariltsah: "bg-sky-50 text-sky-700 border-sky-300 hover:bg-sky-100 ring-sky-200",
-    "":        "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 ring-gray-200",
+    "":        credit ? "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100 ring-emerald-200"
+                      : "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 ring-gray-200",
   };
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
       className={`w-full rounded-md border px-1.5 py-1 text-[11px] font-semibold outline-none focus:ring-2 cursor-pointer transition-colors ${cls[value] ?? cls[""]}`}>
-      <option value="">—</option>
+      <option value="">{credit ? "Авлага" : "—"}</option>
       <option value="kass">Касс</option>
       <option value="hariltsah">Харилцах</option>
     </select>
   );
+}
+
+// Гүйлгээ аль Эрхэт файлд орох (backend _export_kind-тэй ижил)
+function exportKind(t: { credit: number; export_type: string }): string {
+  const et = (t.export_type || "").trim();
+  if (et === "kass" || et === "hariltsah") return et;
+  return t.credit > 0 ? "avlaga" : "";
 }
 
 // ── PartnerSearch — харилцагч хайх autocomplete ────────────────────────────
@@ -586,7 +596,7 @@ export default function BankStatementPage() {
   // Bulk edit
   const [selectedTxns,  setSelectedTxns]  = useState<Set<number>>(new Set());
   const [bulkForm,      setBulkForm]      = useState({
-    partner_name: "", partner_account: "", custom_description: "",
+    partner_name: "", partner_code: "", partner_account: "", custom_description: "",
     action: null as string | null,       // null = өөрчлөхгүй
     export_type: null as string | null,  // null = өөрчлөхгүй
   });
@@ -790,11 +800,11 @@ export default function BankStatementPage() {
     try {
       // Аль файлууд гарахыг урьдчилан тооцоолно (хоосон файл татахгүй)
       const fileList: { key: string; title: string }[] = [];
-      if (txns.some(t => !t.is_fee && t.credit > 0))
+      if (txns.some(t => !t.is_fee && exportKind(t) === "avlaga"))
         fileList.push({ key: "avlaga", title: "Авлага өглөгийн гүйлгээ" });
-      if (txns.some(t => !t.is_fee && t.debit > 0 && t.export_type === "kass"))
+      if (txns.some(t => !t.is_fee && exportKind(t) === "kass"))
         fileList.push({ key: "kass", title: "Мөнгөн хөрөнгийн кассын гүйлгээ" });
-      if (txns.some(t => !t.is_fee && t.debit > 0 && t.export_type === "hariltsah"))
+      if (txns.some(t => !t.is_fee && exportKind(t) === "hariltsah"))
         fileList.push({ key: "hariltsah", title: "Мөнгөн хөрөнгийн харилцахын гүйлгээ" });
 
       if (fileList.length === 0) { setErr("Экспортлох гүйлгээ алга"); return; }
@@ -937,9 +947,8 @@ export default function BankStatementPage() {
     const patch: Record<string, string> = {};
     if (bulkForm.partner_name.trim()) {
       patch.partner_name = bulkForm.partner_name.trim();
-      // Гар хийн нэр бичих үед хуучин partner_code хүчингүй болно.
-      // Сонгож код хадгалах гэвэл тус бүр мөр дээр PartnerSearch ашиглах хэрэгтэй.
-      patch.partner_code = "";
+      // Жагсаалтаас сонгосон бол код хадгалагдана; гараар бичсэн нэр бол код "" (экспорт нэрээр хайна)
+      patch.partner_code = bulkForm.partner_code;
     }
     if (bulkForm.partner_account.trim())    patch.partner_account    = bulkForm.partner_account.trim();
     if (bulkForm.custom_description.trim()) patch.custom_description = bulkForm.custom_description.trim();
@@ -955,7 +964,7 @@ export default function BankStatementPage() {
       );
       setTxns(prev => prev.map(t => selectedTxns.has(t.id) ? { ...t, ...patch } : t));
       clearSelection();
-      setBulkForm({ partner_name: "", partner_account: "", custom_description: "", action: null, export_type: null });
+      setBulkForm({ partner_name: "", partner_code: "", partner_account: "", custom_description: "", action: null, export_type: null });
     } catch { setErr("Bulk засах амжилтгүй"); }
     finally { setBulkApplying(false); }
   }
@@ -995,7 +1004,7 @@ export default function BankStatementPage() {
   // Хуулга солигдоход болон fee toggle хийгдэхэд сонголтыг цэвэрлэнэ
   useEffect(() => {
     setSelectedTxns(new Set());
-    setBulkForm({ partner_name: "", partner_account: "", custom_description: "", action: null, export_type: null });
+    setBulkForm({ partner_name: "", partner_code: "", partner_account: "", custom_description: "", action: null, export_type: null });
   }, [openStmt?.id, showFees]);
 
   // Гүйлгээ засагдах бүрд зүүн талын хуулгын картын "бөглөсөн" статистикийг
@@ -1472,10 +1481,17 @@ export default function BankStatementPage() {
                   <div className="h-5 w-px bg-blue-200 mx-0.5 shrink-0"/>
 
                   {/* Partner name */}
-                  <input value={bulkForm.partner_name}
-                    onChange={e => setBulkForm(f => ({ ...f, partner_name: e.target.value }))}
-                    placeholder="Харилцагч…"
-                    className="w-36 rounded border border-blue-200 bg-white px-2 py-0.5 text-[11px] outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 placeholder:text-gray-300"/>
+                  <div className="w-44 rounded border border-blue-200 bg-white" title="Харилцагч хайж сонгоно (нэр, код, утсаар)">
+                    <PartnerSearch
+                      value={bulkForm.partner_name}
+                      onSave={(name, account, code) => setBulkForm(f => ({
+                        ...f, partner_name: name, partner_code: code,
+                        // сонгосон харилцагчийн данс — хэрэглэгч өөрөө бичээгүй бол
+                        partner_account: f.partner_account || account,
+                      }))}
+                      onClear={() => setBulkForm(f => ({ ...f, partner_name: "", partner_code: "" }))}
+                    />
+                  </div>
 
                   {/* Partner account (Харьцсан данс) */}
                   <input value={bulkForm.partner_account}
@@ -1505,7 +1521,7 @@ export default function BankStatementPage() {
                     onChange={e => setBulkForm(f => ({ ...f, export_type: e.target.value === "_skip" ? null : e.target.value }))}
                     className="rounded border border-blue-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-blue-200 cursor-pointer text-gray-700">
                     <option value="_skip">Экспорт…</option>
-                    <option value="">— (цэвэрлэх)</option>
+                    <option value="">Авлага (кредит) / — (дебит)</option>
                     <option value="kass">Касс</option>
                     <option value="hariltsah">Харилцах</option>
                   </select>
@@ -1684,11 +1700,12 @@ export default function BankStatementPage() {
                                   className="inline-flex cursor-not-allowed items-center rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[10.5px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors">
                                   Шимтгэл
                                 </span>
-                              ) : t.debit > 0
-                                ? <ExportTypeSelect value={t.export_type} onChange={v => updateTxn(t.id, { export_type: v })}/>
-                                : <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10.5px] font-semibold text-emerald-700">
+                              ) : t.is_settlement
+                                ? <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10.5px] font-semibold text-emerald-700">
                                     Авлага
                                   </span>
+                                : <ExportTypeSelect value={t.export_type} credit={t.credit > 0 && !t.debit}
+                                    onChange={v => updateTxn(t.id, { export_type: v })}/>
                               }
                             </td>
                             <td className="px-1.5 py-1.5 text-center whitespace-nowrap">
