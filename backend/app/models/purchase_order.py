@@ -43,6 +43,8 @@ class PurchaseOrderLine(Base):
     )
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     order_qty_box: Mapped[float] = mapped_column(Float, default=0.0)
+    # Код солигдсон бараа — мөрийг шинэ кодоор харуулах (product_id хэвээр; app/services/code_remap)
+    display_code = Column(String(64), nullable=True)
     order_qty_pcs: Mapped[float] = mapped_column(Float, default=0.0)
     computed_weight: Mapped[float] = mapped_column(Float, default=0.0)
     supplier_qty_box: Mapped[float] = mapped_column(Float, default=0.0)

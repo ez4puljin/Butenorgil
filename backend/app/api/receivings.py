@@ -115,7 +115,8 @@ def _serialize_line(ln: ReceivingLine, product: Optional[Product]) -> dict:
     return {
         "id": ln.id,
         "product_id": ln.product_id,
-        "item_code": product.item_code if product else "",
+        # код солигдсон бараа — мөрийн display_code (code_remap) давуу
+        "item_code": (ln.display_code or product.item_code) if product else "",
         "name": product.name if product else "(устгагдсан)",
         "brand": _effective_brand(ln, product),
         "original_brand": product.brand if product else "",
@@ -965,7 +966,8 @@ def _build_recv_erp_excel(session_id: int, body: "ERPCfg", db: Session, as_bytes
         total = round(ln.qty_pcs * ln.unit_price, 2)
         # Use effective brand code (override-aware), fallback to current product brand_code.
         eff_brand_code = (brand_code_by_brand.get(brand, "") or (p.brand_code or "")).strip()
-        valid.append((brand, p.item_code, p, ln, location, ln.qty_pcs, ln.unit_price, total, eff_brand_code))
+        # Эрхэт рүү шинэ кодоор (код солигдсон бараа — display_code)
+        valid.append((brand, ln.display_code or p.item_code, p, ln, location, ln.qty_pcs, ln.unit_price, total, eff_brand_code))
 
     valid.sort(key=lambda x: (x[8] or "", x[0], x[1]))
 
@@ -1011,7 +1013,7 @@ def _build_recv_erp_excel(session_id: int, body: "ERPCfg", db: Session, as_bytes
                 None,
                 0 if is_first else None,
                 body.account,
-                p.item_code,
+                item_code,          # display_code давуу (код солигдсон бараа)
                 location,
                 qty,
                 price,

@@ -628,6 +628,11 @@ def ensure_po_location_schema():
             conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN stat_month INTEGER"))
         if cols and "stock_locations" not in cols:
             conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN stock_locations VARCHAR(60)"))
+        # Код солигдсон барааны мөрийг шинэ кодоор харуулах (app/services/code_remap)
+        for tbl in ("purchase_order_lines", "receiving_lines"):
+            lc = [r[1] for r in conn.execute(text(f"PRAGMA table_info({tbl})")).fetchall()]
+            if lc and "display_code" not in lc:
+                conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN display_code VARCHAR(64)"))
 
 def ensure_po_brand_status_table():
     """po_brand_statuses хүснэгт үүсгэж, одоо байгаа PO-уудад backfill хийнэ."""

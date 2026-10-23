@@ -270,7 +270,7 @@ def _serialize_order_detail(
         lines_out.append({
             "line_id": l.id,
             "product_id": l.product_id,
-            "item_code": p.item_code,
+            "item_code": l.display_code or p.item_code,
             "name": p.name,
             "brand": eff_brand,
             "original_brand": p.brand,
@@ -526,7 +526,7 @@ def get_order_dashboard(
                 bd["vehicle_ids"].add(sh.vehicle_id)
 
         bd["items"].append({
-            "item_code": p.item_code,
+            "item_code": l.display_code or p.item_code,
             "name": p.name,
             "order_qty_box": l.order_qty_box,
             "loaded_qty_box": loaded,
@@ -1106,7 +1106,7 @@ def get_unordered_lines(
         items.append({
             "product_id": p.id,
             "line_id": l.id,
-            "item_code": p.item_code,
+            "item_code": l.display_code or p.item_code,
             "name": p.name,
             "brand": (_ov or (p.brand or "").strip()) or NO_BRAND_LABEL,
             "raw_brand": (p.brand or "").strip() or NO_BRAND_LABEL,
@@ -2769,7 +2769,7 @@ def _build_pdf(po: PurchaseOrder, body: PDFHeaderIn, db: Session) -> bytes:
         if brand_filter and brand != brand_filter:
             continue
         grouped.setdefault(brand, []).append({
-            "item_code": p.item_code,
+            "item_code": l.display_code or p.item_code,
             "name": p.name,
             "warehouse_name": p.warehouse_name or "",
             "qty_box": l.order_qty_box,
@@ -3167,7 +3167,7 @@ def _serialize_shipment_detail(sh: POShipment, db: Session) -> dict:
             "id": sl.id,
             "po_line_id": sl.po_line_id,
             "product_id": pl.product_id,
-            "item_code": p.item_code if p else "",
+            "item_code": (pl.display_code or p.item_code) if p else "",
             "name": p.name if p else "",
             "brand": p.brand if p else "",
             "warehouse_name": p.warehouse_name if p else "",
@@ -3229,7 +3229,7 @@ def list_shipments(
             unassigned_lines.append({
                 "po_line_id": pl.id,
                 "product_id": pl.product_id,
-                "item_code": p.item_code if p else "",
+                "item_code": (pl.display_code or p.item_code) if p else "",
                 "name": p.name if p else "",
                 "brand": p.brand if p else "",
                 "warehouse_name": p.warehouse_name if p else "",

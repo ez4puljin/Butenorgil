@@ -33,6 +33,8 @@ class ReceivingLine(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("receiving_sessions.id"), nullable=False, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False, index=True)
+    # Код солигдсон бараа — мөрийг шинэ кодоор харуулах (product_id хэвээр; app/services/code_remap)
+    display_code = Column(String(64), nullable=True)
     qty_pcs: Mapped[float] = mapped_column(Float, default=0.0)         # Ирсэн тоо (ширхгээр)
     unit_price: Mapped[float] = mapped_column(Float, default=0.0)      # Ирсэн үнэ (ширхгийн)
     # Онцгой тохиолдолд: бараа Brand A-тай ч физикээр Brand B-ээс ирвэл энэ session-д override
