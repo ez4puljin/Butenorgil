@@ -1327,9 +1327,9 @@ def _resolve_partner_field(t, name_to_code: dict[str, str]) -> str:
 
 def _export_kind(t) -> str:
     """Гүйлгээ аль Эрхэт файлд орох вэ. Кредит: анхдагч «avlaga», хэрэглэгч kass/hariltsah сонгож болно.
-    Дебит: kass/hariltsah (сонгоогүй бол экспортлохгүй)."""
+    Дебит: avlaga/kass/hariltsah (сонгоогүй бол экспортлохгүй)."""
     et = (getattr(t, "export_type", "") or "").strip()
-    if et in ("kass", "hariltsah"):
+    if et in ("kass", "hariltsah", "avlaga"):
         return et
     if t.credit > 0:
         return "avlaga"
@@ -1375,8 +1375,13 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
         #   close_create → 2   (Хаах Үүсгэх — хосолсон үйлдэл)
         #   бусад/хоосон → ""
         eff_action = (t.action or "").strip() or "close"
-        if eff_action == "close_create":
+        is_out = t.debit > 0 and not t.credit        # дебит мөр (банкнаас гарсан) — 2026-10-23-нд нэмсэн
+        if is_out:
+            # Кредит мөрд «1» = банк (Дансны код) орлого; дебит нь эсрэг чиглэл тул Хаалт(2).
+            # Эрхэтийн импортын хуудсанд тайлбар алга — хэрэглэгч эхний файлыг Эрхэтэд шалгана.
             action_val: object = 2
+        elif eff_action == "close_create":
+            action_val = 2
         elif eff_action in ("close", "create"):
             action_val = 1
         else:
@@ -1418,7 +1423,7 @@ def _build_avlaga_excel(txns: list, eff_date, bank_erp_code: str = "", name_to_c
             "",              # Валют
             "",              # Авах / Зарах ханш
             "",              # Олз / Гарзын дансны код
-            t.credit,        # Дүн
+            t.debit if is_out else t.credit,   # Дүн
         ])
     if txns:
         _apply_date_format(ws, "A", 2, len(txns) + 1)

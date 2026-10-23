@@ -303,18 +303,20 @@ function ActionSelect({ value, onChange }: { value: string; onChange: (v: string
 // ── ExportTypeSelect — дебит гүйлгээний экспорт төрөл ─────────────────────
 
 // Кредит мөр: анхдагч «Авлага» (export_type ""), Касс/Харилцах сонгож болно (орлогоор).
-// Дебит мөр: Касс/Харилцах (зарлагаар); сонгоогүй бол экспортлохгүй.
+// Дебит мөр: Авлага/Касс/Харилцах (зарлагаар); сонгоогүй бол экспортлохгүй.
 function ExportTypeSelect({ value, onChange, credit = false }: { value: string; onChange: (v: string) => void; credit?: boolean }) {
   const cls: Record<string, string> = {
     kass:      "bg-violet-50 text-violet-700 border-violet-300 hover:bg-violet-100 ring-violet-200",
     hariltsah: "bg-sky-50 text-sky-700 border-sky-300 hover:bg-sky-100 ring-sky-200",
+    avlaga:    "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100 ring-emerald-200",
     "":        credit ? "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100 ring-emerald-200"
                       : "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 ring-gray-200",
   };
   return (
-    <select value={value} onChange={e => onChange(e.target.value)}
+    <select value={credit && value === "avlaga" ? "" : value} onChange={e => onChange(e.target.value)}
       className={`w-full rounded-md border px-1.5 py-1 text-[11px] font-semibold outline-none focus:ring-2 cursor-pointer transition-colors ${cls[value] ?? cls[""]}`}>
       <option value="">{credit ? "Авлага" : "—"}</option>
+      {!credit && <option value="avlaga">Авлага</option>}
       <option value="kass">Касс</option>
       <option value="hariltsah">Харилцах</option>
     </select>
@@ -324,7 +326,7 @@ function ExportTypeSelect({ value, onChange, credit = false }: { value: string; 
 // Гүйлгээ аль Эрхэт файлд орох (backend _export_kind-тэй ижил)
 function exportKind(t: { credit: number; export_type: string }): string {
   const et = (t.export_type || "").trim();
-  if (et === "kass" || et === "hariltsah") return et;
+  if (et === "kass" || et === "hariltsah" || et === "avlaga") return et;
   return t.credit > 0 ? "avlaga" : "";
 }
 
@@ -1522,6 +1524,7 @@ export default function BankStatementPage() {
                     className="rounded border border-blue-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-blue-200 cursor-pointer text-gray-700">
                     <option value="_skip">Экспорт…</option>
                     <option value="">Авлага (кредит) / — (дебит)</option>
+                    <option value="avlaga">Авлага</option>
                     <option value="kass">Касс</option>
                     <option value="hariltsah">Харилцах</option>
                   </select>
