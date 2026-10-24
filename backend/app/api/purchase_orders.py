@@ -2164,7 +2164,7 @@ def export_excel(
             continue
         diff = round((l.loaded_qty_box or 0) - (l.received_qty_box or 0), 2)
         lines_data.append([
-            p.brand or "", p.item_code, p.name, p.warehouse_name or "",
+            p.brand or "", l.display_code or p.item_code, p.name, p.warehouse_name or "",
             l.order_qty_box, l.supplier_qty_box, l.loaded_qty_box, l.received_qty_box, diff,
         ])
     lines_data.sort(key=lambda x: (x[0], x[1]))
@@ -2482,7 +2482,8 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session,
         else:
             location = body.warehouse_map.get(p.warehouse_name, "")
         total = round(c["qty"] * c["price"], 2)
-        valid.append((c["brand"], p.item_code, p, c["line"], location,
+        # код солигдсон бараа — мөрийн display_code (code_remap) давуу
+        valid.append((c["brand"], c["line"].display_code or p.item_code, p, c["line"], location,
                       c["qty"], c["price"], total, c["brand_code"]))
 
     # Sort by brand_code then item_code so same-supplier items are grouped
@@ -2511,7 +2512,7 @@ def _export_erp_excel_impl(order_id: int, body: "ERPExcelConfigIn", db: Session,
                 None,                                       # НХАТ автоматаар
                 0 if is_first else None,                   # НХАТ-н дүн
                 body.account,                               # Данс*
-                p.item_code,                                # Бараа материал*
+                item_code,                                  # Бараа материал* (display_code давуу)
                 location,                                   # Барааны байршил*
                 qty,                                        # Тоо хэмжээ*
                 price,                                      # Нэгж үнэ*
