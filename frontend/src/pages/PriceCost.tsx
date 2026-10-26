@@ -19,7 +19,7 @@ interface Row {
   plans: Plan[]; others: number; real: number | null; real_date: string; real_order: string;
   since_count: number; since_qty: number; since_prices: number[];
   diff_config: number | null; diff_config_pct: number | null; diff_real: number | null; diff_real_pct: number | null;
-  status: "eq" | "high" | "low" | "none"; action: "" | "create" | "update"; review: boolean;
+  status: "eq" | "high" | "low" | "none"; action: "" | "create" | "update"; review: boolean; target: number | null;
 }
 interface Summary {
   eq: number; high: number; low: number; none: number; total: number; overlap: number; with_income: number;
@@ -321,8 +321,16 @@ export default function PriceCost() {
                           )}
                         </td>
                         <td className="px-2 py-1.5 whitespace-nowrap">
-                          {r.action === "create" && <span className="text-indigo-700">Plan үүсгэх → {m(r.income)}</span>}
-                          {r.action === "update" && <span className="text-indigo-700">Plan засах → {m(r.income)}</span>}
+                          {r.action && (
+                            <>
+                              <div className="text-indigo-700">{r.action === "create" ? "Plan үүсгэх" : "Plan засах"} → {m(r.income)}</div>
+                              {r.target != null && (
+                                <div className="text-[10.5px] text-gray-400">
+                                  хасах {m(r.target)} ({r.target < 0 ? "+" : "−"}{m(Math.abs(r.target))}₮)
+                                </div>
+                              )}
+                            </>
+                          )}
                           {r.review && (
                             <div className="text-[10.5px] font-semibold text-rose-600">
                               {r.fractional ? "Бутархай үнэ — шалгах" : `±${settings?.guard_pct ?? 30}% — шалгах`}

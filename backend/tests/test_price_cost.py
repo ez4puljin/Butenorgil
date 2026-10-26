@@ -107,11 +107,12 @@ def _raises(fn):
 
 def test_apply_guards():
     from app.services import price_cost_apply as ap
-    good = {"name": "[AUTO-COST HA] 102061 x", "type": "fixed", "value": 20500.0, "applyType": "product",
-            "products": ["P"], "branchIds": [B], "departmentIds": [D], "isPriority": True}
+    good = {"name": "[AUTO-COST HA] 102061 x", "type": "subtraction", "value": -1000.0, "applyType": "product",
+            "products": ["P"], "branchIds": [pc.HA_BRANCH_ID, B], "departmentIds": [RETAIL, D], "isPriority": True}
     ap._check_add_doc(good)
-    for bad in ({"departmentIds": [D, RETAIL]}, {"departmentIds": []}, {"branchIds": []}, {"products": ["P", "Q"]},
-                {"type": "subtraction"}, {"name": "x"}, {"value": 0}, {"applyType": "tag"}):
+    for bad in ({"departmentIds": [D]}, {"departmentIds": []}, {"branchIds": [B]}, {"branchIds": []},
+                {"departmentIds": [D, RETAIL, "other"]}, {"products": ["P", "Q"]}, {"type": "fixed"}, {"name": "x"},
+                {"value": 0}, {"value": 12.5}, {"applyType": "tag"}):
         assert isinstance(_raises(lambda: ap._check_add_doc({**good, **bad})), ap.ApplyError)
     assert isinstance(_raises(lambda: ap._send("pricingPlanRemove", {})), ap.ApplyError)
     assert isinstance(_raises(lambda: ap._send("productsEdit", {})), ap.ApplyError)

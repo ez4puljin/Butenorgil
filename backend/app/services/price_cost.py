@@ -35,7 +35,13 @@ ERKHET_MASTER_DIR = Path("app/data/uploads/Эрхэт бараа")
 # Хатуу тогтмол — тохиргооноос өөрчлөгдөхгүй (бусад салбарт нөлөөлөхөөс сэргийлнэ)
 POS_ID = "NwSh4cYxFvAjSRBKg"            # POS «Хархорин агуулах»
 BRANCH_ID = "cYWmnA3wvK8hDh9Nz"         # Хархорин (жижиглэнтэй хуваалцдаг)
+HA_BRANCH_ID = "63QqoSYzMBJuCaRoE"      # Хархорин агуулах (branch) — үнэ үүгээр бодогддог (documents/print)
 DEPARTMENT_ID = "yiWzFs7HNt4AHjwmy"     # Хархорин агуулах
+RETAIL_DEPARTMENT_ID = "3iHyxYCL73LhG5yTk"  # Хархорин заал (жижиглэн)
+# Манай plan-ы хамрах хүрээ — хэрэглэгч 2026-10-26: branch+department хамт; subtraction тул агуулах =
+# үндсэн − value = орлогын үнэ, заал = өөрийн одоогийн үнэ дээр мөн адил зөрүү (+1000 г.м.)
+PLAN_BRANCH_IDS = [BRANCH_ID, HA_BRANCH_ID]
+PLAN_DEPARTMENT_IDS = [DEPARTMENT_ID, RETAIL_DEPARTMENT_ID]
 LOCATION_NAMES = {"6": "04 Хархорин заал", "7": "05 Хархорин агуулах"}
 
 DEFAULTS = {
@@ -324,10 +330,10 @@ def _active_by_date(plan: dict, today: date) -> bool:
 
 
 def plan_applies(plan: dict, prod: dict, today: date | None = None,
-                 branch_id: str = BRANCH_ID, department_id: str = DEPARTMENT_ID) -> bool:
+                 branch_ids: tuple = (BRANCH_ID, HA_BRANCH_ID), department_id: str = DEPARTMENT_ID) -> bool:
     """Plan нь тухайн хэлтэс дэх барааны үнэд хамаарах эсэх. Хоосон branchIds/departmentIds = бүгдэд."""
     br, dp = plan.get("branchIds") or [], plan.get("departmentIds") or []
-    if (br and branch_id not in br) or (dp and department_id not in dp):
+    if (br and not set(branch_ids) & set(br)) or (dp and department_id not in dp):
         return False
     if not _active_by_date(plan, today or date.today()):
         return False
@@ -411,7 +417,7 @@ def build(db) -> dict:
     prods = fetch_products(codes)
     plans = fetch_plans()
     managed = {m.plan_id: m for m in db.query(PcManagedPlan).filter(PcManagedPlan.status == "active").all()}
-    dept_plans = [p for p in plans if (not p.get("branchIds") or BRANCH_ID in p["branchIds"])
+    dept_plans = [p for p in plans if (not p.get("branchIds") or {BRANCH_ID, HA_BRANCH_ID} & set(p["branchIds"]))
                   and (not p.get("departmentIds") or DEPARTMENT_ID in p["departmentIds"])]
     unsupported = [p["name"] for p in dept_plans if p.get("applyType") not in ("product", "category", "tag")]
     pids = {p["_id"] for p in prods.values()}
@@ -439,15 +445,19 @@ def build(db) -> dict:
         since_prices = sorted({round((r.unit_price * r.count - r.discount) / r.count, 2) for r in since})
         status = classify(cfg, income)
         # Санал болгох өөрчлөлт (dry-run) — 4-р шатанд «Батлах»
-        action, review = "", False
-        if income is not None and p:
-            own_v = own[0]["value"] if own else None
-            if own_v is not None:
-                action = "" if abs(own_v - income) < TOL else "update"
+        # Манай plan: subtraction, value = үндсэн − орлого (сөрөг бол үнэ нэмэгдэнэ)
+        action, review, target = "", False, None
+        if income is not None and p and base is not None:
+            target = round(float(base) - income, 2)
+            own_p = own[0] if own else None
+            if own_p is not None:
+                same = own_p.get("type") == "subtraction" and abs(float(own_p.get("value") or 0) - target) < TOL
+                action = "" if same else "update"
             elif status != "eq":
                 action = "create"
-            review = bool(action) and (not guard(income, own_v if own_v is not None else prev_income, s["guard_pct"])
-                                       or is_fractional(income))
+            own_income = float(base) - float(own_p["value"]) if own_p and own_p.get("type") == "subtraction" else None
+            review = bool(action) and (not guard(income, own_income if own_income is not None else prev_income,
+                                                 s["guard_pct"]) or is_fractional(income))
         rows.append({
             "code": code, "name": (p or {}).get("name") or m.get("name") or (last.name if last else ""),
             "brand": m.get("brand", ""), "uom": m.get("uom", ""), "non_piece": bool(m.get("uom")) and m.get("uom") != "ширхэг",
@@ -467,7 +477,7 @@ def build(db) -> dict:
             "diff_config": round(cfg - income, 2) if cfg is not None and income is not None else None,
             "diff_config_pct": _pct(cfg, income), "diff_real": round(real - income, 2) if real is not None and income is not None else None,
             "diff_real_pct": _pct(real, income),
-            "status": status, "action": action, "review": review,
+            "status": status, "action": action, "review": review, "target": target,
         })
     summ = {k: sum(1 for r in rows if r["status"] == k) for k in ("eq", "high", "low", "none")}
     summ.update(total=len(rows), overlap=sum(1 for r in rows if r["others"]), with_income=sum(1 for r in rows if r["income"] is not None),

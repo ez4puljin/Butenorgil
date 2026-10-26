@@ -3,31 +3,40 @@
 Хатуу хамгаалалт (энэ модулиас өөр газраас erxes рүү plan бичихгүй):
   · Илгээх mutation нь ЗӨВХӨН `pricingPlanAdd`, `pricingPlanEdit` (`_send` дотор allowlist). Устгахгүй,
     `productsEdit` гэх мэт барааны mutation огт байхгүй.
-  · Add: departmentIds == [Хархорин агуулах], branchIds == [Хархорин], products == [нэг бараа], type fixed.
-  · Edit: plan_id нь pc_managed_plans-д (ЭНЭ систем үүсгэсэн) байх ёстой; зөвхөн value/status/name.
-  · Илгээсний дараа pricingPlanDetail-ээр буцааж уншиж шалгана; Add-ын хэлтэс/бараа таарахгүй бол
-    тэр даруй archived болгоно.
-  · Бүх өөрчлөлт pc_price_audit-д (хэн, хэзээ, хуучин → шинэ, Эрхэтийн баримт №).
+  · Add: branchIds == {Хархорин, Хархорин агуулах}, departmentIds == {агуулах, заал}, products == [нэг бараа],
+    type subtraction, value = erxes үндсэн − орлого. Хэрэглэгч 2026-10-26: fixed биш; branch+department хамт
+    сонгож байж ажилладаг; заалны үнэ ч мөн адил зөрүүгээр (+1000 г.м.) өөрчлөгдөх нь зөв.
+  · Edit: plan_id нь pc_managed_plans-д (ЭНЭ систем үүсгэсэн) байх ёстой; зөвхөн value/type/status/name.
+  · Илгээсний дараа pricingPlanDetail + documents/print (агуулахын branch+department)-ээр бодит үнийг
+    шалгана; Add-ын үнэ таарахгүй бол тэр даруй archived болгоно.
+  · Бүх өөрчлөлт pc_price_audit-д (хэн, хэзээ, хуучин → шинэ, Эрхэтийн баримт №, print үнэ өмнө → дараа).
 
-CLI (backend хавтаснаас):
-  python -m app.services.price_cost_apply create 102061 [--value 20500] [--apply]
+CLI (backend хавтаснаас; --apply-гүй бол юу ч илгээхгүй):
+  python -m app.services.price_cost_apply create 102061 [--apply]
+  python -m app.services.price_cost_apply sync <plan_id> [--apply]        — value-г үндсэн − орлогоор шинэчилнэ
   python -m app.services.price_cost_apply deactivate <plan_id> [--apply]
---apply-гүй бол юу ч илгээхгүй (dry-run).
+  python -m app.services.price_cost_apply activate <plan_id> [--apply]
+  python -m app.services.price_cost_apply prices 102061                    — агуулах/заалны print үнэ
 """
 from __future__ import annotations
 
 import json
+import re
 import sys
 import uuid
 from datetime import datetime
 
-from app.services.price_cost import BRANCH_ID, DEPARTMENT_ID
+from app.services.price_cost import (BRANCH_ID, DEPARTMENT_ID, HA_BRANCH_ID, PLAN_BRANCH_IDS, PLAN_DEPARTMENT_IDS,
+                                     RETAIL_DEPARTMENT_ID)
 
 PREFIX = "[AUTO-COST HA]"
 ALLOWED = {"pricingPlanAdd", "pricingPlanEdit"}
-EDIT_FIELDS = {"_id", "value", "status", "name"}
+EDIT_FIELDS = {"_id", "value", "type", "status", "name"}
+LABEL_TEMPLATE = "63e0d1c289900a8db3052d6b"         # erxes «Шошго» — үнийг pricing plan-тай нь бодож гаргадаг
+POINTS = {"agulah": (HA_BRANCH_ID, DEPARTMENT_ID), "zaal": (BRANCH_ID, RETAIL_DEPARTMENT_ID)}
 DETAIL_FIELDS = ("_id name status type value applyType branchIds departmentIds products isPriority "
                  "categories tags productsExcluded")
+_PRICE_RE = re.compile(r"Үнэ\s*:(?:\s|&nbsp;|<[^>]+>)*([\d,]+(?:\.\d+)?)")
 
 
 class ApplyError(RuntimeError):
@@ -55,14 +64,33 @@ def detail(plan_id: str) -> dict:
                          {"id": plan_id}).get("pricingPlanDetail") or {}
 
 
+def print_price(product_id: str, branch_id: str, department_id: str) -> float | None:
+    """erxes «Шошго»-г тухайн branch+department-аар render хийж «Үнэ»-г уншина (pricing plan тооцогдсон)."""
+    c = _client()
+    url = ("https://erxes.bto.mn/gateway/pl:documents/print?_id=" + LABEL_TEMPLATE
+           + '&productIds=[{"id":"' + product_id + '","c":1}]&copies=1&width=80'
+           + f"&branchId={branch_id}&departmentId={department_id}&isDate=")
+    r = c._session().get(url, verify=False, timeout=60)
+    m = _PRICE_RE.search(r.text)
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def prices(product_id: str) -> dict:
+    return {k: print_price(product_id, b, d) for k, (b, d) in POINTS.items()}
+
+
+def _same_set(a, b) -> bool:
+    return isinstance(a, list) and sorted(a) == sorted(b)
+
+
 def _check_add_doc(doc: dict) -> None:
-    ok = (doc.get("departmentIds") == [DEPARTMENT_ID] and doc.get("branchIds") == [BRANCH_ID]
+    ok = (_same_set(doc.get("departmentIds"), PLAN_DEPARTMENT_IDS) and _same_set(doc.get("branchIds"), PLAN_BRANCH_IDS)
           and doc.get("applyType") == "product" and isinstance(doc.get("products"), list)
-          and len(doc["products"]) == 1 and doc.get("type") == "fixed"
+          and len(doc["products"]) == 1 and doc.get("type") == "subtraction"
           and str(doc.get("name", "")).startswith(PREFIX)
-          and isinstance(doc.get("value"), (int, float)) and doc["value"] > 0)
+          and isinstance(doc.get("value"), (int, float)) and doc["value"] != 0 and doc["value"] == round(doc["value"]))
     if not ok:
-        raise ApplyError("Plan-ы хамрах хүрээ буруу — илгээхгүй.")
+        raise ApplyError("Plan-ы хамрах хүрээ/утга буруу — илгээхгүй.")
 
 
 def _audit(db, by, action, batch, plan_id, code, name, old, new, bill="", note=""):
@@ -71,40 +99,62 @@ def _audit(db, by, action, batch, plan_id, code, name, old, new, bill="", note="
                         old_value=old, new_value=new, bill_number=bill, note=note[:500]))
 
 
-def create(db, code: str, value: float, by: str, batch: str = "", bill: str = "", apply: bool = False) -> dict:
-    """Нэг бараанд [AUTO-COST HA] plan үүсгэнэ. Аль хэдийн манай plan байвал алдаа (update ашигла)."""
-    from app.models.price_cost import PcManagedPlan
-    from app.services.price_cost import fetch_products
-    if value != round(value):
-        raise ApplyError(f"{code}: бутархай үнэ ({value}) — илгээхгүй.")
-    if db.query(PcManagedPlan).filter(PcManagedPlan.code == code, PcManagedPlan.status == "active").first():
-        raise ApplyError(f"{code}: манай идэвхтэй plan аль хэдийн бий — засах (update) ашиглана уу.")
+def target_for(db, code: str) -> dict:
+    """Код → {product, base, income, bill, value=base−income} (сүүлийн 310104 орлогоор)."""
+    from app.services.price_cost import fetch_products, is_fractional, latest_incomes
     p = fetch_products([code]).get(code)
-    if not p:
-        raise ApplyError(f"{code}: erxes-д идэвхтэй бараа олдсонгүй.")
-    doc = {"name": f"{PREFIX} {code} {p['name']}"[:200], "status": "active", "type": "fixed", "value": float(value),
-           "applyType": "product", "products": [p["_id"]], "branchIds": [BRANCH_ID],
-           "departmentIds": [DEPARTMENT_ID], "isPriority": True}
+    if not p or p.get("unitPrice") is None:
+        raise ApplyError(f"{code}: erxes-д идэвхтэй бараа/үндсэн үнэ олдсонгүй.")
+    hist = latest_incomes(db).get(code) or []
+    if not hist:
+        raise ApplyError(f"{code}: хүчинтэй (310104) орлого алга.")
+    income = round(hist[0].total / hist[0].count, 2)
+    if is_fractional(income):
+        raise ApplyError(f"{code}: орлогын нэгж үнэ бутархай ({income}) — Эрхэтийн баримтыг шалгана уу.")
+    return {"product": p, "base": float(p["unitPrice"]), "income": income, "bill": hist[0].bill_number,
+            "value": float(p["unitPrice"]) - income}
+
+
+def _note(before: dict, after: dict) -> str:
+    return f"агуулах {before['agulah']}→{after['agulah']}, заал {before['zaal']}→{after['zaal']}"
+
+
+def create(db, code: str, by: str, batch: str = "", apply: bool = False) -> dict:
+    """Нэг бараанд [AUTO-COST HA] subtraction plan үүсгэнэ. Манай идэвхтэй plan байвал алдаа (sync ашигла)."""
+    from app.models.price_cost import PcManagedPlan
+    if db.query(PcManagedPlan).filter(PcManagedPlan.code == code, PcManagedPlan.status == "active").first():
+        raise ApplyError(f"{code}: манай идэвхтэй plan аль хэдийн бий — sync ашиглана уу.")
+    t = target_for(db, code)
+    if abs(t["value"]) < 0.5:
+        raise ApplyError(f"{code}: үндсэн үнэ = орлогын үнэ — plan шаардлагагүй.")
+    p = t["product"]
+    doc = {"name": f"{PREFIX} {code} {p['name']}"[:200], "status": "active", "type": "subtraction",
+           "value": t["value"], "applyType": "product", "products": [p["_id"]], "branchIds": list(PLAN_BRANCH_IDS),
+           "departmentIds": list(PLAN_DEPARTMENT_IDS), "isPriority": True}
     _check_add_doc(doc)
+    before = prices(p["_id"])
     if not apply:
-        return {"dry_run": True, "doc": doc}
+        return {"dry_run": True, "doc": doc, "income": t["income"], "base": t["base"], "prices_now": before}
     pid = _send("pricingPlanAdd", doc)["_id"]
     d = detail(pid)
-    bad = (d.get("departmentIds") != [DEPARTMENT_ID] or d.get("branchIds") != [BRANCH_ID]
-           or d.get("products") != [p["_id"]] or d.get("type") != "fixed" or float(d.get("value") or 0) != float(value)
-           or d.get("status") != "active")
+    after = prices(p["_id"])
+    bad = (not _same_set(d.get("departmentIds"), PLAN_DEPARTMENT_IDS) or not _same_set(d.get("branchIds"), PLAN_BRANCH_IDS)
+           or d.get("products") != [p["_id"]] or d.get("type") != "subtraction"
+           or float(d.get("value") or 0) != t["value"] or d.get("status") != "active"
+           or after["agulah"] is None or abs(after["agulah"] - t["income"]) > 0.5)
     if bad:
         try:
             _send("pricingPlanEdit", {"_id": pid, "status": "archived"})
         finally:
-            _audit(db, by, "rollback", batch or "-", pid, code, doc["name"], value, None, bill,
-                   "Үүсгэсний дараах шалгалт таараагүй — архивласан: " + json.dumps(d, ensure_ascii=False)[:300])
+            _audit(db, by, "rollback", batch or "-", pid, code, doc["name"], t["value"], None, t["bill"],
+                   "Үүсгэсний дараах шалгалт таараагүй — архивласан. " + _note(before, after))
             db.commit()
-        raise ApplyError(f"{code}: erxes-д үүссэн plan буруу байсан тул архивлалаа ({pid}).")
-    db.add(PcManagedPlan(plan_id=pid, code=code, product_id=p["_id"], value=float(value), status="active", created_by=by))
-    _audit(db, by, "create", batch or uuid.uuid4().hex[:12], pid, code, doc["name"], None, float(value), bill)
+        raise ApplyError(f"{code}: агуулахын үнэ {after['agulah']} (хүлээгдсэн {t['income']}) — plan-ыг архивлалаа ({pid}).")
+    db.add(PcManagedPlan(plan_id=pid, code=code, product_id=p["_id"], value=t["value"], status="active", created_by=by))
+    _audit(db, by, "create", batch or uuid.uuid4().hex[:12], pid, code, doc["name"], None, t["value"], t["bill"],
+           _note(before, after))
     db.commit()
-    return {"plan_id": pid, "detail": d}
+    return {"plan_id": pid, "value": t["value"], "before": before, "after": after}
 
 
 def _managed(db, plan_id: str):
@@ -122,35 +172,55 @@ def _edit(plan_id: str, fields: dict) -> dict:
     return detail(plan_id)
 
 
-def update_value(db, plan_id: str, value: float, by: str, batch: str = "", bill: str = "", apply: bool = False) -> dict:
+def sync(db, plan_id: str, by: str, batch: str = "", apply: bool = False) -> dict:
+    """Манай plan-ы value-г одоогийн үндсэн − орлогоор (type subtraction) шинэчилнэ."""
     m = _managed(db, plan_id)
-    if value != round(value) or value <= 0:
-        raise ApplyError(f"{m.code}: буруу үнэ ({value}).")
+    t = target_for(db, m.code)
+    if t["product"]["_id"] != m.product_id:
+        raise ApplyError(f"{m.code}: бараа солигдсон байна — гараар шалгана уу.")
+    cur = detail(plan_id)
+    if not _same_set(cur.get("departmentIds"), PLAN_DEPARTMENT_IDS) or not _same_set(cur.get("branchIds"), PLAN_BRANCH_IDS):
+        raise ApplyError(f"{m.code}: plan-ы branch/department гараар өөрчлөгдсөн — өөрчлөхгүй, шалгана уу.")
+    before = prices(m.product_id)
+    res = {"plan_id": plan_id, "code": m.code, "old": {"type": cur.get("type"), "value": cur.get("value")},
+           "new": {"type": "subtraction", "value": t["value"]}, "income": t["income"], "prices_now": before}
     if not apply:
-        return {"dry_run": True, "plan_id": plan_id, "old": m.value, "new": value}
-    d = _edit(plan_id, {"value": float(value)})
-    if float(d.get("value") or 0) != float(value) or d.get("departmentIds") != [DEPARTMENT_ID]:
-        raise ApplyError(f"{m.code}: засварын дараах шалгалт таарсангүй: {d}")
-    old = m.value
-    m.value, m.updated_at = float(value), datetime.utcnow()
-    _audit(db, by, "update", batch or uuid.uuid4().hex[:12], plan_id, m.code, d.get("name") or "", old, float(value), bill)
+        return {"dry_run": True, **res}
+    d = _edit(plan_id, {"type": "subtraction", "value": t["value"]})
+    after = prices(m.product_id)
+    if (d.get("type") != "subtraction" or float(d.get("value") or 0) != t["value"]
+            or after["agulah"] is None or abs(after["agulah"] - t["income"]) > 0.5):
+        raise ApplyError(f"{m.code}: засварын дараах шалгалт таарсангүй: агуулах {after['agulah']}, {d}")
+    old = cur.get("value")
+    m.value, m.updated_at = t["value"], datetime.utcnow()
+    _audit(db, by, "update", batch or uuid.uuid4().hex[:12], plan_id, m.code, d.get("name") or "", old, t["value"],
+           t["bill"], f"{cur.get('type')}→subtraction; " + _note(before, after))
     db.commit()
-    return {"plan_id": plan_id, "old": old, "new": value}
+    return {**res, "after": after}
+
+
+def set_status(db, plan_id: str, status: str, by: str, batch: str = "", note: str = "", apply: bool = False) -> dict:
+    """Манай plan-ыг archived (буцаах) эсвэл active болгоно. Устгахгүй."""
+    if status not in ("archived", "active"):
+        raise ApplyError("status нь archived/active.")
+    m = _managed(db, plan_id)
+    before = prices(m.product_id)
+    if not apply:
+        return {"dry_run": True, "plan_id": plan_id, "code": m.code, "status": status, "prices_now": before}
+    d = _edit(plan_id, {"status": status})
+    if d.get("status") != status:
+        raise ApplyError(f"{m.code}: {status} болсонгүй: {d}")
+    after = prices(m.product_id)
+    m.status, m.updated_at = status, datetime.utcnow()
+    _audit(db, by, "deactivate" if status == "archived" else "activate", batch or uuid.uuid4().hex[:12], plan_id,
+           m.code, d.get("name") or "", m.value, None if status == "archived" else m.value,
+           note=(note + " " if note else "") + _note(before, after))
+    db.commit()
+    return {"plan_id": plan_id, "status": status, "before": before, "after": after}
 
 
 def deactivate(db, plan_id: str, by: str, batch: str = "", note: str = "", apply: bool = False) -> dict:
-    """Манай plan-ыг archived болгоно (устгахгүй)."""
-    m = _managed(db, plan_id)
-    if not apply:
-        return {"dry_run": True, "plan_id": plan_id, "code": m.code}
-    d = _edit(plan_id, {"status": "archived"})
-    if d.get("status") != "archived":
-        raise ApplyError(f"{m.code}: archived болсонгүй: {d}")
-    m.status, m.updated_at = "archived", datetime.utcnow()
-    _audit(db, by, "deactivate", batch or uuid.uuid4().hex[:12], plan_id, m.code, d.get("name") or "", m.value, None,
-           note=note)
-    db.commit()
-    return {"plan_id": plan_id, "status": "archived"}
+    return set_status(db, plan_id, "archived", by, batch, note, apply)
 
 
 def _main(argv: list[str]) -> None:
@@ -159,21 +229,19 @@ def _main(argv: list[str]) -> None:
     args = [a for a in argv if a != "--apply"]
     db = SessionLocal()
     try:
-        if args[0] == "create":
-            code = args[1]
-            value = float(args[args.index("--value") + 1]) if "--value" in args else None
-            bill = ""
-            if value is None:
-                from app.services.price_cost import latest_incomes
-                hist = latest_incomes(db).get(code) or []
-                if not hist:
-                    raise ApplyError(f"{code}: хүчинтэй орлого алга.")
-                value, bill = round(hist[0].total / hist[0].count, 2), hist[0].bill_number
-            print(json.dumps(create(db, code, value, by="cli", bill=bill, apply=apply), ensure_ascii=False, indent=1))
-        elif args[0] == "deactivate":
-            print(json.dumps(deactivate(db, args[1], by="cli", note="CLI rollback", apply=apply), ensure_ascii=False))
+        cmd = args[0] if args else ""
+        if cmd == "create":
+            out = create(db, args[1], by="cli", apply=apply)
+        elif cmd == "sync":
+            out = sync(db, args[1], by="cli", apply=apply)
+        elif cmd in ("deactivate", "activate"):
+            out = set_status(db, args[1], "archived" if cmd == "deactivate" else "active", by="cli", note="CLI", apply=apply)
+        elif cmd == "prices":
+            from app.services.price_cost import fetch_products
+            out = prices(fetch_products([args[1]])[args[1]]["_id"])
         else:
             raise SystemExit(__doc__)
+        print(json.dumps(out, ensure_ascii=False, indent=1))
     finally:
         db.close()
 
