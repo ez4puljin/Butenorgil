@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import threading
 import uuid
 from datetime import datetime
 
@@ -99,9 +100,10 @@ def _audit(db, by, action, batch, plan_id, code, name, old, new, bill="", note="
                         old_value=old, new_value=new, bill_number=bill, note=note[:500]))
 
 
-def target_for(db, code: str) -> dict:
-    """Код → {product, base, income, bill, value=base−income} (сүүлийн 310104 орлогоор)."""
-    from app.services.price_cost import fetch_products, is_fractional, latest_incomes
+def target_for(db, code: str, own_value: float | None = None) -> dict:
+    """Код → {product, base, income, bill, now, value}. Бусдын plan-тай нийлж үйлчилдэг тул
+    value = манай одоогийн value + (агуулахын бодит print үнэ − орлого) (price_cost.plan_target)."""
+    from app.services.price_cost import fetch_products, is_fractional, latest_incomes, plan_target
     p = fetch_products([code]).get(code)
     if not p or p.get("unitPrice") is None:
         raise ApplyError(f"{code}: erxes-д идэвхтэй бараа/үндсэн үнэ олдсонгүй.")
@@ -111,8 +113,11 @@ def target_for(db, code: str) -> dict:
     income = round(hist[0].total / hist[0].count, 2)
     if is_fractional(income):
         raise ApplyError(f"{code}: орлогын нэгж үнэ бутархай ({income}) — Эрхэтийн баримтыг шалгана уу.")
+    now = prices(p["_id"])
+    if now["agulah"] is None:
+        raise ApplyError(f"{code}: агуулахын одоогийн үнийг (print) уншиж чадсангүй.")
     return {"product": p, "base": float(p["unitPrice"]), "income": income, "bill": hist[0].bill_number,
-            "value": float(p["unitPrice"]) - income}
+            "now": now, "value": plan_target(own_value, now["agulah"], income)}
 
 
 def _note(before: dict, after: dict) -> str:
@@ -132,7 +137,7 @@ def create(db, code: str, by: str, batch: str = "", apply: bool = False) -> dict
            "value": t["value"], "applyType": "product", "products": [p["_id"]], "branchIds": list(PLAN_BRANCH_IDS),
            "departmentIds": list(PLAN_DEPARTMENT_IDS), "isPriority": True}
     _check_add_doc(doc)
-    before = prices(p["_id"])
+    before = t["now"]
     if not apply:
         return {"dry_run": True, "doc": doc, "income": t["income"], "base": t["base"], "prices_now": before}
     pid = _send("pricingPlanAdd", doc)["_id"]
@@ -173,15 +178,19 @@ def _edit(plan_id: str, fields: dict) -> dict:
 
 
 def sync(db, plan_id: str, by: str, batch: str = "", apply: bool = False) -> dict:
-    """Манай plan-ы value-г одоогийн үндсэн − орлогоор (type subtraction) шинэчилнэ."""
+    """Манай plan-ы value-г агуулахын бодит үнэ = орлого болохоор (type subtraction) шинэчилнэ."""
     m = _managed(db, plan_id)
-    t = target_for(db, m.code)
-    if t["product"]["_id"] != m.product_id:
-        raise ApplyError(f"{m.code}: бараа солигдсон байна — гараар шалгана уу.")
     cur = detail(plan_id)
     if not _same_set(cur.get("departmentIds"), PLAN_DEPARTMENT_IDS) or not _same_set(cur.get("branchIds"), PLAN_BRANCH_IDS):
         raise ApplyError(f"{m.code}: plan-ы branch/department гараар өөрчлөгдсөн — өөрчлөхгүй, шалгана уу.")
-    before = prices(m.product_id)
+    if cur.get("type") != "subtraction" or cur.get("status") != "active":
+        raise ApplyError(f"{m.code}: plan-ы төрөл/төлөв гараар өөрчлөгдсөн ({cur.get('type')}, {cur.get('status')}) — шалгана уу.")
+    t = target_for(db, m.code, own_value=float(cur.get("value") or 0))
+    if t["product"]["_id"] != m.product_id:
+        raise ApplyError(f"{m.code}: бараа солигдсон байна — гараар шалгана уу.")
+    if t["value"] == 0:
+        raise ApplyError(f"{m.code}: шинэ утга 0 — plan-ыг идэвхгүй болгох (deactivate) нь зөв.")
+    before = t["now"]
     res = {"plan_id": plan_id, "code": m.code, "old": {"type": cur.get("type"), "value": cur.get("value")},
            "new": {"type": "subtraction", "value": t["value"]}, "income": t["income"], "prices_now": before}
     if not apply:
@@ -221,6 +230,102 @@ def set_status(db, plan_id: str, status: str, by: str, batch: str = "", note: st
 
 def deactivate(db, plan_id: str, by: str, batch: str = "", note: str = "", apply: bool = False) -> dict:
     return set_status(db, plan_id, "archived", by, batch, note, apply)
+
+
+# ── багцаар батлах / буцаах (самбарын «Батлах») ─────────────────────
+_batch = {"running": False, "batch": "", "done": 0, "total": 0, "results": [], "kind": ""}
+_batch_lock = threading.Lock()
+
+
+def batch_status() -> dict:
+    return dict(_batch, results=list(_batch["results"]))
+
+
+def _start(kind: str, total: int) -> str:
+    with _batch_lock:
+        if _batch["running"]:
+            raise ApplyError("Өөр батлалт ажиллаж байна.")
+        b = uuid.uuid4().hex[:12]
+        _batch.update(running=True, batch=b, done=0, total=total, results=[], kind=kind)
+        return b
+
+
+def apply_codes(codes: list[str], by: str, max_apply: int) -> str:
+    """Сонгосон кодуудад plan үүсгэх/засах — background thread, дараалан. → batch id."""
+    from app.core.db import SessionLocal
+    from app.models.price_cost import PcManagedPlan
+    codes = list(dict.fromkeys(c.strip() for c in codes if c and c.strip()))
+    if not codes:
+        raise ApplyError("Бараа сонгоогүй.")
+    if len(codes) > max_apply:
+        raise ApplyError(f"Нэг удаад {max_apply}-аас ихгүй ({len(codes)} сонгосон).")
+    b = _start("apply", len(codes))
+
+    def go():
+        db = SessionLocal()
+        try:
+            for code in codes:
+                try:
+                    m = db.query(PcManagedPlan).filter(PcManagedPlan.code == code, PcManagedPlan.status == "active").first()
+                    r = sync(db, m.plan_id, by, b, apply=True) if m else create(db, code, by, b, apply=True)
+                    _batch["results"].append({"code": code, "ok": True, "action": "update" if m else "create",
+                                              "after": r.get("after")})
+                except Exception as e:  # noqa: BLE001 — нэг барааны алдаа бусдыг зогсоохгүй
+                    db.rollback()
+                    _batch["results"].append({"code": code, "ok": False, "error": str(e)[:300]})
+                _batch["done"] += 1
+        finally:
+            db.close()
+            _batch["running"] = False
+    threading.Thread(target=go, daemon=True).start()
+    return b
+
+
+def rollback_batch(batch: str, by: str) -> str:
+    """Тухайн багцын өөрчлөлтийг буцаана: үүсгэсэн plan → archived, засварласан → хуучин value."""
+    from app.core.db import SessionLocal
+    from app.models.price_cost import PcPriceAudit
+    db = SessionLocal()
+    try:
+        rows = (db.query(PcPriceAudit).filter(PcPriceAudit.batch == batch, PcPriceAudit.action.in_(("create", "update")))
+                .order_by(PcPriceAudit.id.desc()).all())
+        items = [(r.action, r.plan_id, r.code, r.old_value) for r in rows]
+    finally:
+        db.close()
+    if not items:
+        raise ApplyError("Энэ багцад буцаах өөрчлөлт алга.")
+    b = _start("rollback", len(items))
+
+    def go():
+        db = SessionLocal()
+        try:
+            for action, plan_id, code, old in items:
+                try:
+                    if action == "create":
+                        r = set_status(db, plan_id, "archived", by, b, note=f"Багц {batch}-ийг буцаав.", apply=True)
+                    else:
+                        m = _managed(db, plan_id)
+                        before = prices(m.product_id)
+                        d = _edit(plan_id, {"type": "subtraction", "value": float(old)})
+                        if float(d.get("value") or 0) != float(old):
+                            raise ApplyError(f"{code}: хуучин утга сэргээгдсэнгүй: {d}")
+                        after = prices(m.product_id)
+                        cur = m.value
+                        m.value, m.updated_at = float(old), datetime.utcnow()
+                        _audit(db, by, "rollback", b, plan_id, code, d.get("name") or "", cur, float(old),
+                               note=f"Багц {batch}-ийг буцаав. " + _note(before, after))
+                        db.commit()
+                        r = {"after": after}
+                    _batch["results"].append({"code": code, "ok": True, "action": "rollback", "after": r.get("after")})
+                except Exception as e:  # noqa: BLE001
+                    db.rollback()
+                    _batch["results"].append({"code": code, "ok": False, "error": str(e)[:300]})
+                _batch["done"] += 1
+        finally:
+            db.close()
+            _batch["running"] = False
+    threading.Thread(target=go, daemon=True).start()
+    return b
 
 
 def _main(argv: list[str]) -> None:

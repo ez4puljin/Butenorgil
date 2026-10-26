@@ -4,6 +4,10 @@
   POST /price-cost/run        — гараар шинэчлэх (?full=true — Эрхэтийн орлогыг оны эхнээс)
   PUT  /price-cost/settings   — {brands, accounts, exclude_customers, locations, guard_pct, max_apply} (admin)
   GET  /price-cost/xlsx       — Excel экспорт
+  POST /price-cost/apply      — {codes} сонгосон бараанд plan үүсгэх/засах (admin, erxes рүү БИЧНЭ)
+  POST /price-cost/rollback   — {batch} тухайн багцыг буцаах (admin)
+  GET  /price-cost/batch      — батлалт/буцаалтын явц
+  GET  /price-cost/audit      — өөрчлөлтийн бүртгэл
 (bare GET /price-cost-г тавихгүй — frontend хуудасны замтай давхцана.)
 """
 from __future__ import annotations
@@ -13,15 +17,17 @@ import json
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, require_role
-from app.models.price_cost import PcSyncRun
+from app.models.price_cost import PcPriceAudit, PcSyncRun
 from app.models.user import User
 from app.services import price_cost as svc
+from app.services import price_cost_apply as ap
+from app.core.audit import audit
 
 router = APIRouter(prefix="/price-cost", tags=["price-cost"])
 
@@ -62,6 +68,73 @@ class SettingsIn(BaseModel):
 @router.put("/settings")
 def put_settings(body: SettingsIn, u: User = Depends(require_role("admin"))):
     return {"settings": svc.save_settings(body.model_dump(exclude_none=True))}
+
+
+class ApplyIn(BaseModel):
+    codes: list[str]
+
+
+def _refresh_after():
+    """Батлалт дууссаны дараа самбарыг шинэчилнэ (print үнэ дахин уншина)."""
+    import threading
+    import time as _t
+
+    def wait():
+        while ap.batch_status()["running"]:
+            _t.sleep(2)
+        try:
+            svc.run(by="батлалтын дараа", manual=False)
+        except Exception as e:  # noqa: BLE001
+            print(f"[price_cost] батлалтын дараах шинэчлэл: {e}")
+    threading.Thread(target=wait, daemon=True).start()
+
+
+@router.post("/apply")
+def apply(body: ApplyIn, request: Request, db: Session = Depends(get_db), u: User = Depends(require_role("admin"))):
+    """Сонгосон бараанд [AUTO-COST HA] plan үүсгэх/засах (erxes рүү БИЧНЭ) — зөвхөн admin."""
+    res = svc.load_result() or {}
+    by_code = {r["code"]: r for r in res.get("rows", [])}
+    bad = [c for c in body.codes if not by_code.get(c, {}).get("action") or by_code[c].get("review")]
+    if bad:
+        raise HTTPException(400, f"Санал болгоогүй эсвэл «шалгах» төлөвтэй бараа: {', '.join(bad[:10])}")
+    try:
+        b = ap.apply_codes(body.codes, by=u.username, max_apply=int(svc.load_settings()["max_apply"]))
+    except ap.ApplyError as e:
+        raise HTTPException(409, str(e))
+    audit(db, request, u, action="price_cost_apply", entity_type="price_cost",
+          extra={"batch": b, "codes": body.codes[:200]}, autocommit=True)
+    _refresh_after()
+    return {"batch": b, "status": ap.batch_status()}
+
+
+class RollbackIn(BaseModel):
+    batch: str
+
+
+@router.post("/rollback")
+def rollback(body: RollbackIn, request: Request, db: Session = Depends(get_db),
+             u: User = Depends(require_role("admin"))):
+    try:
+        b = ap.rollback_batch(body.batch, by=u.username)
+    except ap.ApplyError as e:
+        raise HTTPException(409, str(e))
+    audit(db, request, u, action="price_cost_rollback", entity_type="price_cost",
+          extra={"batch": body.batch, "rollback_batch": b}, autocommit=True)
+    _refresh_after()
+    return {"batch": b, "status": ap.batch_status()}
+
+
+@router.get("/batch")
+def batch(_: User = Depends(get_current_user)):
+    return ap.batch_status()
+
+
+@router.get("/audit")
+def audit_log(limit: int = 300, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    rows = db.query(PcPriceAudit).order_by(PcPriceAudit.id.desc()).limit(min(limit, 2000)).all()
+    return [{"id": r.id, "at": r.at.isoformat() + "Z", "by": r.by, "action": r.action, "batch": r.batch,
+             "plan_id": r.plan_id, "code": r.code, "name": r.name, "old": r.old_value, "new": r.new_value,
+             "bill": r.bill_number, "note": r.note} for r in rows]
 
 
 @router.get("/xlsx")

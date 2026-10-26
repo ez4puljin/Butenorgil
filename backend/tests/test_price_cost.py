@@ -117,3 +117,10 @@ def test_apply_guards():
     assert isinstance(_raises(lambda: ap._send("pricingPlanRemove", {})), ap.ApplyError)
     assert isinstance(_raises(lambda: ap._send("productsEdit", {})), ap.ApplyError)
     assert isinstance(_raises(lambda: ap._edit("x", {"departmentIds": []})), ap.ApplyError)
+
+
+def test_plan_target_compensates_other_plans():
+    assert pc.plan_target(None, 19500, 20500) == -1000      # 102061: бусдын plan-гүй = үндсэн − орлого
+    assert pc.plan_target(None, 3270, 3420) == -150         # 103118: бусдын −210 plan-ыг нөхнө
+    assert pc.plan_target(-1000, 20500, 20500) == -1000     # таарсан — өөрчлөхгүй
+    assert pc.plan_target(-150, 3420, 3500) == -230         # орлого өссөн

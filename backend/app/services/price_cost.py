@@ -401,6 +401,30 @@ def guard(new: float, ref: float | None, pct: float) -> bool:
     return abs(new - ref) / abs(ref) * 100 <= pct
 
 
+def plan_target(own_value: float | None, agulah_price: float, income: float) -> float:
+    """Манай subtraction plan-ы утга: агуулахын бодит үнийг орлогын үнэ болгох (бусдын plan-ыг нөхнө)."""
+    return round((own_value or 0.0) + agulah_price - income, 2)
+
+
+def fetch_print_prices(product_ids: list[str], workers: int = 5) -> dict[str, dict]:
+    """product_id → {agulah, zaal} — erxes «Шошго» (documents/print)-ээс, ≤5 зэрэгцээ."""
+    from concurrent.futures import ThreadPoolExecutor
+    from app.services.price_cost_apply import prices
+    out: dict[str, dict] = {}
+    done = [0]
+
+    def one(pid):
+        try:
+            out[pid] = prices(pid)
+        except Exception:  # noqa: BLE001
+            out[pid] = {}
+        done[0] += 1
+        _state["step"] = f"erxes бодит үнэ (print): {done[0]}/{len(product_ids)}"
+    with ThreadPoolExecutor(workers) as ex:
+        list(ex.map(one, product_ids))
+    return out
+
+
 def _pct(a, b):
     return round((a - b) / b * 100, 1) if a is not None and b else None
 
@@ -425,6 +449,7 @@ def build(db) -> dict:
     for r in db.query(PcPosSale).filter(PcPosSale.product_id.in_(pids)).all():
         sales[r.product_id].append(r)
     today = date.today()
+    printed = fetch_print_prices([p["_id"] for p in prods.values()])
     rows = []
     for code in codes:
         m, p = master.get(code, {}), prods.get(code)
@@ -435,7 +460,10 @@ def build(db) -> dict:
         prev_income = round(prev.total / prev.count, 2) if prev else None
         base = p.get("unitPrice") if p else None
         ap = [x for x in dept_plans if p and plan_applies(x, p, today)]
-        cfg, how = config_price(base, ap) if p else (None, "missing")
+        calc, how = config_price(base, ap) if p else (None, "missing")
+        pr = printed.get(p["_id"], {}) if p else {}
+        # Тохиргоот үнэ = erxes «Шошго»-ны (documents/print) бодит үнэ; уншиж чадаагүй бол тооцоолсон таамаг
+        cfg, how = (pr["agulah"], "print") if pr.get("agulah") is not None else (calc, how)
         own = [x for x in ap if x["_id"] in managed]
         others = [x for x in ap if x["_id"] not in managed]
         sl = sorted(sales.get(p["_id"], []) if p else [], key=lambda r: r.paid_at)
@@ -445,19 +473,19 @@ def build(db) -> dict:
         since_prices = sorted({round((r.unit_price * r.count - r.discount) / r.count, 2) for r in since})
         status = classify(cfg, income)
         # Санал болгох өөрчлөлт (dry-run) — 4-р шатанд «Батлах»
-        # Манай plan: subtraction, value = үндсэн − орлого (сөрөг бол үнэ нэмэгдэнэ)
+        # Манай plan: subtraction; бусдын plan-тай НИЙЛЖ үйлчилдэг (103118: −210 −60) тул нөхөх утга:
+        # value = манай одоогийн value + (агуулахын бодит үнэ − орлого). Бусдын plan-гүй бол = үндсэн − орлого.
         action, review, target = "", False, None
-        if income is not None and p and base is not None:
-            target = round(float(base) - income, 2)
-            own_p = own[0] if own else None
+        own_p = own[0] if own else None
+        if income is not None and p and cfg is not None and how == "print":
+            own_v = float(own_p["value"] or 0) if own_p and own_p.get("type") == "subtraction" else None
+            target = plan_target(own_v, cfg, income)
             if own_p is not None:
-                same = own_p.get("type") == "subtraction" and abs(float(own_p.get("value") or 0) - target) < TOL
-                action = "" if same else "update"
+                action = "" if own_v is not None and abs(cfg - income) < TOL else "update"
             elif status != "eq":
                 action = "create"
-            own_income = float(base) - float(own_p["value"]) if own_p and own_p.get("type") == "subtraction" else None
-            review = bool(action) and (not guard(income, own_income if own_income is not None else prev_income,
-                                                 s["guard_pct"]) or is_fractional(income))
+            review = bool(action) and (not guard(income, cfg if own_p else prev_income, s["guard_pct"])
+                                       or is_fractional(income))
         rows.append({
             "code": code, "name": (p or {}).get("name") or m.get("name") or (last.name if last else ""),
             "brand": m.get("brand", ""), "uom": m.get("uom", ""), "non_piece": bool(m.get("uom")) and m.get("uom") != "ширхэг",
@@ -465,7 +493,7 @@ def build(db) -> dict:
             "income": income, "fractional": is_fractional(income), "income_date": last.date if last else "", "income_customer": last.customer if last else "",
             "income_bill": last.bill_number if last else "", "income_count": last.count if last else None,
             "prev_income": prev_income, "prev_income_date": prev.date if prev else "",
-            "base": base, "config": cfg, "config_how": how,
+            "base": base, "config": cfg, "config_how": how, "config_calc": calc, "zaal": pr.get("zaal"),
             "plans": [{"id": x["_id"], "name": x["name"], "type": x["type"], "value": x["value"],
                        "priority": bool(x.get("isPriority")), "conditional": is_conditional(x),
                        "shared": len(x.get("departmentIds") or []) != 1, "own": x["_id"] in managed,

@@ -1,12 +1,23 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RefreshCw, Loader2, Download, Settings2, Search, ChevronDown, ChevronRight, Info, AlertTriangle, History,
+  CheckCircle2, ScrollText, Undo2, X,
 } from "lucide-react";
 import { api } from "../lib/api";
 
-/* Үнийн тохиргоо — Хархорин агуулахын зарах үнийг Эрхэтийн сүүлийн орлогын нэгж үнэтэй тулгана.
-   2-р шат: ЗӨВХӨН УНШИНА (erxes/Эрхэтэд юу ч бичихгүй). «Санал» багана нь 4-р шатанд батлах dry-run.
-   POS «Хархорин агуулах»-ын үнийг онлайнаар асуух боломжгүй тул «Бодит» = сүүлийн борлуулалтын үнэ. */
+/* Үнийн тохиргоо — Хархорин агуулахын зарах үнийг Эрхэтийн сүүлийн (310104) орлогын нэгж үнэ болгоно.
+   «Тохиргоот» = erxes «Шошго» (documents/print)-ийн бодит үнэ (агуулах + заал). «Санал» нь dry-run;
+   admin сонгож «Батлах» дарахад л erxes-д [AUTO-COST HA] subtraction plan үүсгэж/засна (буцааж болно).
+   «Бодит (сүүлд)» = POS «Хархорин агуулах»-ын сүүлийн борлуулалтын үнэ. */
+
+interface Batch {
+  running: boolean; batch: string; done: number; total: number; kind: string;
+  results: { code: string; ok: boolean; action?: string; error?: string; after?: { agulah: number; zaal: number } }[];
+}
+interface AuditRow {
+  id: number; at: string; by: string; action: string; batch: string; plan_id: string; code: string; name: string;
+  old: number | null; new: number | null; bill: string; note: string;
+}
 
 interface Plan {
   id: string; name: string; type: string; value: number; priority: boolean; conditional: boolean;
@@ -16,6 +27,7 @@ interface Row {
   code: string; name: string; brand: string; uom: string; non_piece: boolean; in_erxes: boolean;
   income: number | null; fractional?: boolean; income_date: string; income_customer: string; income_bill: string; income_count: number | null;
   prev_income: number | null; prev_income_date: string; base: number | null; config: number | null; config_how: string;
+  config_calc: number | null; zaal: number | null;
   plans: Plan[]; others: number; real: number | null; real_date: string; real_order: string;
   since_count: number; since_qty: number; since_prices: number[];
   diff_config: number | null; diff_config_pct: number | null; diff_real: number | null; diff_real_pct: number | null;
@@ -79,7 +91,51 @@ export default function PriceCost() {
   const [showSet, setShowSet] = useState(false);
   const [showRuns, setShowRuns] = useState(false);
   const [limit, setLimit] = useState(300);
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [confirm, setConfirm] = useState(false);
+  const [batch, setBatch] = useState<Batch | null>(null);
+  const [showAudit, setShowAudit] = useState(false);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const bpoll = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const watchBatch = useCallback(() => {
+    if (bpoll.current) clearInterval(bpoll.current);
+    bpoll.current = setInterval(async () => {
+      try {
+        const r = await api.get("/price-cost/batch");
+        setBatch(r.data);
+        if (!r.data.running && bpoll.current) {
+          clearInterval(bpoll.current); bpoll.current = null;
+          setSel(new Set());
+          // батлалтын дараа сервер самбарыг өөрөө шинэчилнэ — дуустал хүлээнэ
+          setTimeout(() => { load().then(s => { if (s?.running) watch(); }); }, 3000);
+        }
+      } catch { /* дараагийн удаа */ }
+    }, 2500);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    api.get("/price-cost/batch").then(r => { setBatch(r.data); if (r.data.running) watchBatch(); }).catch(() => {});
+    return () => { if (bpoll.current) clearInterval(bpoll.current); };
+  }, [watchBatch]);
+
+  async function runApply() {
+    setErr("");
+    try {
+      const r = await api.post("/price-cost/apply", { codes: [...sel] });
+      setBatch(r.data.status); setConfirm(false); watchBatch();
+    } catch (e: any) { setErr(e?.response?.data?.detail ?? "Батлах үед алдаа гарлаа"); setConfirm(false); }
+  }
+
+  async function runRollback(b: string) {
+    setErr("");
+    try {
+      const r = await api.post("/price-cost/rollback", { batch: b });
+      setBatch(r.data.status); watchBatch();
+    } catch (e: any) { setErr(e?.response?.data?.detail ?? "Буцааж чадсангүй"); }
+  }
+
+  const eligible = (r: Row) => !!r.action && !r.review;
 
   const load = useCallback(async () => {
     try {
@@ -172,6 +228,10 @@ export default function PriceCost() {
             className={`rounded-xl border p-2 text-gray-500 hover:bg-gray-50 ${showRuns ? "border-gray-400 bg-gray-50" : "border-gray-200 bg-white"}`}>
             <History size={15} />
           </button>
+          <button onClick={() => setShowAudit(v => !v)} title="Өөрчлөлтийн бүртгэл (audit log)"
+            className={`rounded-xl border p-2 text-gray-500 hover:bg-gray-50 ${showAudit ? "border-gray-400 bg-gray-50" : "border-gray-200 bg-white"}`}>
+            <ScrollText size={15} />
+          </button>
           <button onClick={download} disabled={!res}
             className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50">
             <Download size={13} />Excel
@@ -186,8 +246,9 @@ export default function PriceCost() {
       <div className="mb-3 flex items-start gap-2 rounded-xl border border-sky-100 bg-sky-50/60 px-3 py-2 text-xs text-sky-900">
         <Info size={14} className="mt-0.5 shrink-0" />
         <span>
-          Одоогоор <b>зөвхөн уншина</b> — erxes-ийн үнэ, plan-д юу ч өөрчлөхгүй. «Санал» багана нь ирээдүйд батлах өөрчлөлтийн урьдчилсан харагдац.
-          Хархорин агуулахын POS-ийн үнийг онлайнаар асуух боломжгүй тул «Тохиргоот» нь plan-уудаас тооцсон үнэ, «Бодит» нь сүүлийн борлуулалтын үнэ.
+          «Тохиргоот» = erxes шошгоны бодит үнэ (агуулах, доор нь заал). «Санал» нь урьдчилсан харагдац — erxes-д юу ч өөрчлөгдөхгүй;
+          admin мөр сонгоод «Батлах» дарахад л <b>[AUTO-COST HA]</b> plan үүсэж/засагдана. Бусдын plan хэвээр (манай plan тэдгээрийг нөхнө),
+          заалны үнэ ч мөн адил зөрүүгээр өөрчлөгдөнө. Багцыг «Өөрчлөлтийн бүртгэл»-ээс буцааж болно.
         </span>
       </div>
 
@@ -209,6 +270,15 @@ export default function PriceCost() {
 
       {showSet && settings && <SettingsPanel s={settings} onSaved={x => { setSettings(x); setShowSet(false); }} />}
       {showRuns && <RunsPanel runs={runs} isAdmin={isAdmin} running={!!st?.running} onFull={() => refresh(true)} />}
+      {showAudit && <AuditPanel isAdmin={isAdmin} busy={!!batch?.running} onRollback={runRollback} />}
+
+      {batch && (batch.running || batch.results.length > 0) && (
+        <BatchBanner b={batch} onClose={() => setBatch(null)} />
+      )}
+      {confirm && res && (
+        <ConfirmSheet rows={res.rows.filter(r => sel.has(r.code))} busy={!!batch?.running}
+          onCancel={() => setConfirm(false)} onOk={runApply} />
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 rounded-apple bg-white p-6 text-sm text-gray-500 shadow-sm"><Loader2 size={15} className="animate-spin" />Ачаалж байна…</div>
@@ -240,12 +310,25 @@ export default function PriceCost() {
               </select>
             )}
             <span className="ml-auto text-xs text-gray-400">{rows.length} мөр</span>
+            {isAdmin && (
+              <button onClick={() => setConfirm(true)} disabled={!sel.size || !!batch?.running || !!st?.running}
+                className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-40">
+                <CheckCircle2 size={13} />Батлах{sel.size ? ` (${sel.size})` : ""}
+              </button>
+            )}
           </div>
 
           <div className="overflow-auto rounded-apple bg-white shadow-sm" style={{ maxHeight: "calc(100vh - 290px)" }}>
             <table className="w-full min-w-[1150px] text-xs">
               <thead className="sticky top-0 z-10 bg-gray-50 text-[10.5px] text-gray-500">
                 <tr>
+                  {isAdmin && (
+                    <th className="w-7 px-2 py-2">
+                      <input type="checkbox" title="Санал болгосон бүгдийг сонгох"
+                        checked={rows.some(eligible) && rows.filter(eligible).every(r => sel.has(r.code))}
+                        onChange={e => setSel(e.target.checked ? new Set(rows.filter(eligible).map(r => r.code)) : new Set())} />
+                    </th>
+                  )}
                   <th className="px-2 py-2 text-left">Бараа</th>
                   <th className="px-2 py-2 text-left">Сүүлийн орлого</th>
                   <th className="px-2 py-2 text-right">Орлогын үнэ</th>
@@ -266,6 +349,14 @@ export default function PriceCost() {
                     <Fragment key={r.code}>
                       <tr onClick={() => setOpen(isOpen ? null : r.code)}
                         className={`cursor-pointer border-t border-gray-100 align-top hover:bg-gray-50/70 ${isOpen ? "bg-gray-50" : ""}`}>
+                        {isAdmin && (
+                          <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
+                            {eligible(r) && (
+                              <input type="checkbox" checked={sel.has(r.code)}
+                                onChange={e => setSel(s => { const n = new Set(s); e.target.checked ? n.add(r.code) : n.delete(r.code); return n; })} />
+                            )}
+                          </td>
+                        )}
                         <td className="px-2 py-1.5">
                           <div className="flex items-start gap-1">
                             {isOpen ? <ChevronDown size={13} className="mt-0.5 shrink-0 text-gray-400" /> : <ChevronRight size={13} className="mt-0.5 shrink-0 text-gray-300" />}
@@ -292,9 +383,10 @@ export default function PriceCost() {
                         <td className="px-2 py-1.5 text-right tabular-nums text-gray-500">{m(r.base)}</td>
                         <td className="px-2 py-1.5 text-right tabular-nums">
                           <div className="text-gray-900">{m(r.config)}</div>
-                          {r.plans.length > 0 && (
-                            <div className={`text-[10.5px] ${r.config_how === "guess" ? "text-orange-600" : "text-gray-400"}`}>
-                              {r.plans.length} plan{r.config_how === "guess" ? " · таамаг" : ""}
+                          {r.zaal != null && <div className="text-[10.5px] text-gray-400">заал {m(r.zaal)}</div>}
+                          {(r.plans.length > 0 || r.config_how !== "print") && (
+                            <div className={`text-[10.5px] ${r.config_how !== "print" ? "text-orange-600" : "text-gray-400"}`}>
+                              {r.plans.length ? `${r.plans.length} plan` : ""}{r.config_how !== "print" ? " · тооцоолсон" : ""}
                             </div>
                           )}
                         </td>
@@ -340,7 +432,7 @@ export default function PriceCost() {
                       </tr>
                       {isOpen && (
                         <tr className="bg-gray-50">
-                          <td colSpan={11} className="px-8 pb-3 pt-1">
+                          <td colSpan={isAdmin ? 12 : 11} className="px-8 pb-3 pt-1">
                             <Detail r={r} />
                           </td>
                         </tr>
@@ -476,6 +568,122 @@ function SettingsPanel({ s, onSaved }: { s: Settings; onSaved: (s: Settings) => 
           {busy && <Loader2 size={12} className="animate-spin" />}Хадгалах
         </button>
       </div>
+    </div>
+  );
+}
+
+function ConfirmSheet({ rows, busy, onCancel, onOk }: { rows: Row[]; busy: boolean; onCancel: () => void; onOk: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onCancel}>
+      <div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl bg-white shadow-xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center border-b border-gray-100 px-4 py-3">
+          <div>
+            <div className="text-sm font-semibold text-gray-900">erxes-д {rows.length} барааны үнийн тохиргоо хийх үү?</div>
+            <div className="text-[11px] text-gray-500">
+              [AUTO-COST HA] subtraction plan · branch Хархорин + Хархорин агуулах · хэлтэс агуулах + заал. Бараа бүрийн дараа
+              агуулахын үнийг шошгоноос уншиж шалгана; таарахгүй бол тэр plan-ыг шууд архивлана.
+            </div>
+          </div>
+          <button onClick={onCancel} className="ml-auto rounded-lg p-1 text-gray-400 hover:bg-gray-100"><X size={16} /></button>
+        </div>
+        <div className="overflow-auto px-4 py-2">
+          <table className="w-full text-xs">
+            <thead className="text-[10.5px] text-gray-500">
+              <tr>
+                <th className="py-1 text-left">Бараа</th><th className="py-1 text-left">Үйлдэл</th>
+                <th className="py-1 text-right">Агуулах одоо → шинэ</th><th className="py-1 text-right">Заал одоо → шинэ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const d = r.income != null && r.config != null ? r.income - r.config : 0;
+                return (
+                  <tr key={r.code} className="border-t border-gray-50">
+                    <td className="py-1"><span className="font-mono text-gray-500">{r.code}</span> {r.name}</td>
+                    <td className="py-1 text-gray-600">{r.action === "create" ? "үүсгэх" : "засах"} (хасах {m(r.target)})</td>
+                    <td className="py-1 text-right tabular-nums">{m(r.config)} → <b>{m(r.income)}</b></td>
+                    <td className="py-1 text-right tabular-nums text-gray-600">
+                      {r.zaal != null ? <>{m(r.zaal)} → {m(r.zaal + d)} <span className="text-[10.5px] text-gray-400">({d > 0 ? "+" : ""}{m(d)})</span></> : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-gray-100 px-4 py-3">
+          <button onClick={onCancel} className="rounded-xl border border-gray-200 px-3 py-1.5 text-xs text-gray-600">Болих</button>
+          <button onClick={onOk} disabled={busy}
+            className="rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+            Тийм, {rows.length} барааг батлах
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BatchBanner({ b, onClose }: { b: Batch; onClose: () => void }) {
+  const failed = b.results.filter(x => !x.ok);
+  const label = b.kind === "rollback" ? "Буцааж байна" : "erxes-д тохируулж байна";
+  return (
+    <div className={`mb-3 rounded-xl border px-3 py-2 text-xs ${b.running ? "border-indigo-100 bg-indigo-50/60 text-indigo-900"
+      : failed.length ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+      <div className="flex items-center gap-2">
+        {b.running ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+        {b.running ? `${label}… ${b.done}/${b.total}` :
+          `${b.kind === "rollback" ? "Буцаалт" : "Батлалт"} дууслаа: ${b.results.length - failed.length} амжилттай${failed.length ? `, ${failed.length} алдаа` : ""} · багц ${b.batch}`}
+        {!b.running && <button onClick={onClose} className="ml-auto rounded p-0.5 hover:bg-black/5"><X size={13} /></button>}
+      </div>
+      {failed.map(f => <div key={f.code} className="mt-1 text-rose-700">{f.code}: {f.error}</div>)}
+    </div>
+  );
+}
+
+const ACTION_LABEL: Record<string, string> = {
+  create: "үүсгэсэн", update: "зассан", deactivate: "архивласан", activate: "идэвхжүүлсэн", rollback: "буцаасан",
+};
+
+function AuditPanel({ isAdmin, busy, onRollback }: { isAdmin: boolean; busy: boolean; onRollback: (b: string) => void }) {
+  const [rows, setRows] = useState<AuditRow[] | null>(null);
+  useEffect(() => { api.get("/price-cost/audit").then(r => setRows(r.data)).catch(() => setRows([])); }, [busy]);
+  const batches = useMemo(() => {
+    const g = new Map<string, AuditRow[]>();
+    (rows ?? []).forEach(r => { const k = r.batch || `#${r.id}`; g.set(k, [...(g.get(k) ?? []), r]); });
+    return [...g.entries()];
+  }, [rows]);
+  return (
+    <div className="mb-3 max-h-96 overflow-auto rounded-xl border border-gray-200 bg-white p-3 text-xs">
+      <div className="mb-2 font-semibold text-gray-700">Өөрчлөлтийн бүртгэл</div>
+      {rows === null && <div className="text-gray-400">Ачаалж байна…</div>}
+      {rows?.length === 0 && <div className="text-gray-400">Одоогоор өөрчлөлт алга.</div>}
+      {batches.map(([b, items]) => {
+        const canUndo = isAdmin && items.some(i => i.action === "create" || i.action === "update");
+        return (
+          <div key={b} className="mb-2 rounded-lg border border-gray-100 p-2">
+            <div className="mb-1 flex items-center gap-2 text-gray-500">
+              <span className="tabular-nums">{ub(items[items.length - 1].at)}</span>
+              <span>{items[0].by}</span>
+              <span className="font-mono text-[10.5px] text-gray-400">{b}</span>
+              {canUndo && (
+                <button disabled={busy} onClick={() => { if (window.confirm(`Багц ${b}-ийн ${items.length} өөрчлөлтийг буцаах уу?`)) onRollback(b); }}
+                  className="ml-auto flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-0.5 text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                  <Undo2 size={12} />Буцаах
+                </button>
+              )}
+            </div>
+            {items.map(i => (
+              <div key={i.id} className="flex flex-wrap gap-x-2 text-gray-600">
+                <span className="font-mono text-gray-500">{i.code}</span>
+                <span>{ACTION_LABEL[i.action] ?? i.action}</span>
+                <span className="tabular-nums">{i.old != null ? m(i.old) : "—"} → {i.new != null ? m(i.new) : "—"}</span>
+                {i.bill && <span className="text-gray-400">баримт {i.bill}</span>}
+                {i.note && <span className="text-gray-400">{i.note}</span>}
+              </div>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
