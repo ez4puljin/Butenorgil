@@ -81,3 +81,38 @@ def test_guard_30pct():
     assert not pc.guard(131, 100, 30)
     assert not pc.guard(69, 100, 30)
     assert pc.guard(500, None, 30)                 # өмнөх үнэгүй бол хэвийн
+
+
+def test_account_filter():
+    assert pc.account_ok("кт:310104", ["310104"])
+    assert pc.account_ok("кт:310104, дт:150101", ["310104"])
+    assert not pc.account_ok("кт:313011", ["310104"])        # Тооллого
+    assert not pc.account_ok("", ["310104"])
+    assert not pc.account_ok("кт:3101040", ["310104"])
+
+
+def test_fractional():
+    assert pc.is_fractional(2183.33)
+    assert not pc.is_fractional(20500.0)
+    assert not pc.is_fractional(None)
+
+
+def _raises(fn):
+    try:
+        fn()
+    except Exception as e:  # noqa: BLE001
+        return e
+    raise AssertionError("алдаа гарах ёстой байсан")
+
+
+def test_apply_guards():
+    from app.services import price_cost_apply as ap
+    good = {"name": "[AUTO-COST HA] 102061 x", "type": "fixed", "value": 20500.0, "applyType": "product",
+            "products": ["P"], "branchIds": [B], "departmentIds": [D], "isPriority": True}
+    ap._check_add_doc(good)
+    for bad in ({"departmentIds": [D, RETAIL]}, {"departmentIds": []}, {"branchIds": []}, {"products": ["P", "Q"]},
+                {"type": "subtraction"}, {"name": "x"}, {"value": 0}, {"applyType": "tag"}):
+        assert isinstance(_raises(lambda: ap._check_add_doc({**good, **bad})), ap.ApplyError)
+    assert isinstance(_raises(lambda: ap._send("pricingPlanRemove", {})), ap.ApplyError)
+    assert isinstance(_raises(lambda: ap._send("productsEdit", {})), ap.ApplyError)
+    assert isinstance(_raises(lambda: ap._edit("x", {"departmentIds": []})), ap.ApplyError)

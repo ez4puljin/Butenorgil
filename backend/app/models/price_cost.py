@@ -27,6 +27,7 @@ class PcIncomeRow(Base):
     bill_number: Mapped[str] = mapped_column(String(60), default="")
     count: Mapped[float] = mapped_column(Float, default=0)
     total: Mapped[float] = mapped_column(Float, default=0)             # total_with_vat
+    rel_accounts: Mapped[str] = mapped_column(String(60), default="")  # «кт:310104» — харилцсан данс
     description: Mapped[str] = mapped_column(String(500), default="")
 
 

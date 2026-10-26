@@ -638,6 +638,11 @@ def ensure_po_location_schema():
             lc = [r[1] for r in conn.execute(text(f"PRAGMA table_info({tbl})")).fetchall()]
             if lc and "display_code" not in lc:
                 conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN display_code VARCHAR(64)"))
+        # Үнийн тохиргоо: харилцсан данс (310104) — хуучин мөрөнд байхгүй тул дараагийн синк оны эхнээс дахин татна
+        pc = [r[1] for r in conn.execute(text("PRAGMA table_info(pc_income_rows)")).fetchall()]
+        if pc and "rel_accounts" not in pc:
+            conn.execute(text("ALTER TABLE pc_income_rows ADD COLUMN rel_accounts VARCHAR(60) DEFAULT ''"))
+            conn.execute(text("DELETE FROM pc_income_rows"))
 
 def ensure_po_brand_status_table():
     """po_brand_statuses хүснэгт үүсгэж, одоо байгаа PO-уудад backfill хийнэ."""

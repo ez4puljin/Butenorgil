@@ -4,7 +4,9 @@
   · Эрхэт орлого: `inventory/trs/?kind=-4&inv_location=7` XHR → `var items = [...]` (500 мөр/хуудас).
     2026 оны 22,877 мөр дараалан 86 сек — 7 хоногоор хувааж, шинээс хуучин руу. Дараагийн синк нь
     сүүлийн REFETCH_DAYS хоногийг л дахин татна (засагдсан баримтыг барина).
-  · «Тооллого», «Урамшуулал» харилцагчтай мөр бодит үнэ биш → хасна (Эрхэтэд «Тооллого » ард нь зайтай).
+  · Зөвхөн харилцсан данс 310104 (нийлүүлэгчийн өглөг)-тэй орлого — хэрэглэгчийн дүрэм 2026-10-26.
+    «Тооллого» нь 313011, гэхдээ «Урамшуулал»-ын 751 мөр 310104 дээр тул харилцагчаар бас хасна
+    (Эрхэтэд «Тооллого » ард нь зайтай). Бутархай нэгж үнэ (2026 онд 162 мөр) байх ёсгүй → «шалгах».
   · erxes pricing plan: `pricingPlans(status:"active")`. Хархорин агуулахын хэлтэст 122 plan-ы 120 нь
     жижиглэнгийн хэлтэстэй ХУВААЛЦСАН. Хоосон branchIds/departmentIds = бүгдэд.
   · POS «Хархорин агуулах»-ын үнийг онлайнаар асуух боломжгүй (poscProducts 0 бараа) — бодит үнийг
@@ -39,6 +41,7 @@ LOCATION_NAMES = {"6": "04 Хархорин заал", "7": "05 Хархорин
 DEFAULTS = {
     "locations": ["7"],
     "brands": ["АПУ трейдинг ХХК", "АПУ дэйри ХХК"],
+    "accounts": ["310104"],
     "exclude_customers": ["Тооллого", "Урамшуулал"],
     "year_start": "2026-01-01",
     "guard_pct": 30,
@@ -66,7 +69,7 @@ def load_settings() -> dict:
 
 def save_settings(patch: dict) -> dict:
     s = load_settings()
-    for k in ("locations", "brands", "exclude_customers"):
+    for k in ("locations", "brands", "exclude_customers", "accounts"):
         if k in patch and isinstance(patch[k], list):
             s[k] = [str(x).strip() for x in patch[k] if str(x).strip()]
     s["locations"] = [x for x in s["locations"] if x in LOCATION_NAMES] or ["7"]
@@ -173,9 +176,20 @@ def fetch_income(db, full: bool = False) -> dict:
             code=str(x.get("inventory__code") or "").strip(), name=str(x.get("inventory__name") or "")[:300],
             customer=str(x.get("customer__name") or "").strip()[:300], bill_number=str(x.get("bill_number") or "")[:60],
             count=_num(x.get("count")), total=_num(x.get("total_with_vat")),
+            rel_accounts=str(x.get("rel_accounts") or "")[:60],
             description=str(x.get("description") or "")[:500]))
     db.commit()
     return {"from": start.isoformat(), "rows": len(seen)}
+
+
+def account_ok(rel_accounts: str, accounts: list[str]) -> bool:
+    """«кт:310104» (эсвэл «кт:310104, дт:…») нь тохируулсан дансны аль нэгийг агуулж байгаа эсэх."""
+    got = {x.split(":")[-1].strip() for x in (rel_accounts or "").replace(";", ",").split(",") if x.strip()}
+    return bool(got & set(accounts))
+
+
+def is_fractional(price: float | None) -> bool:
+    return price is not None and abs(price - round(price)) > 0.001
 
 
 def latest_incomes(db) -> dict[str, list]:
@@ -183,9 +197,12 @@ def latest_incomes(db) -> dict[str, list]:
     from app.models.price_cost import PcIncomeRow
     s = load_settings()
     excl = {x.strip() for x in s["exclude_customers"]}
+    accts = [a.strip() for a in s.get("accounts") or [] if a.strip()]
     by: dict[str, list] = defaultdict(list)
     for r in db.query(PcIncomeRow).filter(PcIncomeRow.location_id.in_(s["locations"])).all():
         if r.customer.strip() in excl or r.count <= 0 or r.total <= 0:
+            continue
+        if accts and not account_ok(r.rel_accounts, accts):
             continue
         by[r.code].append(r)
     for v in by.values():
@@ -429,12 +446,13 @@ def build(db) -> dict:
                 action = "" if abs(own_v - income) < TOL else "update"
             elif status != "eq":
                 action = "create"
-            review = bool(action) and not guard(income, own_v if own_v is not None else prev_income, s["guard_pct"])
+            review = bool(action) and (not guard(income, own_v if own_v is not None else prev_income, s["guard_pct"])
+                                       or is_fractional(income))
         rows.append({
             "code": code, "name": (p or {}).get("name") or m.get("name") or (last.name if last else ""),
             "brand": m.get("brand", ""), "uom": m.get("uom", ""), "non_piece": bool(m.get("uom")) and m.get("uom") != "ширхэг",
             "in_erxes": bool(p), "product_id": (p or {}).get("_id", ""),
-            "income": income, "income_date": last.date if last else "", "income_customer": last.customer if last else "",
+            "income": income, "fractional": is_fractional(income), "income_date": last.date if last else "", "income_customer": last.customer if last else "",
             "income_bill": last.bill_number if last else "", "income_count": last.count if last else None,
             "prev_income": prev_income, "prev_income_date": prev.date if prev else "",
             "base": base, "config": cfg, "config_how": how,

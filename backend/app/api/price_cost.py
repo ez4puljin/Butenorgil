@@ -2,7 +2,7 @@
 
   GET  /price-cost/data       — сүүлийн үр дүн + төлөв + тохиргоо + сүүлийн синкүүд
   POST /price-cost/run        — гараар шинэчлэх (?full=true — Эрхэтийн орлогыг оны эхнээс)
-  PUT  /price-cost/settings   — {brands, exclude_customers, locations, guard_pct, max_apply} (admin)
+  PUT  /price-cost/settings   — {brands, accounts, exclude_customers, locations, guard_pct, max_apply} (admin)
   GET  /price-cost/xlsx       — Excel экспорт
 (bare GET /price-cost-г тавихгүй — frontend хуудасны замтай давхцана.)
 """
@@ -53,6 +53,7 @@ def run(full: bool = False, u: User = Depends(get_current_user)):
 class SettingsIn(BaseModel):
     brands: Optional[list[str]] = None
     exclude_customers: Optional[list[str]] = None
+    accounts: Optional[list[str]] = None
     locations: Optional[list[str]] = None
     guard_pct: Optional[int] = None
     max_apply: Optional[int] = None
@@ -89,7 +90,7 @@ def xlsx(_: User = Depends(get_current_user)):
                    STATUS_LABEL.get(r["status"], r["status"]), r["others"],
                    "; ".join(f'{p["name"]} ({p["type"]} {p["value"]})' for p in r["plans"]),
                    {"create": "Plan үүсгэх", "update": "Plan засах"}.get(r["action"], "")
-                   + (" — шалгах" if r["review"] else "")])
+                   + (" — шалгах" if r["review"] else "") + (" (бутархай үнэ)" if r.get("fractional") else "")])
         ws.cell(ws.max_row, 22).fill = PatternFill("solid", start_color=fill.get(r["status"], "FFFFFF"))
     for c in ws[1]:
         c.font = Font(bold=True, name="Arial")

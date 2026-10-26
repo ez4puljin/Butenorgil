@@ -14,7 +14,7 @@ interface Plan {
 }
 interface Row {
   code: string; name: string; brand: string; uom: string; non_piece: boolean; in_erxes: boolean;
-  income: number | null; income_date: string; income_customer: string; income_bill: string; income_count: number | null;
+  income: number | null; fractional?: boolean; income_date: string; income_customer: string; income_bill: string; income_count: number | null;
   prev_income: number | null; prev_income_date: string; base: number | null; config: number | null; config_how: string;
   plans: Plan[]; others: number; real: number | null; real_date: string; real_order: string;
   since_count: number; since_qty: number; since_prices: number[];
@@ -30,7 +30,7 @@ interface Result {
   stats: { income: { from: string; rows: number }; pos: { from: string; items: number }; seconds: number };
 }
 interface Settings {
-  locations: string[]; brands: string[]; exclude_customers: string[]; guard_pct: number; max_apply: number; year_start: string;
+  locations: string[]; brands: string[]; accounts: string[]; exclude_customers: string[]; guard_pct: number; max_apply: number; year_start: string;
 }
 interface Run { id: number; started_at: string; finished_at: string | null; status: string; by: string; stats: any; error: string }
 
@@ -323,7 +323,11 @@ export default function PriceCost() {
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           {r.action === "create" && <span className="text-indigo-700">Plan үүсгэх → {m(r.income)}</span>}
                           {r.action === "update" && <span className="text-indigo-700">Plan засах → {m(r.income)}</span>}
-                          {r.review && <div className="text-[10.5px] font-semibold text-rose-600">±{settings?.guard_pct ?? 30}% — шалгах</div>}
+                          {r.review && (
+                            <div className="text-[10.5px] font-semibold text-rose-600">
+                              {r.fractional ? "Бутархай үнэ — шалгах" : `±${settings?.guard_pct ?? 30}% — шалгах`}
+                            </div>
+                          )}
                         </td>
                       </tr>
                       {isOpen && (
@@ -361,6 +365,7 @@ function Detail({ r }: { r: Row }) {
       <div>
         <div className="mb-1 font-semibold text-gray-700">Орлого</div>
         <div className="text-gray-600">Сүүлийн: {r.income_date || "—"} · {m(r.income)}₮ · {r.income_customer}</div>
+        {r.fractional && <div className="text-rose-600">Нэгж үнэ бутархай — Эрхэтийн баримтыг шалгана уу (автоматаар батлахгүй).</div>}
         <div className="text-gray-600">Баримт: {r.income_bill || "—"} · {m(r.income_count)} {r.uom || "ш"}</div>
         <div className="text-gray-500">Өмнөх (өөр баримт): {r.prev_income_date ? `${r.prev_income_date} · ${m(r.prev_income)}₮` : "—"}</div>
         {r.non_piece && <div className="mt-1 text-orange-600">Хэмжих нэгж «{r.uom}» — ширхэг биш, үнийг шалгаарай.</div>}
@@ -395,6 +400,7 @@ function Detail({ r }: { r: Row }) {
 function SettingsPanel({ s, onSaved }: { s: Settings; onSaved: (s: Settings) => void }) {
   const [brands, setBrands] = useState(s.brands.join("\n"));
   const [excl, setExcl] = useState(s.exclude_customers.join("\n"));
+  const [accts, setAccts] = useState((s.accounts ?? ["310104"]).join("\n"));
   const [locs, setLocs] = useState<string[]>(s.locations);
   const [guard, setGuard] = useState(s.guard_pct);
   const [max, setMax] = useState(s.max_apply);
@@ -406,7 +412,7 @@ function SettingsPanel({ s, onSaved }: { s: Settings; onSaved: (s: Settings) => 
     setBusy(true); setErr("");
     try {
       const r = await api.put("/price-cost/settings", {
-        brands: lines(brands), exclude_customers: lines(excl), locations: locs, guard_pct: guard, max_apply: max,
+        brands: lines(brands), accounts: lines(accts), exclude_customers: lines(excl), locations: locs, guard_pct: guard, max_apply: max,
       });
       onSaved(r.data.settings);
     } catch (e: any) { setErr(e?.response?.data?.detail ?? "Хадгалж чадсангүй"); } finally { setBusy(false); }
@@ -426,6 +432,10 @@ function SettingsPanel({ s, onSaved }: { s: Settings; onSaved: (s: Settings) => 
           <textarea value={excl} onChange={e => setExcl(e.target.value)} rows={4}
             className="w-full rounded-lg border border-gray-200 p-2 outline-none focus:border-gray-400" />
           <div className="mt-0.5 text-[11px] text-gray-400">Эдгээр харилцагчтай орлого үнэд тооцогдохгүй.</div>
+          <div className="mb-1 mt-2 font-semibold text-gray-700">Харилцсан данс</div>
+          <textarea value={accts} onChange={e => setAccts(e.target.value)} rows={2}
+            className="w-full rounded-lg border border-gray-200 p-2 outline-none focus:border-gray-400" />
+          <div className="mt-0.5 text-[11px] text-gray-400">Зөвхөн эдгээр данстай (кт:310104) орлого.</div>
         </label>
         <div>
           <div className="mb-1 font-semibold text-gray-700">Эрхэтийн байршил</div>
