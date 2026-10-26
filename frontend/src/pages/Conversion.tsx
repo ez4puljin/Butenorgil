@@ -654,9 +654,23 @@ function OrderDetail({ id }: { id: number }) {
           </div>
         )}
         {o.status === "sent" && <p className="mt-2 text-[13px] text-emerald-700">Эрхэтэд илгээсэн: {o.sent_by} · {ubDay(o.sent_at)}</p>}
-        {Object.entries(o.erkhet || {}).map(([k, v]: any) => v?.status === "fail" && (
-          <p key={k} className="mt-1 text-[13px] text-rose-600">{k === "so" ? "Зарлага" : "Орлого"}: {v.message || (v.errors || []).join("; ")}</p>
-        ))}
+        {Object.keys(o.erkhet || {}).length > 0 && (
+          <div className="mt-2 space-y-1 border-t border-gray-100 pt-2">
+            {(["so", "income"] as const).map(k => {
+              const v = (o.erkhet || {})[k];
+              if (!v) return null;
+              const ok = v.status === "ok", fail = v.status === "fail";
+              return (
+                <p key={k} className={`text-[13px] ${ok ? "text-emerald-700" : fail ? "text-rose-600" : "text-amber-700"}`}>
+                  Эрхэт {k === "so" ? "зарлага" : "орлого"}: {ok ? "орсон ✓" : fail ? `амжилтгүй — ${v.message || (v.errors || []).join("; ")}` : "хүлээгдэж буй…"}
+                </p>
+              );
+            })}
+            {Object.values(o.erkhet || {}).some((v: any) => v?.status === "fail") && (
+              <p className="text-[12.5px] text-gray-600">«Эрхэт рүү илгээх»-ийг дахин дарахад зөвхөн амжилтгүй хэсэг илгээгдэнэ.</p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Excel — APK-д (WebView) файл татагддаггүй тул зөвхөн компьютер/хөтөчид */}

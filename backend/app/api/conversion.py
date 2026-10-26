@@ -42,6 +42,31 @@ def _get(db: Session, oid: int) -> ConversionOrder:
     return o
 
 
+def _refresh_erkhet(db: Session, o: ConversionOrder) -> None:
+    """Эрхэтийн queue-ээс зарлага/орлогын бодит төлөвийг шинэчилнэ. Аль нэг нь амжилтгүй бол
+    захиалгыг «converted» буцааж, «Эрхэт рүү илгээх» дахин гарна — дахин илгээхэд ЗӨВХӨН амжилтгүй хэсэг явна.
+    (2026-10-26 #1: илгээх үед хоёулаа «queued», орлого дараа нь Эрхэтийн DB deadlock-оор унасан.)"""
+    from app.models.purchase_order import ErkhetImportLog
+    res: dict = json.loads(o.erkhet_result or "{}")
+    ids = {k: (v or {}).get("log_id") for k, v in res.items() if (v or {}).get("status") in ("queued", "unknown")}
+    if not ids:
+        return
+    logs = {l.id: l for l in db.query(ErkhetImportLog).filter(ErkhetImportLog.id.in_([i for i in ids.values() if i])).all()}
+    try:
+        erkhet_import.refresh_logs(db, list(logs.values()))
+    except Exception as e:      # noqa: BLE001 — Эрхэт түр хүрэхгүй бол хуучин төлөвөөр
+        print(f"[conversion] Эрхэтийн төлөв шинэчилж чадсангүй: {e}")
+        return
+    for k, lid in ids.items():
+        l = logs.get(lid)
+        if l:
+            res[k].update(status=l.status, message=l.message, queue_id=l.queue_id or None)
+    o.erkhet_result = json.dumps(res, ensure_ascii=False)
+    if any((res.get(k) or {}).get("status") == "fail" for k in ("so", "income")) and o.status == "sent":
+        o.status = "converted"
+    db.commit()
+
+
 def _role(u: User) -> str:
     return (getattr(u, "base_role", None) or u.role or "").lower()
 
@@ -138,7 +163,9 @@ def create_order(body: CreateIn, request: Request, db: Session = Depends(get_db)
 
 @router.get("/orders/{oid}")
 def get_order(oid: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    return svc.to_dict(_get(db, oid))
+    o = _get(db, oid)
+    _refresh_erkhet(db, o)
+    return svc.to_dict(o)
 
 
 class OrderEdit(BaseModel):
@@ -233,6 +260,7 @@ def send_erkhet(oid: int, body: SendIn, request: Request, db: Session = Depends(
     if _role(u) not in SEND_ROLES:
         raise HTTPException(403, "Эрхэт рүү илгээх эрхгүй (админ, нягтлан, хянагч).")
     o = _get(db, oid)
+    _refresh_erkhet(db, o)
     if o.status == "sent":
         raise HTTPException(409, "Энэ хөрвүүлэлт Эрхэт рүү аль хэдийн илгээгдсэн.")
     if o.status != "converted":
