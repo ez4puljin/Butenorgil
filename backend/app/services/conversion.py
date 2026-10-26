@@ -164,6 +164,27 @@ def create_deal(order, lines) -> tuple[str, str]:
     return did, number
 
 
+def deal_products(deal_id: str) -> list[dict]:
+    """erxes deal-ийн одоогийн бараа (tickUsed) → [{code, qty, erxes_id}] — агуулах үлдэгдэл хүрээгүйгээс
+    deal-ийн тоог өөрчилсөн бол ERP-ийн мөрийг түүгээр шинэчлэхэд."""
+    from app.services.erxes_client import get_client
+    d = get_client().gql('query($id:String!){ dealDetail(_id:$id){ productsData } }', {"id": deal_id}).get("dealDetail") or {}
+    pdata = d.get("productsData") or []
+    if isinstance(pdata, str):
+        pdata = json.loads(pdata or "[]")
+    by_id = {p.get("_id"): code for code, p in product_index().items()}
+    out: dict[str, dict] = {}
+    for p in pdata:
+        if not isinstance(p, dict) or not p.get("tickUsed"):
+            continue
+        code = by_id.get(p.get("productId"))
+        if not code:
+            continue
+        x = out.setdefault(code, {"code": code, "qty": 0.0, "erxes_id": p.get("productId")})
+        x["qty"] += float(p.get("quantity") or 0)
+    return list(out.values())
+
+
 def deal_url(deal_id: str) -> str:
     s = load_settings()
     return f"{ERXES_WEB}/deal/board?id={s['board_id']}&pipelineId={s['pipeline_id']}&itemId={deal_id}" if deal_id else ""
@@ -238,6 +259,7 @@ def to_dict(order, with_lines: bool = True) -> dict:
         "out_amount": round(sum(l.qty * l.unit_price for l in lines), 2),
         "in_amount": round(sum(r.qty * r.unit_price for l in lines for r in l.results), 2),
         "erkhet": json.loads(order.erkhet_result or "{}"),
+        "manual": not order.deal_id, "lines_editable": lines_editable(order),
     }
     if with_lines:
         out["lines"] = [{
@@ -246,6 +268,14 @@ def to_dict(order, with_lines: bool = True) -> dict:
                          "unit_price": r.unit_price} for r in l.results],
         } for l in lines]
     return out
+
+
+def lines_editable(order) -> bool:
+    """Эх (задлах) барааг засаж болох эсэх — Эрхэтэд зарлага орсон/хүлээгдэж байвал болохгүй."""
+    if order.status == "cancelled":
+        return False
+    so = (json.loads(order.erkhet_result or "{}").get("so") or {}).get("status")
+    return so not in ("ok", "queued", "unknown")
 
 
 def refresh_status(order) -> None:

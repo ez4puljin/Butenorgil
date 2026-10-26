@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Repeat, Search, ScanLine, Plus, Minus, Trash2, Loader2, X, ChevronLeft, ChevronRight, Send, Check,
-  ExternalLink, Download, AlertTriangle, PackageOpen, ArrowDown, CalendarDays, RotateCw,
+  ExternalLink, Download, AlertTriangle, PackageOpen, ArrowDown, CalendarDays, RotateCw, Pencil,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { isNativeApp } from "../lib/serverConfig";
@@ -22,9 +22,10 @@ interface Order {
   id: number; status: string; conv_date: string; note: string; deal_id: string; deal_number: string; deal_url: string;
   created_by: string; created_at: string | null; sent_by: string; sent_at: string | null; line_count: number;
   converted_count: number; out_amount: number; in_amount: number; erkhet: Record<string, any>; lines?: Line[];
+  manual: boolean; lines_editable: boolean;
 }
 interface CartItem { code: string; name: string; price: number; uom: string; qty: number }
-interface Draft { items: CartItem[]; note: string; uid: string }
+interface Draft { items: CartItem[]; note: string; uid: string; withDeal: boolean }
 
 const DRAFT_KEY = "conversion_draft_v2";
 const STATUS: Record<string, { label: string; cls: string }> = {
@@ -41,9 +42,9 @@ const newUid = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? 
 function loadDraft(): Draft {
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "");
-    if (d && Array.isArray(d.items)) return { items: d.items, note: d.note || "", uid: d.uid || newUid() };
+    if (d && Array.isArray(d.items)) return { items: d.items, note: d.note || "", uid: d.uid || newUid(), withDeal: d.withDeal !== false };
   } catch { /* хувийн горим / хоосон */ }
-  return { items: [], note: "", uid: newUid() };
+  return { items: [], note: "", uid: newUid(), withDeal: true };
 }
 function ubDay(iso?: string | null) {
   if (!iso) return "";
@@ -290,6 +291,7 @@ function NewOrder({ onSent }: { onSent: () => void }) {
   const [cart, setCart] = useState<CartItem[]>(init.items);
   const [note, setNote] = useState(init.note);
   const [uid, setUid] = useState(init.uid);
+  const [withDeal, setWithDeal] = useState(init.withDeal);
   const [scan, setScan] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
@@ -298,7 +300,7 @@ function NewOrder({ onSent }: { onSent: () => void }) {
   const [customer, setCustomer] = useState("Заал гурил будаа гоймон");
   const toast = useToast();
 
-  useEffect(() => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ items: cart, note, uid })); } catch { /* */ } }, [cart, note, uid]);
+  useEffect(() => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ items: cart, note, uid, withDeal })); } catch { /* */ } }, [cart, note, uid, withDeal]);
   useEffect(() => { api.get("/conversion/settings").then(r => setCustomer(r.data.customer_name)).catch(() => {}); }, []);
 
   const add = useCallback((p: Prod) => {
@@ -334,7 +336,7 @@ function NewOrder({ onSent }: { onSent: () => void }) {
     setSending(true); setErr("");
     try {
       const r = await api.post("/conversion/orders",
-        { lines: cart.map(c => ({ code: c.code, qty: c.qty })), note, client_uid: uid }, { timeout: 90000 });
+        { lines: cart.map(c => ({ code: c.code, qty: c.qty })), note, client_uid: uid, with_deal: withDeal }, { timeout: 90000 });
       setCart([]); setNote(""); setUid(newUid()); setConfirm(false);
       try { localStorage.removeItem(DRAFT_KEY); } catch { /* */ }
       onSent();
@@ -397,6 +399,16 @@ function NewOrder({ onSent }: { onSent: () => void }) {
           </div>
           <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Тэмдэглэл (заавал биш)"
             className="mt-3 w-full rounded-2xl border border-gray-200 bg-white px-3 py-2.5 text-[16px] outline-none focus:border-indigo-400" />
+          {/* erxes захиалгатай эсвэл зөвхөн гараар хөрвүүлэлт */}
+          <label className="mt-3 flex min-h-[56px] cursor-pointer items-center gap-3 rounded-2xl bg-white px-3 py-2 ring-1 ring-gray-200">
+            <input type="checkbox" checked={withDeal} onChange={e => setWithDeal(e.target.checked)} className="h-6 w-6 shrink-0 accent-indigo-600" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[15px] font-semibold text-gray-900">erxes-д захиалга үүсгэх</span>
+              <span className="block text-[13px] text-gray-500">{withDeal
+                ? "Агуулахаас бараа татуулна (Худалдагчийн Захиалга)."
+                : "Захиалгагүй — заалд байгаа барааг шууд хөрвүүлнэ."}</span>
+            </span>
+          </label>
         </>
       )}
 
@@ -405,7 +417,7 @@ function NewOrder({ onSent }: { onSent: () => void }) {
           {zero && <p className="mb-1.5 text-center text-[13px] font-medium text-rose-600">Тоо 0 мөрийг хасах эсвэл тоо оруулна уу</p>}
           <button onClick={() => setConfirm(true)} disabled={zero}
             className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 text-[17px] font-bold text-white shadow-lg shadow-indigo-600/20 active:bg-indigo-700 disabled:opacity-50">
-            <Send size={19} />Захиалга илгээх · {cart.length} бараа
+            {withDeal ? <><Send size={19} />Захиалга илгээх · {cart.length} бараа</> : <><Repeat size={19} />Хөрвүүлэлт үүсгэх · {cart.length} бараа</>}
           </button>
         </BottomBar>
       )}
@@ -413,9 +425,11 @@ function NewOrder({ onSent }: { onSent: () => void }) {
       {toast.node}
 
       {confirm && (
-        <Sheet onClose={() => setConfirm(false)} title="Захиалга илгээх үү?" locked={sending}>
+        <Sheet onClose={() => setConfirm(false)} title={withDeal ? "Захиалга илгээх үү?" : "Гараар хөрвүүлэлт үүсгэх үү?"} locked={sending}>
           <p className="mb-3 text-[14px] text-gray-600">
-            erxes-д «Худалдагчийн Захиалга» шатанд шинэ захиалга үүснэ. Харилцагч: <b>{customer}</b>.
+            {withDeal
+              ? <>erxes-д «Худалдагчийн Захиалга» шатанд шинэ захиалга үүснэ. Харилцагч: <b>{customer}</b>.</>
+              : <>erxes-д захиалга <b>үүсгэхгүй</b>. Дараа нь бараа бүрийг юу болгож хөрвүүлснийг оруулна.</>}
           </p>
           <div className="mb-3 max-h-64 space-y-2 overflow-auto rounded-2xl bg-gray-50 p-3">
             {cart.map(c => (
@@ -428,7 +442,7 @@ function NewOrder({ onSent }: { onSent: () => void }) {
           <div className="mb-4 flex justify-between text-[15px]"><span className="text-gray-600">Нийт дүн</span><b>{money(total)}</b></div>
           <button onClick={send} disabled={sending}
             className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 text-[17px] font-bold text-white active:bg-indigo-700 disabled:opacity-60">
-            {sending ? <Loader2 size={19} className="animate-spin" /> : <Send size={19} />}{sending ? "Илгээж байна…" : "Тийм, илгээх"}
+            {sending ? <Loader2 size={19} className="animate-spin" /> : <Send size={19} />}{sending ? "Хадгалж байна…" : withDeal ? "Тийм, илгээх" : "Тийм, үүсгэх"}
           </button>
           <button onClick={() => setConfirm(false)} disabled={sending} className="mt-2 h-12 w-full rounded-2xl text-[16px] font-semibold text-gray-600">Буцах</button>
         </Sheet>
@@ -480,7 +494,7 @@ function OrderList() {
                     <span className={`ml-auto rounded-full px-2.5 py-1 text-[12px] font-semibold ${st.cls}`}>{st.label}</span>
                     <ChevronRight size={18} className="text-gray-400" />
                   </div>
-                  <div className="mt-1 text-[13px] text-gray-500">{o.line_count} бараа · №{o.deal_number || " —"} · {o.created_by}</div>
+                  <div className="mt-1 text-[13px] text-gray-500">{o.line_count} бараа · {o.manual ? "Гараар" : `№${o.deal_number || " —"}`} · {o.created_by}</div>
                   {o.status !== "cancelled" && o.status !== "sent" && (
                     <div className="mt-2 flex items-center gap-2">
                       <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100">
@@ -512,6 +526,9 @@ function OrderDetail({ id }: { id: number }) {
   const [sendOpen, setSendOpen] = useState(false);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editLines, setEditLines] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [info, setInfo] = useState("");
   const native = isNativeApp();
 
   const [deduped] = useState(() => !!(window.history.state?.usr as any)?.deduped);
@@ -550,6 +567,23 @@ function OrderDetail({ id }: { id: number }) {
     catch (e: any) { setErr(e?.response?.data?.detail ?? "Цуцалж чадсангүй"); }
   }
 
+  function diffText(d: any) {
+    if (!d) return "";
+    const parts = [
+      d.changed?.length ? `${d.changed.length} барааны тоо өөрчлөгдсөн` : "",
+      d.removed?.length ? `${d.removed.length} бараа хасагдсан` : "",
+      d.added?.length ? `${d.added.length} бараа нэмэгдсэн` : "",
+    ].filter(Boolean);
+    return parts.length ? parts.join(", ") + "." : "Өөрчлөлт алга — erxes-тэй таарч байна.";
+  }
+
+  async function syncDeal() {
+    setSyncing(true); setErr(""); setInfo("");
+    try { const r = await api.post(`/conversion/orders/${id}/sync-deal`); setO(r.data); setInfo(`erxes-ээс шинэчиллээ: ${diffText(r.data.diff)}`); }
+    catch (e: any) { setErr(e?.response?.data?.detail ?? "erxes-ээс шинэчилж чадсангүй"); }
+    finally { setSyncing(false); }
+  }
+
   function onSaved(x: Order, lineId: number) {
     setO(x);
     // Дараагийн хөрвүүлэлт оруулаагүй мөрийг шууд нээнэ
@@ -581,6 +615,12 @@ function OrderDetail({ id }: { id: number }) {
       </div>
 
       {err && <ErrorBox text={err} onClose={() => setErr("")} />}
+      {info && (
+        <p role="status" className="mb-3 flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-[14px] text-emerald-900">
+          <Check size={17} className="mt-0.5 shrink-0" /><span className="flex-1">{info}</span>
+          <button aria-label="Хаах" onClick={() => setInfo("")} className="-m-2 grid h-10 w-10 place-items-center"><X size={16} /></button>
+        </p>
+      )}
       {deduped && (
         <p role="status" className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[14px] text-amber-900">
           Энэ захиалга өмнөх илгээлтээр аль хэдийн үүссэн байсан тул шинээр үүсгээгүй. Бараа, тоог шалгана уу.
@@ -593,7 +633,12 @@ function OrderDetail({ id }: { id: number }) {
           <input type="date" value={o.conv_date} disabled={locked} onChange={e => e.target.value && setDate(e.target.value)}
             className="mt-1 h-8 w-full bg-transparent text-[16px] font-semibold text-gray-900 outline-none disabled:text-gray-500" />
         </label>
-        {o.deal_url ? (
+        {o.manual ? (
+          <div className="rounded-2xl bg-white p-3 ring-1 ring-gray-100">
+            <span className="text-[13px] text-gray-500">erxes захиалга</span>
+            <span className="mt-1 block text-[15px] font-semibold text-gray-700">Гараар (захиалгагүй)</span>
+          </div>
+        ) : o.deal_url ? (
           <a href={o.deal_url} target="_blank" rel="noreferrer" className="rounded-2xl bg-white p-3 ring-1 ring-gray-100 active:bg-gray-50">
             <span className="flex items-center gap-1 text-[13px] text-gray-500">erxes захиалга № <ExternalLink size={13} /></span>
             <span className="mt-1 block truncate font-mono text-[15px] font-semibold text-indigo-700">{o.deal_number || "—"}</span>
@@ -606,6 +651,22 @@ function OrderDetail({ id }: { id: number }) {
         )}
       </div>
       {o.note && <p className="mb-3 rounded-2xl bg-white p-3 text-[14px] text-gray-700 ring-1 ring-gray-100">{o.note}</p>}
+
+      {o.lines_editable && (
+        <div className={`mb-3 grid gap-2 ${o.manual ? "grid-cols-1" : "grid-cols-2"}`}>
+          <button onClick={() => setEditLines(true)}
+            className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-white text-[14px] font-semibold text-gray-800 ring-1 ring-gray-200 active:bg-gray-50">
+            <Pencil size={16} />Бараа, тоо засах
+          </button>
+          {!o.manual && (
+            <button onClick={() => { if (window.confirm("erxes захиалгын одоогийн бараа, тоогоор шинэчлэх үү?\n\n(Агуулахад үлдэгдэл хүрээгүйгээс өөрчилсөн бол.) Хасагдсан барааны хөрвүүлэлт устна.")) syncDeal(); }}
+              disabled={syncing}
+              className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-white text-[14px] font-semibold text-indigo-700 ring-1 ring-indigo-200 active:bg-indigo-50 disabled:opacity-60">
+              {syncing ? <Loader2 size={16} className="animate-spin" /> : <RotateCw size={16} />}erxes-ээс шинэчлэх
+            </button>
+          )}
+        </div>
+      )}
 
       <h2 className="mb-2 text-[15px] font-bold text-gray-800">Бараа бүрийг юу болгож хөрвүүлсэн бэ? · {o.converted_count}/{o.line_count}</h2>
       <div className="space-y-2">
@@ -693,6 +754,15 @@ function OrderDetail({ id }: { id: number }) {
             <Send size={19} />Эрхэт рүү илгээх
           </button>
         </BottomBar>
+      )}
+
+      {editLines && (
+        <EditorHost>
+          {register => (
+            <LinesEditor order={o} registerClose={register} onClose={() => setEditLines(false)}
+              onSaved={x => { setO(x); setEditLines(false); setInfo(`Захиалга засагдлаа: ${diffText((x as any).diff)}`); }} />
+          )}
+        </EditorHost>
       )}
 
       {editLine && (
@@ -838,6 +908,107 @@ function ResultEditor({ order, line, onClose, onSaved, registerClose, hasNext }:
         <button onClick={save} disabled={saving || !dirty}
           className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 text-[17px] font-bold text-white active:bg-indigo-700 disabled:opacity-50">
           {saving ? <Loader2 size={19} className="animate-spin" /> : <Check size={19} />}{dirty ? (hasNext ? "Хадгалаад дараагийнх" : "Хадгалах") : "Өөрчлөлтгүй"}
+        </button>
+      </div>
+      {toast.node}
+      {scan && <ScanModal onClose={() => setScan(false)} onDetected={onScanned} />}
+    </div>
+  );
+}
+
+/** Задлах бараа (эх мөр) засах — erxes-д үлдэгдэл хүрээгүйгээс өөрчлөгдсөн, эсвэл гараар хөрвүүлэлтэд. */
+function LinesEditor({ order, onClose, onSaved, registerClose }: {
+  order: Order; onClose: () => void; onSaved: (o: Order) => void; registerClose: (f: () => boolean) => void;
+}) {
+  const s = useProductSearch();
+  const orig = (order.lines ?? []).map(l => ({ code: l.code, name: l.name, price: l.unit_price, uom: l.uom, qty: l.qty }));
+  const [rows, setRows] = useState<CartItem[]>(orig);
+  const [scan, setScan] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const toast = useToast();
+  const dirty = JSON.stringify(rows.map(r => [r.code, r.qty])) !== JSON.stringify(orig.map(r => [r.code, r.qty]));
+  const tryClose = () => { if (dirty && !window.confirm("Хадгалаагүй өөрчлөлт алга болно. Хаах уу?")) return false; onClose(); return true; };
+  registerClose(() => (saving ? false : tryClose()));
+  const lost = (order.lines ?? []).filter(l => l.results.length && !rows.some(r => r.code === l.code && r.qty > 0));
+
+  function add(p: Prod) {
+    setRows(x => {
+      const i = x.findIndex(r => r.code === p.code);
+      if (i >= 0) { const n = [...x]; n[i] = { ...n[i], qty: n[i].qty + 1 }; return n; }
+      return [...x, { code: p.code, name: p.name, price: p.price, uom: p.uom, qty: 1 }];
+    });
+    buzz(); toast.show(`Нэмэгдлээ: ${p.name}`); s.setQ("");
+  }
+  async function onScanned(code: string) {
+    setScan(false);
+    const hit = await lookupScanned(code);
+    if (hit === "error") setErr("Хайж чадсангүй — сүлжээгээ шалгана уу");
+    else if (hit) add(hit);
+    else setErr(`«${code}» баркодтой бараа олдсонгүй.`);
+  }
+  async function save() {
+    if (lost.length && !window.confirm(`${lost.length} барааны хөрвүүлэлт устна (хассан эсвэл 0 болгосон). Үргэлжлүүлэх үү?`)) return;
+    setSaving(true); setErr("");
+    try {
+      const r = await api.put(`/conversion/orders/${order.id}/lines`, { lines: rows.map(x => ({ code: x.code, qty: x.qty })) });
+      onSaved(r.data);
+    } catch (e: any) { setErr(e?.response?.data?.detail ?? "Хадгалж чадсангүй — дахин дарна уу"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col bg-gray-50" role="dialog" aria-modal="true" aria-label="Бараа, тоо засах">
+      <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 bg-white px-2 pb-2 pt-[max(8px,env(safe-area-inset-top))]">
+        <button aria-label="Хаах" onClick={tryClose} className="grid h-12 w-12 place-items-center rounded-xl text-gray-700 active:bg-gray-100"><X size={24} /></button>
+        <div className="min-w-0 flex-1">
+          <div className="text-[16px] font-bold text-gray-900">Бараа, тоо засах</div>
+          <div className="text-[13px] text-gray-500">Хөрвүүлэлт #{order.id} · {order.manual ? "гараар" : "erxes-д өөрчлөгдсөнийг тааруулах"}</div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3">
+        {err && <ErrorBox text={err} onClose={() => setErr("")} />}
+        {!order.manual && (
+          <p className="mb-3 rounded-xl bg-amber-50 p-2.5 text-[13px] text-amber-900">
+            Энд засахад erxes дээрх захиалга өөрчлөгдөхгүй. erxes-д өөрчилсөн бол «erxes-ээс шинэчлэх»-ийг ашиглана уу.
+          </p>
+        )}
+        <div className="mb-4 space-y-2">
+          {rows.map((r, i) => (
+            <div key={r.code} className={`rounded-2xl border bg-white p-3 shadow-sm ${r.qty <= 0 ? "border-rose-300" : "border-gray-100"}`}>
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[15px] font-semibold leading-snug text-gray-900">{r.name}</div>
+                  <div className="text-[13px] text-gray-500"><span className="font-mono">{r.code}</span> · {money(r.price)} / {r.uom}</div>
+                </div>
+                <button aria-label={`${r.name} хасах`} onClick={() => setRows(x => x.filter((_, j) => j !== i))}
+                  className="-mr-1 -mt-1 grid h-11 w-11 place-items-center rounded-xl text-gray-400 active:bg-rose-50 active:text-rose-600"><Trash2 size={19} /></button>
+              </div>
+              <div className="mt-3 flex items-center justify-between">
+                <QtyStepper value={r.qty} onChange={v => setRows(x => x.map((y, j) => j === i ? { ...y, qty: v } : y))} />
+                <span className="text-[14px] font-semibold text-gray-800">{money(r.qty * r.price)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {lost.length > 0 && (
+          <p className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-2.5 text-[13px] text-rose-700">
+            ⚠ {lost.map(l => l.name).join(", ")} — хөрвүүлэлт нь хамт устна.
+          </p>
+        )}
+        <p className="mb-2 text-[14px] font-semibold text-gray-800">Бараа нэмэх</p>
+        <SearchBox s={s} onScan={() => setScan(true)} placeholder="Код, нэр эсвэл баркод" onEnterOne={add} />
+        {s.q.trim().length >= 2 && (
+          <div className="mt-2 space-y-2">
+            {s.items.map(p => <ProductRow key={p.code} p={p} onClick={() => add(p)} />)}
+            {!s.busy && !s.err && !s.items.length && <p className="py-3 text-center text-[14px] text-gray-500">Бараа олдсонгүй</p>}
+          </div>
+        )}
+      </div>
+      <div className="shrink-0 border-t border-gray-200 bg-white px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3">
+        <button onClick={save} disabled={saving || !dirty || !rows.some(r => r.qty > 0)}
+          className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 text-[17px] font-bold text-white active:bg-indigo-700 disabled:opacity-50">
+          {saving ? <Loader2 size={19} className="animate-spin" /> : <Check size={19} />}{dirty ? "Хадгалах" : "Өөрчлөлтгүй"}
         </button>
       </div>
       {toast.node}
