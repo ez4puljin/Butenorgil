@@ -300,7 +300,12 @@ function NewOrder({ onSent }: { onSent: () => void }) {
   const [customer, setCustomer] = useState("Заал гурил будаа гоймон");
   const toast = useToast();
 
-  useEffect(() => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ items: cart, note, uid, withDeal })); } catch { /* */ } }, [cart, note, uid, withDeal]);
+  useEffect(() => {
+    try {
+      if (!cart.length && !note) { localStorage.removeItem(DRAFT_KEY); return; }
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ items: cart, note, uid, withDeal }));
+    } catch { /* */ }
+  }, [cart, note, uid, withDeal]);
   useEffect(() => { api.get("/conversion/settings").then(r => setCustomer(r.data.customer_name)).catch(() => {}); }, []);
 
   const add = useCallback((p: Prod) => {
@@ -337,7 +342,7 @@ function NewOrder({ onSent }: { onSent: () => void }) {
     try {
       const r = await api.post("/conversion/orders",
         { lines: cart.map(c => ({ code: c.code, qty: c.qty })), note, client_uid: uid, with_deal: withDeal }, { timeout: 90000 });
-      setCart([]); setNote(""); setUid(newUid()); setConfirm(false);
+      setCart([]); setNote(""); setUid(newUid()); setWithDeal(true); setConfirm(false);
       try { localStorage.removeItem(DRAFT_KEY); } catch { /* */ }
       onSent();
       nav(`/conversion/${r.data.id}`, { replace: true, state: r.data.deduped ? { deduped: true } : undefined });
@@ -374,6 +379,15 @@ function NewOrder({ onSent }: { onSent: () => void }) {
         </div>
       ) : cart.length > 0 && (
         <>
+          <label className={`mb-3 flex min-h-[56px] cursor-pointer items-center gap-3 rounded-2xl px-3 py-2 ring-1 ${withDeal ? "bg-white ring-gray-200" : "bg-amber-50 ring-amber-300"}`}>
+            <input type="checkbox" checked={withDeal} onChange={e => setWithDeal(e.target.checked)} className="h-6 w-6 shrink-0 accent-indigo-600" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[15px] font-semibold text-gray-900">erxes-д захиалга үүсгэх</span>
+              <span className="block text-[13px] text-gray-600">{withDeal
+                ? "Агуулахаас бараа татуулна (Худалдагчийн Захиалга)."
+                : "Захиалгагүй — заалд байгаа барааг шууд хөрвүүлнэ."}</span>
+            </span>
+          </label>
           <div className="mb-1 flex items-center justify-between">
             <h2 className="text-[15px] font-bold text-gray-800">Захиалга · {cart.length} бараа</h2>
             <button onClick={() => { if (window.confirm("Сагсыг бүхэлд нь цэвэрлэх үү?")) setCart([]); }}
@@ -399,24 +413,15 @@ function NewOrder({ onSent }: { onSent: () => void }) {
           </div>
           <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Тэмдэглэл (заавал биш)"
             className="mt-3 w-full rounded-2xl border border-gray-200 bg-white px-3 py-2.5 text-[16px] outline-none focus:border-indigo-400" />
-          {/* erxes захиалгатай эсвэл зөвхөн гараар хөрвүүлэлт */}
-          <label className="mt-3 flex min-h-[56px] cursor-pointer items-center gap-3 rounded-2xl bg-white px-3 py-2 ring-1 ring-gray-200">
-            <input type="checkbox" checked={withDeal} onChange={e => setWithDeal(e.target.checked)} className="h-6 w-6 shrink-0 accent-indigo-600" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-[15px] font-semibold text-gray-900">erxes-д захиалга үүсгэх</span>
-              <span className="block text-[13px] text-gray-500">{withDeal
-                ? "Агуулахаас бараа татуулна (Худалдагчийн Захиалга)."
-                : "Захиалгагүй — заалд байгаа барааг шууд хөрвүүлнэ."}</span>
-            </span>
-          </label>
         </>
       )}
 
       {cart.length > 0 && (
         <BottomBar>
           {zero && <p className="mb-1.5 text-center text-[13px] font-medium text-rose-600">Тоо 0 мөрийг хасах эсвэл тоо оруулна уу</p>}
+          {!zero && !withDeal && <p className="mb-1.5 text-center text-[13px] font-medium text-amber-700">erxes захиалгагүй (гараар)</p>}
           <button onClick={() => setConfirm(true)} disabled={zero}
-            className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 text-[17px] font-bold text-white shadow-lg shadow-indigo-600/20 active:bg-indigo-700 disabled:opacity-50">
+            className={`flex h-14 w-full items-center justify-center gap-2 rounded-2xl text-[17px] font-bold text-white shadow-lg disabled:opacity-50 ${withDeal ? "bg-indigo-600 shadow-indigo-600/20 active:bg-indigo-700" : "bg-amber-600 shadow-amber-600/20 active:bg-amber-700"}`}>
             {withDeal ? <><Send size={19} />Захиалга илгээх · {cart.length} бараа</> : <><Repeat size={19} />Хөрвүүлэлт үүсгэх · {cart.length} бараа</>}
           </button>
         </BottomBar>
@@ -528,6 +533,7 @@ function OrderDetail({ id }: { id: number }) {
   const [busy, setBusy] = useState(false);
   const [editLines, setEditLines] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncPreview, setSyncPreview] = useState<any | null>(null);
   const [info, setInfo] = useState("");
   const native = isNativeApp();
 
@@ -577,10 +583,20 @@ function OrderDetail({ id }: { id: number }) {
     return parts.length ? parts.join(", ") + "." : "Өөрчлөлт алга — erxes-тэй таарч байна.";
   }
 
-  async function syncDeal() {
+  async function previewSync() {
     setSyncing(true); setErr(""); setInfo("");
-    try { const r = await api.post(`/conversion/orders/${id}/sync-deal`); setO(r.data); setInfo(`erxes-ээс шинэчиллээ: ${diffText(r.data.diff)}`); }
-    catch (e: any) { setErr(e?.response?.data?.detail ?? "erxes-ээс шинэчилж чадсангүй"); }
+    try {
+      const r = await api.post(`/conversion/orders/${id}/sync-deal`, null, { params: { dry_run: true } });
+      const d = r.data.diff;
+      if (!d.changed.length && !d.removed.length && !d.added.length) setInfo("erxes-тэй таарч байна — өөрчлөлт алга.");
+      else setSyncPreview(d);
+    } catch (e: any) { setErr(e?.response?.data?.detail ?? "erxes-ээс уншиж чадсангүй"); }
+    finally { setSyncing(false); }
+  }
+  async function syncDeal() {
+    setSyncing(true); setErr("");
+    try { const r = await api.post(`/conversion/orders/${id}/sync-deal`); setO(r.data); setSyncPreview(null); setInfo(`erxes-ээс шинэчиллээ: ${diffText(r.data.diff)}`); }
+    catch (e: any) { setErr(e?.response?.data?.detail ?? "erxes-ээс шинэчилж чадсангүй"); setSyncPreview(null); }
     finally { setSyncing(false); }
   }
 
@@ -654,13 +670,12 @@ function OrderDetail({ id }: { id: number }) {
 
       {o.lines_editable && (
         <div className={`mb-3 grid gap-2 ${o.manual ? "grid-cols-1" : "grid-cols-2"}`}>
-          <button onClick={() => setEditLines(true)}
-            className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-white text-[14px] font-semibold text-gray-800 ring-1 ring-gray-200 active:bg-gray-50">
+          <button onClick={() => setEditLines(true)} disabled={syncing}
+            className="flex h-12 disabled:opacity-50 items-center justify-center gap-1.5 rounded-xl bg-white text-[14px] font-semibold text-gray-800 ring-1 ring-gray-200 active:bg-gray-50">
             <Pencil size={16} />Бараа, тоо засах
           </button>
           {!o.manual && (
-            <button onClick={() => { if (window.confirm("erxes захиалгын одоогийн бараа, тоогоор шинэчлэх үү?\n\n(Агуулахад үлдэгдэл хүрээгүйгээс өөрчилсөн бол.) Хасагдсан барааны хөрвүүлэлт устна.")) syncDeal(); }}
-              disabled={syncing}
+            <button onClick={previewSync} disabled={syncing}
               className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-white text-[14px] font-semibold text-indigo-700 ring-1 ring-indigo-200 active:bg-indigo-50 disabled:opacity-60">
               {syncing ? <Loader2 size={16} className="animate-spin" /> : <RotateCw size={16} />}erxes-ээс шинэчлэх
             </button>
@@ -754,6 +769,30 @@ function OrderDetail({ id }: { id: number }) {
             <Send size={19} />Эрхэт рүү илгээх
           </button>
         </BottomBar>
+      )}
+
+      {syncPreview && (
+        <Sheet title="erxes-ээс шинэчлэх үү?" onClose={() => setSyncPreview(null)} locked={syncing}>
+          <p className="mb-3 text-[14px] text-gray-600">erxes захиалгын одоогийн бараа, тоогоор (агуулахад үлдэгдэл хүрээгүйгээс өөрчилсөн) шинэчилнэ:</p>
+          <ul className="mb-3 space-y-1.5 text-[14px] text-gray-800">
+            {syncPreview.changed.map((c: any) => <li key={c.code}>• {c.name}: <b>{qtyFmt(c.from)} → {qtyFmt(c.to)}</b></li>)}
+            {syncPreview.removed.map((c: string) => {
+              const l = (o.lines ?? []).find(x => x.code === c);
+              return <li key={c} className="text-rose-700">• {l?.name ?? c}: <b>хасагдана</b></li>;
+            })}
+            {syncPreview.added.map((c: string) => <li key={c} className="text-emerald-700">• {syncPreview.added_names?.[c] || c}: <b>нэмэгдэнэ</b></li>)}
+          </ul>
+          {syncPreview.lost.length > 0 && (
+            <p className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[14px] text-rose-700">
+              ⚠ Эдгээр барааны оруулсан хөрвүүлэлт устна: {syncPreview.lost.map((x: any) => x.name).join(", ")}
+            </p>
+          )}
+          <button onClick={syncDeal} disabled={syncing}
+            className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 text-[17px] font-bold text-white active:bg-indigo-700 disabled:opacity-60">
+            {syncing ? <Loader2 size={19} className="animate-spin" /> : <RotateCw size={19} />}{syncing ? "Шинэчилж байна…" : "Тийм, шинэчлэх"}
+          </button>
+          <button onClick={() => setSyncPreview(null)} disabled={syncing} className="mt-2 h-12 w-full rounded-2xl text-[16px] font-semibold text-gray-600">Буцах</button>
+        </Sheet>
       )}
 
       {editLines && (
@@ -921,9 +960,10 @@ function LinesEditor({ order, onClose, onSaved, registerClose }: {
   order: Order; onClose: () => void; onSaved: (o: Order) => void; registerClose: (f: () => boolean) => void;
 }) {
   const s = useProductSearch();
-  const orig = (order.lines ?? []).map(l => ({ code: l.code, name: l.name, price: l.unit_price, uom: l.uom, qty: l.qty }));
+  const [orig] = useState(() => (order.lines ?? []).map(l => ({ code: l.code, name: l.name, price: l.unit_price, uom: l.uom, qty: l.qty })));
   const [rows, setRows] = useState<CartItem[]>(orig);
   const [scan, setScan] = useState(false);
+  const [scanBusy, setScanBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const toast = useToast();
@@ -940,9 +980,18 @@ function LinesEditor({ order, onClose, onSaved, registerClose }: {
     });
     buzz(); toast.show(`Нэмэгдлээ: ${p.name}`); s.setQ("");
   }
+  function remove(i: number) {
+    const r = rows[i];
+    setRows(x => x.filter((_, j) => j !== i));
+    toast.show(`Хасагдлаа: ${r.name}`, () => setRows(x => {
+      if (x.some(y => y.code === r.code)) return x;
+      const n = [...x]; n.splice(Math.min(i, n.length), 0, r); return n;
+    }));
+  }
   async function onScanned(code: string) {
-    setScan(false);
+    setScan(false); setScanBusy(true);
     const hit = await lookupScanned(code);
+    setScanBusy(false);
     if (hit === "error") setErr("Хайж чадсангүй — сүлжээгээ шалгана уу");
     else if (hit) add(hit);
     else setErr(`«${code}» баркодтой бараа олдсонгүй.`);
@@ -951,7 +1000,7 @@ function LinesEditor({ order, onClose, onSaved, registerClose }: {
     if (lost.length && !window.confirm(`${lost.length} барааны хөрвүүлэлт устна (хассан эсвэл 0 болгосон). Үргэлжлүүлэх үү?`)) return;
     setSaving(true); setErr("");
     try {
-      const r = await api.put(`/conversion/orders/${order.id}/lines`, { lines: rows.map(x => ({ code: x.code, qty: x.qty })) });
+      const r = await api.put(`/conversion/orders/${order.id}/lines`, { lines: rows.filter(x => x.qty > 0).map(x => ({ code: x.code, qty: x.qty })) });
       onSaved(r.data);
     } catch (e: any) { setErr(e?.response?.data?.detail ?? "Хадгалж чадсангүй — дахин дарна уу"); }
     finally { setSaving(false); }
@@ -973,6 +1022,16 @@ function LinesEditor({ order, onClose, onSaved, registerClose }: {
             Энд засахад erxes дээрх захиалга өөрчлөгдөхгүй. erxes-д өөрчилсөн бол «erxes-ээс шинэчлэх»-ийг ашиглана уу.
           </p>
         )}
+        <p className="mb-2 text-[14px] font-semibold text-gray-800">Бараа нэмэх</p>
+        <SearchBox s={s} onScan={() => setScan(true)} placeholder="Код, нэр эсвэл баркод" onEnterOne={add} />
+        {scanBusy && <p className="mt-2 flex items-center gap-2 text-[14px] text-gray-600"><Loader2 size={16} className="animate-spin" />Баркодоор хайж байна…</p>}
+        {s.q.trim().length >= 2 && (
+          <div className="mt-2 space-y-2">
+            {s.items.map(p => <ProductRow key={p.code} p={p} onClick={() => add(p)} />)}
+            {!s.busy && !s.err && !s.items.length && <p className="py-3 text-center text-[14px] text-gray-500">Бараа олдсонгүй</p>}
+          </div>
+        )}
+        <p className="mb-2 mt-4 text-[14px] font-semibold text-gray-800">Задлах бараа · {rows.length}</p>
         <div className="mb-4 space-y-2">
           {rows.map((r, i) => (
             <div key={r.code} className={`rounded-2xl border bg-white p-3 shadow-sm ${r.qty <= 0 ? "border-rose-300" : "border-gray-100"}`}>
@@ -981,7 +1040,7 @@ function LinesEditor({ order, onClose, onSaved, registerClose }: {
                   <div className="text-[15px] font-semibold leading-snug text-gray-900">{r.name}</div>
                   <div className="text-[13px] text-gray-500"><span className="font-mono">{r.code}</span> · {money(r.price)} / {r.uom}</div>
                 </div>
-                <button aria-label={`${r.name} хасах`} onClick={() => setRows(x => x.filter((_, j) => j !== i))}
+                <button aria-label={`${r.name} хасах`} onClick={() => remove(i)}
                   className="-mr-1 -mt-1 grid h-11 w-11 place-items-center rounded-xl text-gray-400 active:bg-rose-50 active:text-rose-600"><Trash2 size={19} /></button>
               </div>
               <div className="mt-3 flex items-center justify-between">
@@ -995,14 +1054,6 @@ function LinesEditor({ order, onClose, onSaved, registerClose }: {
           <p className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-2.5 text-[13px] text-rose-700">
             ⚠ {lost.map(l => l.name).join(", ")} — хөрвүүлэлт нь хамт устна.
           </p>
-        )}
-        <p className="mb-2 text-[14px] font-semibold text-gray-800">Бараа нэмэх</p>
-        <SearchBox s={s} onScan={() => setScan(true)} placeholder="Код, нэр эсвэл баркод" onEnterOne={add} />
-        {s.q.trim().length >= 2 && (
-          <div className="mt-2 space-y-2">
-            {s.items.map(p => <ProductRow key={p.code} p={p} onClick={() => add(p)} />)}
-            {!s.busy && !s.err && !s.items.length && <p className="py-3 text-center text-[14px] text-gray-500">Бараа олдсонгүй</p>}
-          </div>
         )}
       </div>
       <div className="shrink-0 border-t border-gray-200 bg-white px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3">

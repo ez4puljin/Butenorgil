@@ -235,6 +235,20 @@ class LinesIn(BaseModel):
     lines: list[LineIn]
 
 
+def _diff(o: ConversionOrder, wanted: dict[str, float]) -> dict:
+    """Юу өөрчлөгдөхийг (бичихгүйгээр): changed/removed/added + хөрвүүлэлт нь устах мөрүүд (lost)."""
+    cur = {l.code: l for l in o.lines}
+    d = {"added": [c for c, q in wanted.items() if q > 0 and c not in cur], "removed": [], "changed": [], "lost": []}
+    for code, l in cur.items():
+        if code not in wanted or wanted[code] <= 0:
+            d["removed"].append(code)
+            if l.results:
+                d["lost"].append({"code": code, "name": l.name})
+        elif abs(l.qty - wanted[code]) > 1e-9:
+            d["changed"].append({"code": code, "name": l.name, "from": l.qty, "to": wanted[code]})
+    return d
+
+
 def _apply_lines(db: Session, o: ConversionOrder, wanted: dict[str, float]) -> dict:
     """Задлах барааны мөрийг wanted {код: тоо}-оор тааруулна. Хасагдсан мөрийн хөрвүүлэлт хамт устна,
     үлдсэн мөрийн хөрвүүлэлт хэвээр. → {added, removed, changed}."""
@@ -285,7 +299,8 @@ def edit_lines(oid: int, body: LinesIn, request: Request, db: Session = Depends(
 
 
 @router.post("/orders/{oid}/sync-deal")
-def sync_deal(oid: int, request: Request, db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+def sync_deal(oid: int, request: Request, dry_run: bool = False, db: Session = Depends(get_db),
+              u: User = Depends(get_current_user)):
     """erxes deal-ийн одоогийн тоогоор (агуулах үлдэгдэл хүрээгүй тул өөрчилсөн) мөрийг шинэчилнэ. erxes-т бичихгүй."""
     o = _get(db, oid)
     if not o.deal_id:
@@ -299,7 +314,12 @@ def sync_deal(oid: int, request: Request, db: Session = Depends(get_db), u: User
         raise HTTPException(502, f"erxes-ээс захиалга уншиж чадсангүй: {str(e)[:150]}")
     if not rows:
         raise HTTPException(400, "erxes захиалгад бараа алга — хоосон болсон бол хөрвүүлэлтийг цуцална уу.")
-    diff = _apply_lines(db, o, {r["code"]: r["qty"] for r in rows})
+    wanted = {r["code"]: r["qty"] for r in rows}
+    if dry_run:                              # эхлээд юу өөрчлөгдөж, ямар хөрвүүлэлт устахыг харуулна
+        d = _diff(o, wanted)
+        d["added_names"] = {c: (svc.product_by_code(c) or {}).get("name", "") for c in d["added"]}
+        return {"dry_run": True, "diff": d}
+    diff = _apply_lines(db, o, wanted)
     db.commit()
     audit(db, request, u, action="conversion_sync_deal", entity_type="conversion", extra={"id": o.id, **diff},
           autocommit=True)
