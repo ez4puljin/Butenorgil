@@ -132,7 +132,7 @@ function QtyStepper({ value, onChange, min = 0 }: { value: number; onChange: (v:
 }
 
 // ── Бараа хайх ────────────────────────────────────────────────────────────────
-function useProductSearch() {
+function useProductSearch(scope: "" | "result" = "") {
   const [q, setQ] = useState("");
   const [items, setItems] = useState<Prod[]>([]);
   const [busy, setBusy] = useState(false);
@@ -141,24 +141,25 @@ function useProductSearch() {
   useEffect(() => {
     const t = q.trim();
     const my = ++seq.current;                       // богино болсон ч хуучин хариу ирж дүүргэхгүй
-    if (t.length < 2) { setItems([]); setErr(""); setBusy(false); return; }
+    // result: segment-ийн бараа цөөн (≈30) тул хоосон үед ч бүгдийг харуулна
+    if (t.length < (scope === "result" ? 0 : 2)) { setItems([]); setErr(""); setBusy(false); return; }
     setBusy(true);
     const h = setTimeout(async () => {
       try {
-        const r = await api.get("/conversion/products", { params: { q: t }, timeout: 60000 });
+        const r = await api.get("/conversion/products", { params: { q: t, scope }, timeout: 60000 });
         if (my === seq.current) { setItems(r.data.items); setErr(""); }
       } catch (e: any) {
         if (my === seq.current) setErr(e?.response?.data?.detail ?? "Хайж чадсангүй — сүлжээгээ шалгана уу");
       } finally { if (my === seq.current) setBusy(false); }
-    }, 250);
+    }, t ? 250 : 0);
     return () => clearTimeout(h);
-  }, [q]);
+  }, [q, scope]);
   return { q, setQ, items, busy, err };
 }
 
-async function lookupScanned(code: string): Promise<Prod | null | "error"> {
+async function lookupScanned(code: string, scope: "" | "result" = ""): Promise<Prod | null | "error"> {
   try {
-    const r = await api.get("/conversion/products", { params: { q: code }, timeout: 30000 });
+    const r = await api.get("/conversion/products", { params: { q: code, scope }, timeout: 30000 });
     return (r.data.items as Prod[]).find(p => p.code === code || p.barcodes.includes(code)) ?? null;
   } catch { return "error"; }
 }
@@ -730,7 +731,7 @@ function ResultEditor({ order, line, onClose, onSaved, registerClose, hasNext }:
   order: Order; line: Line; onClose: () => void; onSaved: (o: Order) => void;
   registerClose: (f: () => boolean) => void; hasNext: boolean;
 }) {
-  const s = useProductSearch();
+  const s = useProductSearch("result");
   const [rows, setRows] = useState<Res[]>(() => line.results.map(r => ({ ...r })));
   const [scan, setScan] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
@@ -761,11 +762,11 @@ function ResultEditor({ order, line, onClose, onSaved, registerClose, hasNext }:
   }
   async function onScanned(code: string) {
     setScan(false); setScanBusy(true);
-    const hit = await lookupScanned(code);
+    const hit = await lookupScanned(code, "result");
     setScanBusy(false);
     if (hit === "error") setErr("Хайж чадсангүй — сүлжээгээ шалгана уу");
     else if (hit) add(hit);
-    else setErr(`«${code}» баркодтой бараа олдсонгүй. Нэрээр нь хайна уу.`);
+    else setErr(`«${code}» баркодтой бараа хөрвүүлэлтийн бараанд алга. Жагсаалтаас сонгоно уу.`);
   }
   async function save() {
     setSaving(true); setErr("");
@@ -786,19 +787,10 @@ function ResultEditor({ order, line, onClose, onSaved, registerClose, hasNext }:
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3">
-        <p className="mb-2 text-[14px] font-semibold text-gray-800">Юу болгож хөрвүүлсэн бэ?</p>
-        <SearchBox s={s} onScan={() => setScan(true)} placeholder="Гарсан бараа: код, нэр, баркод" onEnterOne={add} autoFocus={rows.length === 0} />
-        {scanBusy && <p className="mt-2 flex items-center gap-2 text-[14px] text-gray-600"><Loader2 size={16} className="animate-spin" />Баркодоор хайж байна…</p>}
-        {s.err && <p className="mt-2 text-[14px] text-rose-600">{s.err}</p>}
-        {s.q.trim().length >= 2 && (
-          <div className="mt-2 space-y-2">
-            {s.items.map(p => <ProductRow key={p.code} p={p} onClick={() => add(p)} />)}
-            {!s.busy && !s.err && !s.items.length && <p className="py-3 text-center text-[14px] text-gray-500">Бараа олдсонгүй</p>}
-          </div>
-        )}
-        {err && <div className="mt-3"><ErrorBox text={err} onClose={() => setErr("")} /></div>}
+        {err && <ErrorBox text={err} onClose={() => setErr("")} />}
+        {/* Сонгосон (гарсан) бараа ДЭЭР — тоогоо шууд оруулна; доор нь сонгож болох жагсаалт */}
         {rows.length > 0 && (
-          <div className="mt-4 space-y-2">
+          <div className="mb-4 space-y-2">
             <p className="text-[14px] font-semibold text-gray-800">Гарсан бараа · тоо хэмжээ</p>
             {rows.map((r, i) => (
               <div key={r.code} className={`rounded-2xl border bg-white p-3 shadow-sm ${r.qty <= 0 ? "border-rose-300" : "border-gray-100"}`}>
@@ -818,6 +810,15 @@ function ResultEditor({ order, line, onClose, onSaved, registerClose, hasNext }:
             ))}
           </div>
         )}
+        <p className="mb-2 text-[14px] font-semibold text-gray-800">{rows.length ? "Өөр бараа нэмэх" : "Юу болгож хөрвүүлсэн бэ?"}</p>
+        <SearchBox s={s} onScan={() => setScan(true)} placeholder="Хөрвүүлэлтийн бараанаас шүүх" onEnterOne={add} />
+        {scanBusy && <p className="mt-2 flex items-center gap-2 text-[14px] text-gray-600"><Loader2 size={16} className="animate-spin" />Баркодоор хайж байна…</p>}
+        {s.err && <p className="mt-2 text-[14px] text-rose-600">{s.err}</p>}
+        {/* Хөрвүүлэлтийн бараа (segment) — цөөн тул үргэлж жагсаалтаар */}
+        <div className="mt-2 space-y-2">
+          {s.items.filter(p => !rows.some(r => r.code === p.code)).map(p => <ProductRow key={p.code} p={p} onClick={() => add(p)} />)}
+          {!s.busy && !s.err && !s.items.length && <p className="py-3 text-center text-[14px] text-gray-500">Бараа олдсонгүй</p>}
+        </div>
       </div>
       <div className="shrink-0 border-t border-gray-200 bg-white px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3">
         <button onClick={save} disabled={saving || !dirty}

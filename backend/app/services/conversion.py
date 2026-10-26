@@ -34,6 +34,8 @@ DEFAULTS = {
     "account": "150101",
     "related_account": "320101",
     "location": "03",
+    # «Юу болгож хөрвүүлсэн» сонгох бараа зөвхөн энэ segment-ээс (жингийн кг-ийн бараа — 2026-10-26 хэрэглэгч)
+    "result_segment": "R4ZBIRFhNKzN-v1LiKiPY",
 }
 ERXES_WEB = "https://erxes.bto.mn"
 
@@ -84,6 +86,41 @@ def search(q: str, limit: int = 30) -> list[dict]:
             break
     out = (exact + sorted(starts, key=lambda p: p["code"]) + contains)[:limit]
     return [product_out(p) for p in out]
+
+
+_seg_cache: dict = {"at": 0.0, "id": "", "codes": set()}
+SEG_TTL = 600
+
+
+def result_codes() -> set[str]:
+    """Хөрвүүлэлтийн үр дүнд сонгож болох барааны кодууд (result_segment, 10 мин кэш)."""
+    import time
+    from app.services.erxes_client import get_client
+    seg = load_settings()["result_segment"]
+    if _seg_cache["codes"] and _seg_cache["id"] == seg and time.monotonic() - _seg_cache["at"] < SEG_TTL:
+        return _seg_cache["codes"]
+    codes, page = set(), 1
+    while True:
+        rows = get_client().gql('query($s:String,$p:Int){ products(segment:$s, status:"active", perPage:500, page:$p)'
+                                '{ code } }', {"s": seg, "p": page}).get("products") or []
+        codes |= {str(r["code"]).strip() for r in rows if r.get("code")}
+        if len(rows) < 500 or page > 20:
+            break
+        page += 1
+    _seg_cache.update(at=time.monotonic(), id=seg, codes=codes)
+    return codes
+
+
+def search_results(q: str, limit: int = 60) -> list[dict]:
+    """Үр дүнгийн бараа — зөвхөн segment-ийн бараа; q хоосон бол бүгдийг (цөөн) буцаана."""
+    idx = product_index()
+    allowed = [idx[c] for c in sorted(result_codes()) if c in idx]
+    q = (q or "").strip()
+    if q:
+        ql = _norm(q)
+        allowed = [p for p in allowed if p["code"] == q or q in (p.get("barcodes") or []) or p["code"].startswith(q)
+                   or all(w in _norm(p.get("name")) for w in ql.split())]
+    return [product_out(p) for p in allowed[:limit]]
 
 
 def product_out(p: dict) -> dict:

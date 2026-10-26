@@ -47,9 +47,10 @@ def _role(u: User) -> str:
 
 
 @router.get("/products")
-def products(q: str = "", _: User = Depends(get_current_user)):
+def products(q: str = "", scope: str = "", _: User = Depends(get_current_user)):
+    """scope=result — «юу болгож хөрвүүлсэн» сонголт: зөвхөн тохиргооны segment-ийн бараа."""
     try:
-        return {"items": svc.search(q)}
+        return {"items": svc.search_results(q) if scope == "result" else svc.search(q)}
     except Exception as e:      # noqa: BLE001
         raise HTTPException(502, f"Барааны жагсаалт ачаалж чадсангүй: {str(e)[:120]}")
 
@@ -175,12 +176,15 @@ def set_results(oid: int, line_id: int, body: ResultsIn, db: Session = Depends(g
     if not line:
         raise HTTPException(404, "Мөр олдсонгүй.")
     new = []
+    allowed = svc.result_codes()
     for r in body.results:
         if not r.code.strip() or not r.qty or r.qty <= 0:
             continue
         p = svc.product_by_code(r.code)
         if not p:
             raise HTTPException(400, f"{r.code} код олдсонгүй.")
+        if p["code"] not in allowed:
+            raise HTTPException(400, f"{p['code']} {p['name']} — хөрвүүлэлтийн бараанд (segment) ороогүй.")
         new.append(ConversionResult(line_id=line.id, code=p["code"], name=p["name"][:300], uom=p["uom"],
                                     qty=float(r.qty), unit_price=p["price"]))
     for r in list(line.results):
