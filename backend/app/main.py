@@ -42,6 +42,7 @@ from app.models.master_count import MasterCount, MasterCountLine, MasterCountSca
 from app.models.erkhet_sync_check import ErkhetSyncRun, ErkhetSyncItem, ErkhetSyncSetting, ErkhetSyncAction  # noqa: F401
 from app.models.payments_scan import PaymentsScanRun, PaymentsScanItem, PaymentsFixAction  # noqa: F401
 from app.models.conversion import ConversionOrder, ConversionLine, ConversionResult  # noqa: F401
+from app.models.price_cost import PcIncomeRow, PcPosSale, PcSyncRun, PcManagedPlan, PcPriceAudit  # noqa: F401
 from app.models.aclas import AclasScale, AclasSetting, AclasPluId, AclasJob, AclasBackup  # noqa: F401
 from app.models.pallet import PalletSalesSettings, PalletTemplate, ProductPallet  # noqa: F401 – registers tables
 from app.models.custom_master import CustomField, CustomRecord  # noqa: F401 – registers tables
@@ -1451,6 +1452,8 @@ from app.api.red_report import router as red_report_router  # noqa: E402
 app.include_router(red_report_router)
 from app.api.conversion import router as conversion_router  # noqa: E402
 app.include_router(conversion_router)
+from app.api.price_cost import router as price_cost_router  # noqa: E402
+app.include_router(price_cost_router)
 app.include_router(aclas_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)

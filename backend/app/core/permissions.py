@@ -32,6 +32,7 @@ PERMISSION_MANIFEST = [
     {"key": "price_check",         "label": "Үнэ харах",       "universal": True},
     {"key": "stock_live",          "label": "Үлдэгдэл (Эрхэт)", "universal": True},
     {"key": "conversion",          "label": "Хөрвүүлэлтийн бараа"},
+    {"key": "price_cost",          "label": "Үнийн тохиргоо (Хархорин агуулах)"},
     {"key": "hall_count",          "label": "Заалны тооллого", "universal": True},
     {"key": "pallets",             "label": "Поддон хураалт"},
     {"key": "sales_analytics",     "label": "Борлуулалтын график", "universal": True},

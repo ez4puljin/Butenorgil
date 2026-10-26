@@ -152,6 +152,19 @@ class ErkhetClient:
             return self._get(path, retry=False)
         return r
 
+    def ajax(self, path: str, timeout: int = 180) -> dict:
+        """Жагсаалтын хуудсыг XHR-ээр (X-Requested-With) — JSON `{info, blocks:[{selector, content}]}`.
+        Зөвхөн GET (уншина)."""
+        for attempt in (1, 2):
+            s = self._session()
+            r = s.get(self._url(path), headers={"X-Requested-With": "XMLHttpRequest"}, timeout=timeout)
+            if "/login" in r.url or r.status_code in (401, 403):
+                self._s = None
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise ErkhetError("Эрхэтэд нэвтэрч чадсангүй (session).")
+
     # ── формын сонголтууд ────────────────────────────────────────────
     def form_options(self, path: str) -> dict[str, list[tuple[str, str]]]:
         """Тайлангийн формын select бүрийн (утга, шошго) жагсаалт.

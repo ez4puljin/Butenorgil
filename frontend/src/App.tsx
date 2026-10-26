@@ -48,6 +48,7 @@ const PosSync            = page(() => import("./pages/PosSync"));
 const PriceCheck         = page(() => import("./pages/PriceCheck"));
 const StockLive          = page(() => import("./pages/StockLive"));
 const Conversion         = page(() => import("./pages/Conversion"));
+const PriceCost          = page(() => import("./pages/PriceCost"));
 const HallCount          = page(() => import("./pages/HallCount"));
 const Pallets            = page(() => import("./pages/Pallets"));
 const SalesAnalytics     = page(() => import("./pages/SalesAnalytics"));
@@ -113,6 +114,7 @@ export const PAGE_ROUTES: { key: string; path: string }[] = [
   { key: "price_check",         path: "/price-check" },
   { key: "stock_live",          path: "/stock" },
   { key: "conversion",          path: "/conversion" },
+  { key: "price_cost",          path: "/price-cost" },
   { key: "hall_count",          path: "/hall-count" },
   { key: "pallets",             path: "/pallets" },
   { key: "sales_analytics",     path: "/sales-analytics" },
@@ -359,6 +361,7 @@ export default function App() {
                 <Route path="/stock" element={can("stock_live") ? <StockLive /> : <DefaultRedirect />} />
                 <Route path="/conversion" element={can("conversion") ? <Conversion /> : <DefaultRedirect />} />
                 <Route path="/conversion/:id" element={can("conversion") ? <Conversion /> : <DefaultRedirect />} />
+                <Route path="/price-cost" element={can("price_cost") ? <PriceCost /> : <DefaultRedirect />} />
                 <Route
                   path="/hall-count"
                   element={can("hall_count") ? <HallCount /> : <DefaultRedirect />}
