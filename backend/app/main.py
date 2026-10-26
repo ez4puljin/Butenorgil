@@ -630,6 +630,9 @@ def ensure_po_location_schema():
         if cols and "stock_locations" not in cols:
             conn.execute(text("ALTER TABLE purchase_orders ADD COLUMN stock_locations VARCHAR(60)"))
         # Код солигдсон барааны мөрийг шинэ кодоор харуулах (app/services/code_remap)
+        cc = [r[1] for r in conn.execute(text("PRAGMA table_info(conversion_orders)")).fetchall()]
+        if cc and "client_uid" not in cc:
+            conn.execute(text("ALTER TABLE conversion_orders ADD COLUMN client_uid VARCHAR(64) DEFAULT ''"))
         for tbl in ("purchase_order_lines", "receiving_lines"):
             lc = [r[1] for r in conn.execute(text(f"PRAGMA table_info({tbl})")).fetchall()]
             if lc and "display_code" not in lc:

@@ -63,6 +63,8 @@ const BOTTOM_NAV_MAX = 4;
 
 export default function Shell(props: { children: React.ReactNode }) {
   const loc = useLocation();
+  // Өөрийн доод үйлдлийн мөртэй (утсанд зориулсан) хуудсууд — Shell-ийн доод цэс түүнийг дарахгүй
+  const hideBottomNav = loc.pathname.startsWith("/conversion");
   const { role, roleLabel: dbRoleLabel, baseRole, permissions, universalPages, logout, username, nickname } = useAuthStore();
   const displayName = nickname || username;
   const effectiveRole = baseRole || role;
@@ -335,12 +337,12 @@ export default function Shell(props: { children: React.ReactNode }) {
           </button>
         </header>
 
-        <main className="flex-1 overflow-x-hidden p-3 pb-[calc(76px+env(safe-area-inset-bottom))]">
+        <main className={`flex-1 overflow-x-clip p-3 ${hideBottomNav ? "pb-3" : "pb-[calc(76px+env(safe-area-inset-bottom))]"}`}>
           {props.children}
         </main>
 
         {/* ── Bottom Navigation — scroll хийхэд автоматаар нуугддаг ── */}
-        <nav className={`fixed bottom-0 inset-x-0 z-40 flex items-stretch
+        {!hideBottomNav && <nav className={`fixed bottom-0 inset-x-0 z-40 flex items-stretch
           bg-white/95 border-t border-gray-100 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] backdrop-blur-md
           transition-transform duration-300 ease-out
           ${bottomNavVisible ? "translate-y-0" : "translate-y-full"}`}
@@ -371,10 +373,10 @@ export default function Shell(props: { children: React.ReactNode }) {
             <MoreHorizontal size={21} strokeWidth={1.8} />
             <span className="text-[10px] font-semibold leading-none">Цэс</span>
           </button>
-        </nav>
+        </nav>}
 
         {/* Bottom nav нуугдсан үед гарч ирэх жижиг товч */}
-        {!bottomNavVisible && (
+        {!hideBottomNav && !bottomNavVisible && (
           <button
             onClick={() => setBottomNavVisible(true)}
             className="fixed bottom-4 right-4 z-50 grid h-12 w-12 place-items-center

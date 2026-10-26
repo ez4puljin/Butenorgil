@@ -82,10 +82,16 @@ class CreateIn(BaseModel):
     lines: list[LineIn]
     note: str = ""
     conv_date: Optional[str] = None
+    client_uid: str = ""            # давхар илгээлтээс сэргийлэх (утасны ноорог бүрт нэг)
 
 
 @router.post("/orders")
 def create_order(body: CreateIn, request: Request, db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    uid = (body.client_uid or "").strip()[:64]
+    if uid:
+        prev = db.query(ConversionOrder).filter(ConversionOrder.client_uid == uid).first()
+        if prev:                    # хариу тасарч дахин дарсан — шинэ deal үүсгэхгүй
+            return {**svc.to_dict(prev), "deduped": True}
     items: dict[str, float] = {}
     for l in body.lines:
         if l.qty and l.qty > 0 and l.code.strip():
@@ -104,7 +110,7 @@ def create_order(body: CreateIn, request: Request, db: Session = Depends(get_db)
         d = date.fromisoformat(body.conv_date) if body.conv_date else svc.today_ub()
     except ValueError:
         raise HTTPException(400, "Огноо буруу.")
-    o = ConversionOrder(status="ordered", conv_date=d, note=body.note.strip()[:500],
+    o = ConversionOrder(status="ordered", conv_date=d, note=body.note.strip()[:500], client_uid=uid,
                         created_by=(u.nickname or u.username or "")[:120])
     db.add(o)
     db.flush()

@@ -21,6 +21,8 @@ class ConversionOrder(Base):
     conv_date: Mapped[date_type] = mapped_column(Date, nullable=False)
     note: Mapped[str] = mapped_column(String(500), default="")
     deal_id: Mapped[str] = mapped_column(String(40), default="")
+    # Утасны ноорог бүрийн нэг удаагийн түлхүүр — сүлжээ тасарч дахин дарвал давхар deal үүсгэхгүй
+    client_uid: Mapped[str] = mapped_column(String(64), default="", index=True)
     deal_number: Mapped[str] = mapped_column(String(60), default="")
     created_by: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
