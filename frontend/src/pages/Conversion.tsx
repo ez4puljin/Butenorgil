@@ -52,21 +52,33 @@ function ubDay(iso?: string | null) {
 const buzz = () => { try { navigator.vibrate?.(40); } catch { /* дэмжихгүй */ } };
 
 /** Android «буцах» товч (lib/backButton → history.back) нээлттэй цонхыг хаана, хуудаснаас гаргахгүй.
- *  onBack false буцаавал (жишээ нь хадгалаагүй өөрчлөлт) цонх нээлттэй үлдэнэ. */
+ *  onBack false буцаавал (жишээ нь хадгалаагүй өөрчлөлт) цонх нээлттэй үлдэнэ.
+ *  Давхар цонх (засвар → сканнер) — НЭГ нийтлэг стек: зөвхөн хамгийн дээд цонх буцах товчийг хүлээж авна,
+ *  кодоор хаахад хийсэн history.back()-ийг (skipPops) доод цонх «буцах» гэж ойлгохгүй. */
+type BackEntry = { current: () => boolean | void; popped?: boolean };
+const backStack: BackEntry[] = [];
+let skipPops = 0;
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", () => {
+    if (skipPops > 0) { skipPops--; return; }
+    const top = backStack[backStack.length - 1];
+    if (!top) return;
+    if (top.current() === false) window.history.pushState({ convModal: true }, "");
+    else top.popped = true;
+  });
+}
 function useBackClose(onBack: () => boolean | void) {
-  const ref = useRef(onBack);
+  const ref = useRef(onBack) as BackEntry;
   ref.current = onBack;
   useEffect(() => {
+    const entry = ref;
+    entry.popped = false;
+    backStack.push(entry);
     window.history.pushState({ convModal: true }, "");
-    let popped = false;
-    const onPop = () => {
-      if (ref.current() === false) { window.history.pushState({ convModal: true }, ""); return; }
-      popped = true;
-    };
-    window.addEventListener("popstate", onPop);
     return () => {
-      window.removeEventListener("popstate", onPop);
-      if (!popped && window.history.state?.convModal) window.history.back();
+      const i = backStack.indexOf(entry);
+      if (i >= 0) backStack.splice(i, 1);
+      if (!entry.popped && window.history.state?.convModal) { skipPops++; window.history.back(); }
     };
   }, []);
 }
