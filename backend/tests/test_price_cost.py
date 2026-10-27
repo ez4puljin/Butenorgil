@@ -124,3 +124,42 @@ def test_plan_target_compensates_other_plans():
     assert pc.plan_target(None, 3270, 3420) == -150         # 103118: бусдын −210 plan-ыг нөхнө
     assert pc.plan_target(-1000, 20500, 20500) == -1000     # таарсан — өөрчлөхгүй
     assert pc.plan_target(-150, 3420, 3500) == -230         # орлого өссөн
+
+
+def test_due_slot_schedule():
+    from datetime import datetime as dt
+    sch = ["08:30", "18:30"]
+    # УБ 08:29 (UTC 00:29) — хараахан болоогүй
+    assert pc.due_slot(sch, dt(2026, 10, 27, 0, 29), None) is None
+    # УБ 08:31 — өнөөдөр синк хийгдээгүй
+    assert pc.due_slot(sch, dt(2026, 10, 27, 0, 31), dt(2026, 10, 26, 10, 31)) == "08:30"
+    # 08:30-аас хойш (UTC 00:30) аль хэдийн эхэлсэн — дахин хийхгүй
+    assert pc.due_slot(sch, dt(2026, 10, 27, 0, 45), dt(2026, 10, 27, 0, 30)) is None
+    # УБ 21:00, сүүлд 08:30-д — 18:30-ийг нөхнө
+    assert pc.due_slot(sch, dt(2026, 10, 27, 13, 0), dt(2026, 10, 27, 0, 30)) == "18:30"
+    # УБ 00:10 (UTC өмнөх өдөр 16:10) — шинэ өдрийн цаг болоогүй, өчигдрийнхийг нөхөхгүй
+    assert pc.due_slot(sch, dt(2026, 10, 26, 16, 10), None) is None
+    assert pc.due_slot([], dt(2026, 10, 27, 13, 0), None) is None
+
+
+def test_hhmm():
+    assert pc._hhmm("8:30") == "08:30"
+    assert pc._hhmm("24:00") is None
+    assert pc._hhmm("x") is None
+
+
+def test_notify_only_on_change():
+    sent = []
+    orig = pc._notify
+    pc._notify = lambda s, t: sent.append(t)
+    try:
+        row = {"code": "1", "name": "A", "config": 100, "income": 90, "action": "update", "review": False}
+        res = {"rows": [row]}
+        pc._notify_new({}, res, res)
+        assert not sent
+        pc._notify_new({}, {"rows": []}, res)
+        assert len(sent) == 1 and "100 → 90" in sent[0]
+        pc._notify_new({}, res, {"rows": [{**row, "action": ""}]})
+        assert len(sent) == 1
+    finally:
+        pc._notify = orig

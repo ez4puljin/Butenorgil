@@ -43,6 +43,7 @@ interface Result {
 }
 interface Settings {
   locations: string[]; brands: string[]; accounts: string[]; exclude_customers: string[]; guard_pct: number; max_apply: number; year_start: string;
+  schedule?: string[]; notify?: boolean;
 }
 interface Run { id: number; started_at: string; finished_at: string | null; status: string; by: string; stats: any; error: string }
 
@@ -504,6 +505,8 @@ function SettingsPanel({ s, onSaved }: { s: Settings; onSaved: (s: Settings) => 
   const [locs, setLocs] = useState<string[]>(s.locations);
   const [guard, setGuard] = useState(s.guard_pct);
   const [max, setMax] = useState(s.max_apply);
+  const [sched, setSched] = useState((s.schedule ?? []).join(", "));
+  const [notify, setNotify] = useState(s.notify ?? true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const lines = (t: string) => t.split("\n").map(x => x.trim()).filter(Boolean);
@@ -513,6 +516,7 @@ function SettingsPanel({ s, onSaved }: { s: Settings; onSaved: (s: Settings) => 
     try {
       const r = await api.put("/price-cost/settings", {
         brands: lines(brands), accounts: lines(accts), exclude_customers: lines(excl), locations: locs, guard_pct: guard, max_apply: max,
+        schedule: sched.split(/[,\s]+/).filter(Boolean), notify,
       });
       onSaved(r.data.settings);
     } catch (e: any) { setErr(e?.response?.data?.detail ?? "Хадгалж чадсангүй"); } finally { setBusy(false); }
@@ -558,6 +562,16 @@ function SettingsPanel({ s, onSaved }: { s: Settings; onSaved: (s: Settings) => 
             <div className="mb-1 font-semibold text-gray-700">Нэг батлалтын дээд тоо</div>
             <input type="number" value={max} min={1} max={1000} onChange={e => setMax(+e.target.value)}
               className="w-24 rounded-lg border border-gray-200 px-2 py-1" />
+          </label>
+          <label className="block">
+            <div className="mb-1 font-semibold text-gray-700">Автомат шинэчлэх цаг</div>
+            <input value={sched} onChange={e => setSched(e.target.value)} placeholder="08:30, 18:30"
+              className="w-32 rounded-lg border border-gray-200 px-2 py-1" />
+            <div className="mt-0.5 text-[11px] text-gray-400">Зөвхөн уншина — үнэ өөрчлөхгүй. Хоосон = унтраах.</div>
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={notify} onChange={e => setNotify(e.target.checked)} />
+            Шинэ санал гарвал Telegram
           </label>
         </div>
       </div>

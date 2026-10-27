@@ -52,6 +52,8 @@ DEFAULTS = {
     "year_start": "2026-01-01",
     "guard_pct": 30,
     "max_apply": 200,
+    "schedule": ["08:30", "18:30"],     # УБ цаг — зөвхөн уншдаг синк; хоосон = унтраалттай
+    "notify": True,                     # шинэ «Plan засах/үүсгэх» санал гарвал Telegram
 }
 REFETCH_DAYS = 21
 POS_REFETCH_DAYS = 14
@@ -82,6 +84,10 @@ def save_settings(patch: dict) -> dict:
     for k, lo, hi in (("guard_pct", 1, 100), ("max_apply", 1, 1000)):
         if k in patch:
             s[k] = max(lo, min(hi, int(patch[k])))
+    if isinstance(patch.get("schedule"), list):
+        s["schedule"] = sorted({t for t in (_hhmm(x) for x in patch["schedule"]) if t})
+    if "notify" in patch:
+        s["notify"] = bool(patch["notify"])
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
     return s
@@ -564,6 +570,88 @@ def run_bg(by: str = "", full: bool = False) -> None:
         except Exception as e:  # noqa: BLE001
             print(f"[price_cost] алдаа: {e}")
     threading.Thread(target=_go, daemon=True).start()
+
+
+# ── хуваарь (5-р шат) ────────────────────────────────────────────────
+UB = timedelta(hours=8)
+
+
+def _hhmm(v) -> str | None:
+    try:
+        h, m = str(v).strip().split(":")
+        h, m = int(h), int(m)
+    except Exception:
+        return None
+    return f"{h:02d}:{m:02d}" if 0 <= h < 24 and 0 <= m < 60 else None
+
+
+def due_slot(schedule: list[str], now_utc: datetime, last_start_utc: datetime | None) -> str | None:
+    """Өнөөдрийн (УБ) хамгийн сүүлд өнгөрсөн цаг — түүнээс хойш синк эхлээгүй бол буцаана.
+    Сервер тухайн цагт унтарсан байсан бол асахдаа нэг удаа нөхнө (зөвхөн тухайн өдөр)."""
+    ub = now_utc + UB
+    slots = [t for t in (_hhmm(x) for x in schedule) if t and t <= ub.strftime("%H:%M")]
+    if not slots:
+        return None
+    slot = max(slots)
+    slot_utc = datetime.combine(ub.date(), datetime.strptime(slot, "%H:%M").time()) - UB
+    return None if last_start_utc and last_start_utc >= slot_utc else slot
+
+
+def run_scheduled() -> dict | None:
+    """Хуваарийн цаг болсон бол ЗӨВХӨН УНШДАГ синк. erxes рүү юу ч бичихгүй — батлах нь үргэлж гараар."""
+    from app.core.db import SessionLocal
+    from app.models.price_cost import PcSyncRun
+    s = load_settings()
+    if not s.get("schedule") or _state["running"]:
+        return None
+    db = SessionLocal()
+    try:
+        last = db.query(PcSyncRun.started_at).order_by(PcSyncRun.id.desc()).first()
+    finally:
+        db.close()
+    slot = due_slot(s["schedule"], datetime.utcnow(), last[0] if last else None)
+    if not slot:
+        return None
+    prev = load_result() or {}
+    try:
+        res = run(by=f"хуваарь {slot}", manual=False)
+    except Exception as e:  # noqa: BLE001
+        _notify(s, f"❌ Үнийн тохиргоо: хуваарийн синк ({slot}) амжилтгүй: {str(e)[:300]}")
+        return None
+    _notify_new(s, prev, res)
+    return res
+
+
+def _pending(res: dict) -> dict[str, str]:
+    return {r["code"]: r["action"] + ("!" if r["review"] else "") for r in res.get("rows", []) if r.get("action")}
+
+
+def _notify_new(s: dict, prev: dict, res: dict) -> None:
+    """Санал болгосон өөрчлөлтийн жагсаалт өмнөхөөс өөрчлөгдсөн, хоосон биш үед л мэдэгдэнэ."""
+    now, before = _pending(res), _pending(prev)
+    if not now or now == before:
+        return
+    rows = {r["code"]: r for r in res["rows"]}
+    new = [c for c in now if before.get(c) != now[c]]
+    lines = []
+    for c in new[:15]:
+        r = rows[c]
+        lines.append(f"• {c} {r['name'][:30]}: {r['config'] or 0:,.0f} → {r['income']:,.0f}"
+                     + (" ⚠️ шалгах" if r["review"] else ""))
+    more = f"\n… бас {len(new) - 15}" if len(new) > 15 else ""
+    _notify(s, f"💲 Үнийн тохиргоо (Хархорин агуулах): {len(now)} бараанд plan санал"
+               f" ({len(new)} шинэ)\n" + "\n".join(lines) + more
+            + "\nERP → Үнийн тохиргоо-оос шалгаж «Батлах» (автоматаар ӨӨРЧЛӨГДӨХГҮЙ).")
+
+
+def _notify(s: dict, text: str) -> None:
+    if not s.get("notify", True):
+        return
+    try:
+        from app.core.health_monitor import send_telegram
+        send_telegram(text)
+    except Exception as e:  # noqa: BLE001
+        print(f"[price_cost] telegram: {e}")
 
 
 def load_result() -> dict | None:

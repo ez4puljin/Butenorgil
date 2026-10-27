@@ -2,7 +2,7 @@
 
   GET  /price-cost/data       — сүүлийн үр дүн + төлөв + тохиргоо + сүүлийн синкүүд
   POST /price-cost/run        — гараар шинэчлэх (?full=true — Эрхэтийн орлогыг оны эхнээс)
-  PUT  /price-cost/settings   — {brands, accounts, exclude_customers, locations, guard_pct, max_apply} (admin)
+  PUT  /price-cost/settings   — {brands, accounts, exclude_customers, locations, guard_pct, max_apply, schedule, notify} (admin)
   GET  /price-cost/xlsx       — Excel экспорт
   POST /price-cost/apply      — {codes} сонгосон бараанд plan үүсгэх/засах (admin, erxes рүү БИЧНЭ)
   POST /price-cost/rollback   — {batch} тухайн багцыг буцаах (admin)
@@ -63,6 +63,8 @@ class SettingsIn(BaseModel):
     locations: Optional[list[str]] = None
     guard_pct: Optional[int] = None
     max_apply: Optional[int] = None
+    schedule: Optional[list[str]] = None
+    notify: Optional[bool] = None
 
 
 @router.put("/settings")

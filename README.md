@@ -227,6 +227,7 @@ start cmd /k "cd frontend && npm run dev"
 | Борлуулалтын тайлан | Бүс тус бүрийн импорт + dashboard | admin, supervisor, manager, accountant |
 | Тооллогоны тайлан | 8 агуулахын тооллого + KPI auto-assign | admin, supervisor, manager |
 | **Erkhet автомат** | **Эрхэт тайлан автомат + Messenger** | admin, supervisor |
+| Үнийн тохиргоо | Хархорин агуулахын үнэ = сүүлийн орлого; erxes plan батлах/буцаах — [PRICE_COST.md](PRICE_COST.md) | `price_cost` (харах), admin (батлах) |
 
 ---
 

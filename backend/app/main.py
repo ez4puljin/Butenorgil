@@ -1333,6 +1333,27 @@ async def _red_report_loop():
         await asyncio.sleep(300)
 
 
+async def _price_cost_loop():
+    """Үнийн тохиргоо — тохиргооны цагт (анхдагч 08:30, 18:30 УБ) ЗӨВХӨН УНШДАГ синк + шинэ санал гарвал
+    Telegram. erxes plan-д хүрэхгүй; батлах нь үргэлж гараар (app/services/price_cost.run_scheduled)."""
+    from app.core.config import settings
+    from app.services import price_cost
+    if not (settings.erkhet_username and settings.erkhet_password and settings.erxes_email and settings.erxes_password):
+        return
+    await asyncio.sleep(150)
+    while True:
+        try:
+            await asyncio.to_thread(price_cost.run_scheduled)
+        except Exception as e:
+            print(f"[үнийн тохиргоо] хуваарь алдаа: {e}")
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def schedule_price_cost():
+    asyncio.create_task(_price_cost_loop())
+
+
 @app.on_event("startup")
 async def schedule_red_report():
     asyncio.create_task(_red_report_loop())
