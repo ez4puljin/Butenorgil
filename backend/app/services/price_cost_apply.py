@@ -189,7 +189,15 @@ def sync(db, plan_id: str, by: str, batch: str = "", apply: bool = False) -> dic
     if t["product"]["_id"] != m.product_id:
         raise ApplyError(f"{m.code}: бараа солигдсон байна — гараар шалгана уу.")
     if t["value"] == 0:
-        raise ApplyError(f"{m.code}: шинэ утга 0 — plan-ыг идэвхгүй болгох (deactivate) нь зөв.")
+        # Үндсэн үнэ (эсвэл бусдын plan) аль хэдийн орлоготой тэнцсэн — манай plan илүүц → архивлана.
+        if not apply:
+            return {"dry_run": True, "plan_id": plan_id, "code": m.code, "status": "archived",
+                    "income": t["income"], "prices_now": t["now"]}
+        r = set_status(db, plan_id, "archived", by, batch, note="value 0 — үндсэн үнэ орлоготой тэнцсэн.", apply=True)
+        if r["after"]["agulah"] is None or abs(r["after"]["agulah"] - t["income"]) > 0.5:
+            set_status(db, plan_id, "active", by, batch, note="архивласны дараа таарсангүй — сэргээв.", apply=True)
+            raise ApplyError(f"{m.code}: архивласны дараа агуулах {r['after']['agulah']} ≠ орлого {t['income']} — сэргээв.")
+        return {**r, "code": m.code, "archived": True}
     before = t["now"]
     res = {"plan_id": plan_id, "code": m.code, "old": {"type": cur.get("type"), "value": cur.get("value")},
            "new": {"type": "subtraction", "value": t["value"]}, "income": t["income"], "prices_now": before}
@@ -268,7 +276,8 @@ def apply_codes(codes: list[str], by: str, max_apply: int) -> str:
                 try:
                     m = db.query(PcManagedPlan).filter(PcManagedPlan.code == code, PcManagedPlan.status == "active").first()
                     r = sync(db, m.plan_id, by, b, apply=True) if m else create(db, code, by, b, apply=True)
-                    _batch["results"].append({"code": code, "ok": True, "action": "update" if m else "create",
+                    act = ("archive" if r.get("archived") else "update") if m else "create"
+                    _batch["results"].append({"code": code, "ok": True, "action": act,
                                               "after": r.get("after")})
                 except Exception as e:  # noqa: BLE001 — нэг барааны алдаа бусдыг зогсоохгүй
                     db.rollback()
@@ -282,12 +291,14 @@ def apply_codes(codes: list[str], by: str, max_apply: int) -> str:
 
 
 def rollback_batch(batch: str, by: str) -> str:
-    """Тухайн багцын өөрчлөлтийг буцаана: үүсгэсэн plan → archived, засварласан → хуучин value."""
+    """Тухайн багцын өөрчлөлтийг буцаана: үүсгэсэн plan → archived, засварласан → хуучин value,
+    архивласан → active."""
     from app.core.db import SessionLocal
     from app.models.price_cost import PcPriceAudit
     db = SessionLocal()
     try:
-        rows = (db.query(PcPriceAudit).filter(PcPriceAudit.batch == batch, PcPriceAudit.action.in_(("create", "update")))
+        rows = (db.query(PcPriceAudit)
+                .filter(PcPriceAudit.batch == batch, PcPriceAudit.action.in_(("create", "update", "deactivate")))
                 .order_by(PcPriceAudit.id.desc()).all())
         items = [(r.action, r.plan_id, r.code, r.old_value) for r in rows]
     finally:
@@ -303,6 +314,8 @@ def rollback_batch(batch: str, by: str) -> str:
                 try:
                     if action == "create":
                         r = set_status(db, plan_id, "archived", by, b, note=f"Багц {batch}-ийг буцаав.", apply=True)
+                    elif action == "deactivate":
+                        r = set_status(db, plan_id, "active", by, b, note=f"Багц {batch}-ийг буцаав.", apply=True)
                     else:
                         m = _managed(db, plan_id)
                         before = prices(m.product_id)

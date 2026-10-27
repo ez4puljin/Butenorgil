@@ -164,7 +164,7 @@ def xlsx(_: User = Depends(get_current_user)):
                    r["since_count"], ", ".join(f"{x:,.0f}" for x in r["since_prices"]),
                    STATUS_LABEL.get(r["status"], r["status"]), r["others"],
                    "; ".join(f'{p["name"]} ({p["type"]} {p["value"]})' for p in r["plans"]),
-                   {"create": "Plan үүсгэх", "update": "Plan засах"}.get(r["action"], "")
+                   {"create": "Plan үүсгэх", "update": "Plan засах", "archive": "Plan архивлах"}.get(r["action"], "")
                    + (" — шалгах" if r["review"] else "") + (" (бутархай үнэ)" if r.get("fractional") else "")])
         ws.cell(ws.max_row, 22).fill = PatternFill("solid", start_color=fill.get(r["status"], "FFFFFF"))
     for c in ws[1]:

@@ -31,7 +31,7 @@ interface Row {
   plans: Plan[]; others: number; real: number | null; real_date: string; real_order: string;
   since_count: number; since_qty: number; since_prices: number[];
   diff_config: number | null; diff_config_pct: number | null; diff_real: number | null; diff_real_pct: number | null;
-  status: "eq" | "high" | "low" | "none"; action: "" | "create" | "update"; review: boolean; target: number | null;
+  status: "eq" | "high" | "low" | "none"; action: "" | "create" | "update" | "archive"; review: boolean; target: number | null;
 }
 interface Summary {
   eq: number; high: number; low: number; none: number; total: number; overlap: number; with_income: number;
@@ -53,7 +53,8 @@ const STATUS: Record<string, { label: string; dot: string; chip: string }> = {
   low:  { label: "Орлогоос доогуур",  dot: "🔴", chip: "bg-rose-50 text-rose-700 border-rose-200" },
   none: { label: "Орлогогүй",         dot: "⚪", chip: "bg-gray-50 text-gray-500 border-gray-200" },
 };
-const TYPE_LABEL: Record<string, string> = { fixed: "тогтмол", subtraction: "хасах", percentage: "%" };
+const SUGGEST_LABEL: Record<string, string> = { create: "Plan үүсгэх", update: "Plan засах", archive: "Plan архивлах" };
+const TYPE_LABEL: Record<string, string> ={ fixed: "тогтмол", subtraction: "хасах", percentage: "%" };
 const LOCS = [{ id: "7", name: "05 Хархорин агуулах" }, { id: "6", name: "04 Хархорин заал" }];
 
 function ub(iso?: string | null) {
@@ -416,7 +417,7 @@ export default function PriceCost() {
                         <td className="px-2 py-1.5 whitespace-nowrap">
                           {r.action && (
                             <>
-                              <div className="text-indigo-700">{r.action === "create" ? "Plan үүсгэх" : "Plan засах"} → {m(r.income)}</div>
+                              <div className="text-indigo-700">{SUGGEST_LABEL[r.action]} → {m(r.income)}</div>
                               {r.target != null && (
                                 <div className="text-[10.5px] text-gray-400">
                                   хасах {m(r.target)} ({r.target < 0 ? "+" : "−"}{m(Math.abs(r.target))}₮)
@@ -614,7 +615,7 @@ function ConfirmSheet({ rows, busy, onCancel, onOk }: { rows: Row[]; busy: boole
                 return (
                   <tr key={r.code} className="border-t border-gray-50">
                     <td className="py-1"><span className="font-mono text-gray-500">{r.code}</span> {r.name}</td>
-                    <td className="py-1 text-gray-600">{r.action === "create" ? "үүсгэх" : "засах"} (хасах {m(r.target)})</td>
+                    <td className="py-1 text-gray-600">{r.action === "archive" ? "архивлах (үндсэн үнэ = орлого)" : `${r.action === "create" ? "үүсгэх" : "засах"} (хасах ${m(r.target)})`}</td>
                     <td className="py-1 text-right tabular-nums">{m(r.config)} → <b>{m(r.income)}</b></td>
                     <td className="py-1 text-right tabular-nums text-gray-600">
                       {r.zaal != null ? <>{m(r.zaal)} → {m(r.zaal + d)} <span className="text-[10.5px] text-gray-400">({d > 0 ? "+" : ""}{m(d)})</span></> : "—"}
@@ -672,7 +673,7 @@ function AuditPanel({ isAdmin, busy, onRollback }: { isAdmin: boolean; busy: boo
       {rows === null && <div className="text-gray-400">Ачаалж байна…</div>}
       {rows?.length === 0 && <div className="text-gray-400">Одоогоор өөрчлөлт алга.</div>}
       {batches.map(([b, items]) => {
-        const canUndo = isAdmin && items.some(i => i.action === "create" || i.action === "update");
+        const canUndo = isAdmin && items.some(i => i.action === "create" || i.action === "update" || i.action === "deactivate");
         return (
           <div key={b} className="mb-2 rounded-lg border border-gray-100 p-2">
             <div className="mb-1 flex items-center gap-2 text-gray-500">

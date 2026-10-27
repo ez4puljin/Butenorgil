@@ -488,6 +488,8 @@ def build(db) -> dict:
             target = plan_target(own_v, cfg, income)
             if own_p is not None:
                 action = "" if own_v is not None and abs(cfg - income) < TOL else "update"
+                if action and target == 0:
+                    action = "archive"      # үндсэн үнэ аль хэдийн = орлого → манай plan илүүц
             elif status != "eq":
                 action = "create"
             review = bool(action) and (not guard(income, cfg if own_p else prev_income, s["guard_pct"])
