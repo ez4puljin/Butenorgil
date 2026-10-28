@@ -6,28 +6,15 @@ class Settings(BaseSettings):
     jwt_alg: str = "HS256"
     access_token_minutes: int = 720  # 12 цаг
     cors_origins: list[str] = ["*"]
-    gemini_api_key: str = ""   # env: GEMINI_API_KEY (aistudio.google.com-д үнэгүй авна)
-    # AI чатын модел — function calling дэмждэг байх ёстой. env: GEMINI_CHAT_MODEL
-    # Flash-Lite: хамгийн хямд ($0.30/$2.50 vs $0.75/$3.75) бөгөөд үнэгүй
-    # багц дээр 15 RPM (3.x Flash-ийн 10-аас их). Чат нь хэрэглээ ихтэй тул энд.
-    gemini_chat_model: str = "gemini-3.5-flash-lite"
-    # Flash-Lite заримдаа tool дуудалгүй "алдаа гарлаа" гэж хариулдаг (хэмжилтээр
-    # 1/3 л зөв). Tool дуудагдаагүй үед энэ илүү найдвартай модел дээр нэг удаа
-    # давтана — ихэнх хүсэлт хямдаар, шаардлагатай үед найдвартайгаар ажиллана.
-    # Хоосон болговол fallback хийхгүй. env: GEMINI_CHAT_FALLBACK_MODEL
-    gemini_chat_fallback_model: str = "gemini-3.5-flash"
-    # Зураг таних модел (Шинэ бараа цэс) — хэрэглээ бага, чанар чухал тул
-    # илүү хүчтэй Flash. env: GEMINI_VISION_MODEL
-    gemini_vision_model: str = "gemini-3.5-flash"
 
     # ── Claude AI (app/ai) — key ЗӨВХӨН .env-д ───────────────────────────
     anthropic_api_key: str = ""                  # env: ANTHROPIC_API_KEY
     ai_model_chat: str = "claude-haiku-5-5"      # env: AI_MODEL_CHAT — асуулт хариулт, тайлан
     ai_model_invoice: str = "claude-sonnet-5-5"  # env: AI_MODEL_INVOICE — падаан, зураг унших
     # Сарын нийт зардал энэ хэмжээнд хүрвэл chat зогсоно (USD). env: AI_MONTHLY_BUDGET_USD
-    ai_monthly_budget_usd: float = 180.0
+    ai_monthly_budget_usd: float = 25.0
     # Падаан / зураг уншихыг энэ хүртэл зөвшөөрнө (Anthropic-ийн $200 хязгаараас өмнө). env: AI_INVOICE_BUDGET_USD
-    ai_invoice_budget_usd: float = 195.0
+    ai_invoice_budget_usd: float = 25.0
     ai_daily_questions_per_user: int = 50        # env: AI_DAILY_QUESTIONS_PER_USER
     # Загварын үнэ ($ / 1 сая токен) — шинэ загвар нэмэх/үнэ өөрчлөгдвөл кодгүйгээр:
     # AI_PRICES='{"claude-haiku-5-5": {"in": 0.1, "out": 0.5, "cache_read": 0.01, "cache_write": 0.125}}'
@@ -93,5 +80,6 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"   # хуучин (ж: GEMINI_*) хувьсагч үлдсэн ч эхлэхэд саад болохгүй
 
 settings = Settings()

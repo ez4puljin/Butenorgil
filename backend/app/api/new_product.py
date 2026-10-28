@@ -302,66 +302,49 @@ def _remove_bg(image_bytes: bytes) -> tuple[str, bool]:
     return "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode(), False
 
 
-def _vision_models() -> list[str]:
-    ms = [settings.gemini_vision_model or "gemini-3.5-flash",
-          getattr(settings, "gemini_chat_model", "") or "gemini-3.5-flash-lite"]
-    out = []
-    for m in ms:
-        if m and m not in out:
-            out.append(m)
-    return out
+NP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"}, "foreign_name": {"type": "string"}, "weight_kg": {"type": "number"},
+        "barcode": {"type": "string"}, "pack_ratio": {"type": "integer"}, "suggested_category": {"type": "string"},
+    },
+    "required": ["name", "foreign_name", "weight_kg", "barcode", "pack_ratio", "suggested_category"],
+    "additionalProperties": False,
+}
 
 
-def _analyze_with_gemini(photos: list[bytes], brand: str, categories: list[str]) -> dict:
-    if not settings.gemini_api_key:
-        raise HTTPException(500, "Gemini API key тохируулагдаагүй (backend/.env → GEMINI_API_KEY).")
-    try:
-        from google import genai as ggenai  # type: ignore
-        from PIL import Image as PILImage  # type: ignore
-    except ImportError:
-        raise HTTPException(500, "google-genai пакет суугаагүй.")
-    # Ачаалалтай (503) үед SDK-ийн анхдагч олон дахин оролдлого ~20с иддэг — нэг удаа
-    # оролдоод шууд дараагийн (нөөц) модел руу шилжинэ.
-    try:
-        from google.genai import types as gtypes  # type: ignore
-        client = ggenai.Client(api_key=settings.gemini_api_key, http_options=gtypes.HttpOptions(
-            timeout=60_000, retry_options=gtypes.HttpRetryOptions(attempts=1)))
-    except Exception:
-        client = ggenai.Client(api_key=settings.gemini_api_key)
+def _analyze_with_ai(db: Session, user, photos: list[bytes], brand: str, categories: list[str]) -> dict:
+    """Савлагааны зургийг Claude-аар (AI_MODEL_INVOICE) уншина — бүтэцтэй JSON (structured outputs)."""
+    from app.ai import client as ai
+    from app.ai.errors import AIError
+    from app.ai.images import image_block, to_jpeg
     cat_list = "; ".join(categories[:120]) if categories else "мэдэгдэхгүй"
-    prompt = f"""Та барааны савлагааны зургуудыг уншиж, ЗӨВХӨН JSON буцаана:
-{{"name": "...", "foreign_name": "...", "weight_kg": 0.0, "barcode": "", "pack_ratio": 0, "suggested_category": "..."}}
-Дүрэм:
+    prompt = f"""Барааны савлагааны зургуудыг уншиж талбаруудыг бөглө.
 - name: Монгол бараа нэрлэх хэв маягаар — «Брэнд/нэр + төрөл + хэмжээ», ж: «Jacobs Monarch кофе 95гр», «Coca-Cola 1.5л».
 - foreign_name: савлагаан дээрх латин/орос бүтэн нэр.
 - weight_kg: НЭГ ширхгийн цэвэр жин/эзэлхүүн кг-аар (гр→/1000, мл≈гр, л≈кг). Олдохгүй бол 0.
-- barcode: EAN-13/EAN-8 цифрүүд (хэд байвал таслалаар). Олдохгүй бол "".
+- barcode: EAN-13/EAN-8 цифрүүд (хэд байвал таслалаар). Олдохгүй бол "". Зураг дээр тод харагдаагүй цифрийг бүү таамагла.
 - pack_ratio: хайрцаг/багц дахь ширхэг (24ш, 12x гэх мэт) харагдвал тоо, үгүй бол 0.
 - suggested_category: Доорх жагсаалтаас ЯГ нэгийг нь (кодтой нь) сонгоно: {cat_list}
 Бренд (хэрэглэгч оруулсан): {brand or "тодорхойгүй"}"""
-    parts: list = [prompt]
-    for b in photos[:5]:
-        parts.append(PILImage.open(io.BytesIO(b)).convert("RGB"))
-    last_err = ""
-    for model in _vision_models():
-        try:
-            resp = client.models.generate_content(model=model, contents=parts)
-            raw = resp.text or "{}"
-            m = re.search(r"\{.*\}", raw, re.S)
-            data = json.loads(m.group()) if m else {}
-            data["_model"] = model
-            return data
-        except json.JSONDecodeError:
-            return {"_model": model}
-        except Exception as e:  # noqa: BLE001
-            last_err = str(e)
-            print(f"[new-product] {model}: {last_err[:160]}")
-            if "api_key" in last_err.lower() or "API_KEY_INVALID" in last_err:
-                raise HTTPException(500, "Gemini API key буруу.")
-            continue   # 503 (ачаалал) / 429 / бусад → дараагийн модел
-    if "429" in last_err or "RESOURCE_EXHAUSTED" in last_err:
-        raise HTTPException(429, "Gemini хязгаарт хүрлээ — хэсэг хүлээгээд дахин оролдоно уу.")
-    raise HTTPException(503, "AI одоогоор ачаалалтай байна — хэсэг хүлээгээд дахин оролдоно уу (эсвэл гараар бөглөнө).")
+    try:
+        blocks = [image_block(to_jpeg(b)) for b in photos[:5]]
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Зургийг уншиж чадсангүй — JPG/PNG зураг оруулна уу.")
+    try:
+        ai.check(db, user, "new_product")
+        resp = ai.create(user, "new_product", max_tokens=1000, output_config={
+            "effort": "low", "format": {"type": "json_schema", "schema": NP_SCHEMA}},
+            messages=[{"role": "user", "content": [*blocks, {"type": "text", "text": prompt}]}])
+    except AIError as e:
+        raise HTTPException(e.status, e.message)
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    try:
+        data = json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        data = {}
+    data["_model"] = resp.model
+    return data
 
 
 def _match_category(suggested: str) -> tuple[str, str]:
@@ -440,7 +423,7 @@ async def analyze_product(
     cats = [f"{c['code']} {c['name']}" if not c["name"].startswith(c["code"]) else c["name"]
             for c in sorted(r["categories"].values(), key=lambda c: c["code"])]
     brand_code, brand_name = _match_brand(brand)
-    ai = _analyze_with_gemini(pb, brand_name or brand, cats)
+    ai = _analyze_with_ai(db, _u, pb, brand_name or brand, cats)
     cat_code, cat_name = _match_category(str(ai.get("suggested_category", "")))
     code = next_code(db, cat_code) if cat_code else ""
     defaults = template_defaults(cat_code, brand_code)

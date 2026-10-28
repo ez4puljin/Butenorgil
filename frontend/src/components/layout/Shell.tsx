@@ -11,6 +11,7 @@ Boxes, Repeat, BadgeDollarSign, Gauge, } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 import ConnectionBanner from "../ConnectionBanner";
 import DailyGreeting from "../DailyGreeting";
+import AiAssistant from "../ai/AiAssistant";
 
 type NavItem = {
   to: string;
@@ -392,6 +393,11 @@ export default function Shell(props: { children: React.ReactNode }) {
 
       {/* Drawer */}
       {Drawer}
+
+      {/* AI туслах — бүх цэсэнд баруун доод буланд (эрхтэй хэрэглэгчид) */}
+      {visible.some(n => n.pageKey === "ai_chat") && (
+        <div className="print:hidden"><AiAssistant menu={pageTitle} raised={hideBottomNav} /></div>
+      )}
     </div>
   );
 }

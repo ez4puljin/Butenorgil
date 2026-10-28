@@ -44,7 +44,7 @@ def new_question_id() -> str:
 
 
 def check(db, user, feature: str, question: bool = False) -> None:
-    """Сарын төсөв (chat 180$, бусад 195$) болон хэрэглэгчийн өдрийн асуултын тоог шалгана."""
+    """Сарын төсөв (chat: AI_MONTHLY_BUDGET_USD, бусад: AI_INVOICE_BUDGET_USD) болон хэрэглэгчийн өдрийн асуултын тоог шалгана."""
     if not configured():
         raise NOT_CONFIGURED
     spent, limit = usage.month_spend(db), usage.budget_for(feature)
@@ -70,3 +70,21 @@ def create(user, feature: str, question_id: str = "", **kwargs):
         raise err from e
     usage.log(user, feature, model, resp.usage, question_id)
     return resp
+
+
+def stream(user, feature: str, question_id: str = "", **kwargs):
+    """messages.stream — ("text", str) хэсгүүдийг, төгсгөлд ("final", Message)-ийг yield хийнэ.
+    Зарцуулалт create()-тэй адил бичигдэнэ."""
+    model = kwargs.pop("model", None) or model_for(feature)
+    try:
+        with get_client().messages.stream(model=model, **kwargs) as s:
+            for text in s.text_stream:
+                yield "text", text
+            resp = s.get_final_message()
+    except Exception as e:  # noqa: BLE001
+        err = translate(e)
+        if err.code != "not_configured":
+            usage.log(user, feature, model, None, question_id, error=f"{err.code}: {e}"[:300])
+        raise err from e
+    usage.log(user, feature, model, resp.usage, question_id)
+    yield "final", resp

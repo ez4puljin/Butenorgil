@@ -63,7 +63,17 @@ app = FastAPI(title=settings.app_name)
 # minimum_size: жижиг хариултыг шахах нь ашиггүй (CPU дэмий зарцуулна).
 # compresslevel: default 9 нь 22 MB биед 0.29 сек CPU иддэг бөгөөд event
 # loop-ыг блоклоно. 6 нь 0.18 сек, ердөө 60 KB илүү — LAN дээр зөв тэнцвэр.
-app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+class _GZip(GZipMiddleware):
+    """AI чатын урсгалыг (NDJSON) шахахгүй — gzip нь хэсгүүдийг цуглуулж байгаад нэг дор илгээдэг."""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith("/ai-chat/stream"):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+app.add_middleware(_GZip, minimum_size=1024, compresslevel=6)
 
 app.add_middleware(
     CORSMiddleware,
