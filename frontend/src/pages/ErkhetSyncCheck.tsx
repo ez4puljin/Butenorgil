@@ -15,7 +15,7 @@ interface Cfg { stageId: string; title: string; pipelineId: string; userEmail: s
 interface Meta {
   boards: Board[]; defaultBoardId: string; configs: Cfg[];
   dateTypes: { value: string; label: string }[];
-  statuses: Record<string, { severity: Sev; label: string }>;
+  statuses: Record<string, { severity: Sev; label: string; short?: string }>;
   canResync: boolean;
 }
 interface Hist {
@@ -31,6 +31,12 @@ interface ItemData {
   erkhet_bill: string; erkhet_customer: string; erkhet_date: string; last_sync_at: string | null;
   pay_label: string; resp_codes: string[]; status_sev: Record<string, Sev>; notes: string[];
   amounts: Record<string, number>; last_user: string; hists: Hist[];
+  kind?: "sale" | "move"; erk?: ErkCmp | null;
+}
+interface ErkCmp {
+  docs: { tr_id: number; date: string; total: number; lines: number; accounts: string[]; user: string }[];
+  diff: { code: string; name: string; deal_qty: number; erk_qty: number; deal_amount: number; erk_amount: number }[];
+  total: number;
 }
 interface Item {
   deal_id: string; number: string; name: string; pipeline_id: string; stage_id: string; category: string;
@@ -86,10 +92,54 @@ function StatusBadges({ item, meta }: { item: Item; meta: Meta | null }) {
         const sev = (item.data.status_sev?.[s] ?? meta?.statuses[s]?.severity ?? (s === "OK" ? "ok" : "info")) as Sev;
         return (
           <span key={s} title={meta?.statuses[s]?.label ?? s}
-            className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ring-1 ${SEV_STYLE[sev]}`}>{s}</span>
+            className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ring-1 ${SEV_STYLE[sev]}`}>{meta?.statuses[s]?.short ?? s}</span>
         );
       })}
     </div>
+  );
+}
+
+function ErkSection({ d }: { d: ItemData }) {
+  const e = d.erk!;
+  const move = d.kind === "move";
+  return (
+    <section>
+      <h3 className="mb-1 text-[11px] font-bold uppercase tracking-wider text-gray-500">
+        Эрхэтийн баримттай тулгалт ({move ? "хөдөлгөөн — тоо ширхгээр" : "борлуулалт — tickUsed бараа, дүн, дт:120101"})
+      </h3>
+      {e.docs.length === 0 && <div className="text-rose-600">Эрхэтэд энэ дугаартай баримт олдсонгүй</div>}
+      <div className="space-y-1">
+        {e.docs.map(x => (
+          <div key={x.tr_id} className={`rounded-lg px-2 py-1 ${e.docs.length > 1 ? "bg-rose-50" : "bg-gray-50"}`}>
+            <span className="font-mono">#{x.tr_id}</span> · {x.date} · {x.lines} мөр · <b className="font-mono">{fmt(x.total)}</b>
+            {!move && <> · дт: <b className={x.accounts.includes("120101") ? "text-emerald-700" : "text-rose-600"}>{x.accounts.join(", ") || "алга"}</b></>}
+            {x.user && <span className="text-gray-500"> · {x.user}</span>}
+          </div>
+        ))}
+      </div>
+      {e.diff.length > 0 ? (
+        <div className="mt-1.5 overflow-auto rounded-lg border border-rose-200">
+          <table className="w-full text-[11px]">
+            <thead className="bg-rose-50 text-left text-gray-600">
+              <tr><th className="px-2 py-1">Код</th><th className="px-2 py-1">Нэр</th><th className="px-2 py-1 text-right">Deal тоо</th>
+                <th className="px-2 py-1 text-right">Эрхэт тоо</th>
+                {!move && <><th className="px-2 py-1 text-right">Deal дүн</th><th className="px-2 py-1 text-right">Эрхэт дүн</th></>}</tr>
+            </thead>
+            <tbody>
+              {e.diff.map(x => (
+                <tr key={x.code} className="border-t border-rose-100">
+                  <td className="px-2 py-1 font-mono">{x.code}</td><td className="px-2 py-1">{x.name}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{x.deal_qty}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${x.deal_qty !== x.erk_qty ? "font-bold text-rose-600" : ""}`}>{x.erk_qty}</td>
+                  {!move && <><td className="px-2 py-1 text-right font-mono">{fmt(x.deal_amount)}</td>
+                    <td className={`px-2 py-1 text-right font-mono ${Math.abs(x.deal_amount - x.erk_amount) > 1 ? "font-bold text-rose-600" : ""}`}>{fmt(x.erk_amount)}</td></>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : e.docs.length > 0 && <div className="mt-1 text-emerald-700">tickUsed бараа бүгд {move ? "тоо ширхгээрээ" : "тоо ширхэг, дүнгээрээ"} таарч байна</div>}
+    </section>
   );
 }
 
@@ -325,7 +375,7 @@ export default function ErkhetSyncCheck({ embedded = false }: { embedded?: boole
                 <button key={s} onClick={() => { setFStatus(fStatus === s ? "" : s); setFSev(""); }}
                   title={meta?.statuses[s]?.label}
                   className={`rounded-lg px-2 py-1 text-[11px] font-semibold ring-1 ${fStatus === s ? "ring-2 ring-indigo-500 " : ""}${SEV_STYLE[sev]}`}>
-                  {s} · {v.n} · {fmt(v.amount)}
+                  {meta?.statuses[s]?.short ?? s} · {v.n} · {fmt(v.amount)}
                 </button>
               );
             })}
@@ -463,12 +513,13 @@ function DealDrawer({ item, meta, onClose }: { item: Item; meta: Meta | null; on
             <h3 className="mb-1 text-[11px] font-bold uppercase tracking-wider text-gray-500">Дүн</h3>
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(d.amounts ?? {}).map(([k, v]) => <div key={k} className="rounded-lg bg-gray-50 px-2 py-1">
-                <div className="text-[10px] text-gray-500">{({ deal: "Deal", debt: "Илгээсэн авлага", erkhet: "Эрхэтийн дүн", payments: "paymentsData" } as any)[k] ?? k}</div>
+                <div className="text-[10px] text-gray-500">{({ deal: "Deal", debt: "Илгээсэн авлага", erkhet: "Эрхэтийн дүн", erkhet_cost: "Эрхэт (өртгөөр)", payments: "paymentsData (мэдээлэл)" } as any)[k] ?? k}</div>
                 <div className="font-mono">{fmt(v)}</div></div>)}
               <div className="rounded-lg bg-gray-50 px-2 py-1"><div className="text-[10px] text-gray-500">Бараа (tickUsed {d.products.used}/{d.products.count})</div>
                 <div className="font-mono">{fmt(d.products.sum_used)}{d.products.sum_all !== d.products.sum_used ? ` / бүгд ${fmt(d.products.sum_all)}` : ""}</div></div>
             </div>
           </section>
+          {d.erk && <ErkSection d={d}/>}
           <section>
             <h3 className="mb-1 text-[11px] font-bold uppercase tracking-wider text-gray-500">paymentsData {d.payments_bad && <span className="text-rose-600">— буруу бүтэцтэй</span>}</h3>
             <pre className={`overflow-auto rounded-lg px-2 py-1.5 text-[11px] ${d.payments_bad ? "bg-rose-50 text-rose-800" : "bg-gray-50"}`}>{JSON.stringify(d.paymentsData, null, 1)}</pre>

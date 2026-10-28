@@ -65,7 +65,7 @@ def meta(fresh: bool = False, db: Session = Depends(get_db), u: User = Depends(r
     default_board = next((b["_id"] for b in boards if svc.BOARD_DEFAULT in b["name"]), boards[0]["_id"] if boards else "")
     return {"boards": boards, "defaultBoardId": default_board, "configs": m["configs"],
             "dateTypes": [{"value": v, "label": l} for v, l in svc.DATE_TYPES],
-            "statuses": {k: {"severity": s, "label": l} for k, (s, l) in svc.STATUS_INFO.items()},
+            "statuses": {k: {"severity": s, "label": l, "short": sh} for k, (s, l, sh) in svc.STATUS_INFO.items()},
             "canResync": (getattr(u, "base_role", None) or u.role) == "admin"}
 
 

@@ -4,9 +4,19 @@
 import json
 import unittest
 
-from app.services.erkhet_deal_check import classify, default_category, parse_history, ub_range
+from app.services.erkhet_deal_check import (classify, compare_erkhet, deal_items, debit_accounts, default_category,
+                                            parse_history, ub_range)
 
 CREATED = "2026-10-12T03:00:00.000Z"          # УБ 2026-10-12
+CODES = {"p1": "102069", "p2": "102072", "p3": "102099"}
+PRODS = [{"productId": "p1", "quantity": 6, "amount": 108000, "tickUsed": True},
+         {"productId": "p2", "quantity": 6, "amount": 84000, "tickUsed": True},
+         {"productId": "p3", "quantity": 2, "amount": 44000, "tickUsed": False}]
+
+
+def line(code, qty, total, tr=13477348, kind=-29, acc="кт:311004, дт:120101"):
+    return {"kind": kind, "tr_id": tr, "date": "2026-10-12", "code": code, "name": code, "qty": qty,
+            "total": total, "accounts": acc}
 
 
 def hist(order: dict, resp, error=None, at="2026-10-12T05:00:00Z"):
@@ -109,6 +119,83 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(default_category("XТ захиалга"), "pending")       # латин X
         self.assertEqual(default_category("Баримт хэвлэх"), "expected")
         self.assertEqual(default_category("Устгах"), "cancel")
+
+    # ── Эрхэтийн бодит баримттай тулгах (compare_erkhet) ──────────────────────
+    def test_sale_matches_erkhet(self):
+        items = deal_items(PRODS, CODES)
+        self.assertEqual(set(items), {"102069", "102072"})             # tickUsed=false хасагдсан
+        erk = compare_erkhet("sale", items, 192000, [line("102069", 6, 108000), line("102072", 6, 84000)])
+        self.assertEqual(erk["statuses"], [])
+        r = classify(category="expected", payments_data={"other": {"amount": 236000}}, deal_amount=192000,
+                     created_at=CREATED, check=SYNCED, hists=[hist({"debtAmount": 192000}, resp("PAYMENT_CARD", 192000))],
+                     erk=erk)
+        self.assertEqual(r["statuses"], ["OK"])                          # paymentsData хуучирсан ч асуудалгүй
+        self.assertEqual(r["amounts"]["erkhet"], 192000)
+
+    def test_sale_amount_and_item_diff(self):
+        """Deal-ээс бараа хассан (tickUsed=false) ч Эрхэтэд хуучнаараа үлдсэн."""
+        items = deal_items(PRODS, CODES)
+        erk = compare_erkhet("sale", items, 192000, [line("102069", 6, 108000), line("102072", 6, 84000),
+                                                     line("102099", 2, 44000)])
+        self.assertIn("SALES_AMOUNT_DIFF", erk["statuses"])
+        self.assertIn("ITEMS_DIFF", erk["statuses"])
+        self.assertEqual(erk["diff"][0]["code"], "102099")
+        r = classify(category="expected", payments_data={}, deal_amount=192000, created_at=CREATED, check=SYNCED,
+                     hists=[], erk=erk)
+        self.assertEqual(r["severity"], "error")
+        self.assertNotIn("OK", r["statuses"])
+
+    def test_sale_qty_diff_same_total(self):
+        erk = compare_erkhet("sale", {"A": {"qty": 2, "amount": 100}}, 100, [line("A", 1, 100)])
+        self.assertEqual(erk["statuses"], ["ITEMS_DIFF"])
+
+    def test_sale_no_receivable(self):
+        erk = compare_erkhet("sale", {"A": {"qty": 1, "amount": 100}}, 100, [line("A", 1, 100, acc="")])
+        self.assertEqual(erk["statuses"], ["CASH"])
+        r = classify(category="expected", payments_data={}, deal_amount=100, created_at=CREATED, check=SYNCED,
+                     hists=[], erk=erk)
+        self.assertEqual(r["status_sev"]["CASH"], "error")
+
+    def test_duplicate(self):
+        erk = compare_erkhet("sale", {"A": {"qty": 1, "amount": 100}}, 100,
+                             [line("A", 1, 100, tr=1), line("A", 1, 100, tr=2)])
+        self.assertEqual(erk["statuses"], ["DUPLICATE"])                 # сүүлийнх нь таарч байгаа
+        self.assertEqual(len(erk["docs"]), 2)
+
+    def test_move_qty_only(self):
+        """Хөдөлгөөн: Эрхэт өртгөөр (үнэ 0) — зөвхөн тоо; авлага шаардахгүй; paymentsData хамаагүй."""
+        items = {"923040": {"qty": 50, "amount": 250000}}
+        ok = compare_erkhet("move", items, 250000, [line("923040", 50, 0, kind=-5, acc="")])
+        self.assertEqual(ok["statuses"], [])
+        r = classify(category="expected", payments_data={"totalAmount": 1}, deal_amount=250000, created_at=CREATED,
+                     check=SYNCED, hists=[hist({}, resp("CASH", 0))], kind="move", erk=ok)
+        self.assertEqual(r["statuses"], ["OK"])
+        bad = compare_erkhet("move", items, 250000, [line("923040", 40, 0, kind=-5, acc="")])
+        self.assertEqual(bad["statuses"], ["ITEMS_DIFF"])
+
+    def test_wrong_kind_and_missing(self):
+        erk = compare_erkhet("sale", {"A": {"qty": 1, "amount": 100}}, 100, [line("A", 1, 0, kind=-5)])
+        self.assertIn("WRONG_KIND", erk["statuses"])
+        r = classify(category="expected", payments_data={}, deal_amount=100, created_at=CREATED, check=SYNCED,
+                     hists=[], erk=erk)
+        self.assertIn("NOT_IN_ERKHET", r["statuses"])
+
+    def test_pending_cash_info_but_amount_diff_warn(self):
+        """2026/10/28-0042: бэлдэж буй deal-ээс бараа хассан — Эрхэтэд 676,390 хэвээр, deal 632,390."""
+        erk = compare_erkhet("sale", {"A": {"qty": 1, "amount": 100}}, 100, [line("A", 1, 100, acc="")])
+        r = classify(category="pending", payments_data={}, deal_amount=100, created_at=CREATED, check=SYNCED,
+                     hists=[hist({}, resp("CASH", 100))], erk=erk)
+        self.assertEqual(r["severity"], "info")
+        erk = compare_erkhet("sale", {"A": {"qty": 1, "amount": 100}}, 100,
+                             [line("A", 1, 100, acc=""), line("B", 20, 44000, acc="")])
+        r = classify(category="pending", payments_data={}, deal_amount=100, created_at=CREATED, check=SYNCED,
+                     hists=[hist({}, resp("CASH", 44100))], erk=erk)
+        self.assertEqual(r["status_sev"]["SALES_AMOUNT_DIFF"], "warn")
+        self.assertEqual(r["status_sev"]["CASH"], "info")
+
+    def test_debit_accounts(self):
+        self.assertEqual(debit_accounts("кт:311004, дт:120101"), {"120101"})
+        self.assertEqual(debit_accounts(""), set())
 
     def test_ub_range(self):
         a, b = ub_range("2026-10-15", "2026-10-15")

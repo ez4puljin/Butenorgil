@@ -45,22 +45,35 @@ DEFAULT_STAGE_NAMES = {
     "cancel": ["Захиалга устгах", "Захиалга хадгалах/устгах", "Устгах Захиалга", "Устгах", "Цуцлах баримт"],
 }
 
-# Статус → (ноцтой байдал, монгол тайлбар)
+# Статус → (ноцтой байдал, монгол тайлбар, богино нэр)
 STATUS_INFO = {
-    "BAD_PAYMENTS": ("error", "paymentsData буруу бүтэцтэй («undefined» очсон)"),
-    "NOT_IN_ERKHET": ("error", "Эрхэт дээр алга"),
-    "CASH": ("error", "Бэлнээр бүртгэгдсэн — авлага үүсээгүй"),
-    "NO_RESPONSE": ("warn", "Эрхэтээс хариу ирээгүй"),
-    "SYNC_ERROR": ("error", "Sync алдаатай"),
-    "AMOUNT_DIFF": ("warn", "Дүн зөрүүтэй (deal / илгээсэн / Эрхэт)"),
-    "PAYMENTS_DIFF": ("info", "paymentsData-ийн дүн шинэчлэгдээгүй (Эрхэтийн дүн зөв)"),
-    "DATE_MISMATCH": ("warn", "Огноо зөрүүтэй"),
-    "CANCEL_IN_ERKHET": ("warn", "Цуцлах stage боловч Эрхэт дээр байгаа"),
-    "NO_HISTORY": ("warn", "Эрхэт дээр байгаа ч sync түүх олдсонгүй"),
-    "PENDING": ("info", "Эцэслээгүй (бэлтгэх шат)"),
-    "OK": ("ok", "Зөв — авлага үүссэн"),
+    "BAD_PAYMENTS": ("error", "paymentsData буруу бүтэцтэй («undefined» очсон)", "paymentsData буруу"),
+    "NOT_IN_ERKHET": ("error", "Эрхэт дээр алга", "Эрхэтэд алга"),
+    "DUPLICATE": ("error", "Эрхэт дээр давхар үүссэн (нэг deal-ийн дугаартай 2+ баримт)", "Давхар үүссэн"),
+    "WRONG_KIND": ("error", "Эрхэт дээр өөр төрлийн баримтаар орсон (борлуулалт ↔ хөдөлгөөн)", "Буруу төрлөөр"),
+    "CASH": ("error", "Авлага 120101 дээр үүсээгүй (бэлнээр бүртгэгдсэн)", "Авлага 120101-д алга"),
+    "SALES_AMOUNT_DIFF": ("error", "Борлуулалтын дүн зөрүүтэй — deal-ийн дүн (tickUsed) ≠ Эрхэтийн баримт",
+                          "Борлуулалтын дүн зөрүүтэй"),
+    "ITEMS_DIFF": ("error", "Бараа зөрүүтэй — tickUsed бараа тоо ширхэг/дүнгээрээ Эрхэтийн баримттай таарахгүй",
+                   "Бараа зөрүүтэй"),
+    "NO_RESPONSE": ("warn", "Эрхэтээс хариу ирээгүй", "Хариу ирээгүй"),
+    "SYNC_ERROR": ("error", "Sync алдаатай", "Sync алдаатай"),
+    "AMOUNT_DIFF": ("warn", "Дүн зөрүүтэй (deal / илгээсэн / Эрхэт)", "Дүн зөрүүтэй"),
+    "PAYMENTS_DIFF": ("info", "paymentsData-ийн дүн шинэчлэгдээгүй (Эрхэтийн дүн зөв)", "paymentsData хуучирсан"),
+    "DATE_MISMATCH": ("warn", "Огноо зөрүүтэй", "Огноо зөрүүтэй"),
+    "CANCEL_IN_ERKHET": ("warn", "Цуцлах stage боловч Эрхэт дээр байгаа", "Цуцалсан ч Эрхэтэд бий"),
+    "NO_HISTORY": ("warn", "Эрхэт дээр байгаа ч sync түүх олдсонгүй", "Sync түүхгүй"),
+    "PENDING": ("info", "Эцэслээгүй (бэлтгэх шат)", "Эцэслээгүй"),
+    "OK": ("ok", "Зөв — Эрхэтийн баримттай таарсан", "Зөв"),
 }
 _SEV_RANK = {"error": 3, "warn": 2, "info": 1, "ok": 0}
+
+# Эрхэтийн барааны гүйлгээний төрөл (inventory/trs kind): борлуулалт / хөдөлгөөн
+ERKHET_KIND = {"sale": -29, "move": -5}
+RECEIVABLE = "120101"                        # борлуулалтын deal-ийн авлагын данс (дт)
+# Эрхэтийн баримтын агуулгаас гарах статусууд — эдгээрийн аль нь ч байхгүй бол «таарсан»
+CONTENT_STATUSES = ("NOT_IN_ERKHET", "DUPLICATE", "WRONG_KIND", "CASH", "SALES_AMOUNT_DIFF", "ITEMS_DIFF")
+ERK_WINDOW = 3                               # Эрхэтээс татах цонх (өдөр)
 
 
 def _norm(s: str) -> str:
@@ -85,8 +98,13 @@ def default_category(stage_name: str) -> str:
 
 
 def default_pipeline_included(name: str) -> bool:
-    """Хөдөлгөөний pipeline ({Агуулах → Заал}) борлуулалт биш — анхнаасаа хасна."""
-    return "хөдөлгөөн" not in (name or "").lower()
+    """Бүх pipeline (хөдөлгөөнийх ч) анхнаасаа орно — хөдөлгөөнийг тоо ширхгээр нь шалгана."""
+    return True
+
+
+def pipeline_kind(name: str) -> str:
+    """{Агуулах → Заал} хөдөлгөөн → «move» (Эрхэтэд хөдөлгөөний баримт), бусад → «sale» (борлуулалт + авлага)."""
+    return "move" if "хөдөлгөөн" in (name or "").lower() else "sale"
 
 
 # ── Туслахууд ────────────────────────────────────────────────────────────────
@@ -212,32 +230,127 @@ def pay_label(last: dict | None) -> str:
     return ", ".join(ks) if ks else "CASH"
 
 
+def _money(v) -> float:
+    """Эрхэтийн «1,234.00» текст → тоо."""
+    try:
+        return float(str(v).replace(",", "")) if v not in (None, "") else 0.0
+    except ValueError:
+        return 0.0
+
+
+def debit_accounts(rel: str) -> set[str]:
+    """«кт:311004, дт:120101» → {"120101"} (зөвхөн дебет)."""
+    return {x.split(":", 1)[1].strip() for x in (rel or "").split(",") if x.strip().startswith("дт:")}
+
+
+def deal_items(products_data, codes: dict[str, str]) -> dict[str, dict]:
+    """tickUsed=true бараа → {код: {qty, amount, name}} (нэг код олон мөртэй бол нийлбэр)."""
+    out: dict[str, dict] = {}
+    for p in products_data or []:
+        if not isinstance(p, dict) or not p.get("tickUsed"):
+            continue
+        code = codes.get(p.get("productId") or "") or f"?{p.get('productId')}"
+        x = out.setdefault(code, {"qty": 0.0, "amount": 0.0, "name": ""})
+        x["qty"] += _num(p.get("quantity"))
+        x["amount"] += _num(p.get("amount"))
+    return out
+
+
+def compare_erkhet(kind: str, items: dict[str, dict], deal_total: float, lines: list[dict]) -> dict:
+    """Deal-ийн tickUsed бараа ↔ Эрхэтийн тухайн дугаартай баримт(ууд). Цэвэр функц — unit test-тэй.
+
+    lines — fetch_erkhet_lines-ийн мөрүүд (bill_number == deal-ийн дугаар). Борлуулалт: код бүрийн тоо + дүн
+    (НӨАТ-тэй), нийт дүн, дт:120101. Хөдөлгөөн: зөвхөн тоо (Эрхэт хөдөлгөөнийг өртгөөр бүртгэдэг — үнэгүй)."""
+    want = ERKHET_KIND[kind]
+    own = [x for x in lines if x["kind"] == want]
+    other = [x for x in lines if x["kind"] != want]
+    docs: dict[int, dict] = {}
+    for x in own:
+        d = docs.setdefault(x["tr_id"], {"tr_id": x["tr_id"], "date": x["date"], "total": 0.0, "lines": 0,
+                                         "accounts": set(), "user": x.get("user", "")})
+        d["total"] += x["total"]
+        d["lines"] += 1
+        d["accounts"] |= debit_accounts(x["accounts"])
+    st: list[str] = []
+    notes: list[str] = []
+    if other:
+        st.append("WRONG_KIND")
+        notes.append(f"Эрхэтэд {'хөдөлгөөн' if kind == 'sale' else 'борлуулалт'}ын баримтаар орсон "
+                     f"(#{', #'.join(str(t) for t in sorted({x['tr_id'] for x in other}))})")
+    if len(docs) > 1:
+        st.append("DUPLICATE")
+        notes.append("Эрхэтэд давхар: " + "; ".join(f"#{d['tr_id']} {d['date']} {d['total']:,.0f}₮"
+                                                   for d in sorted(docs.values(), key=lambda d: d["tr_id"])))
+    main = max(docs) if docs else None                  # давхар бол хамгийн сүүлийнхийг тулгана
+    erk: dict[str, dict] = {}
+    for x in own:
+        if x["tr_id"] != main:
+            continue
+        e = erk.setdefault(x["code"], {"qty": 0.0, "amount": 0.0, "name": x.get("name", "")})
+        e["qty"] += x["qty"]
+        e["amount"] += x["total"]
+    erk_total = round(sum(e["amount"] for e in erk.values()), 2)
+    diff = []
+    if main is not None:
+        for code in sorted(set(items) | set(erk)):
+            a, b = items.get(code) or {}, erk.get(code) or {}
+            dq, eq, da, ea = a.get("qty", 0.0), b.get("qty", 0.0), a.get("amount", 0.0), b.get("amount", 0.0)
+            if abs(dq - eq) > 0.001 or (kind == "sale" and abs(da - ea) > 1):
+                diff.append({"code": code, "name": b.get("name") or a.get("name") or "", "deal_qty": dq,
+                             "erk_qty": eq, "deal_amount": round(da, 2), "erk_amount": round(ea, 2)})
+        if diff:
+            st.append("ITEMS_DIFF")
+            notes.append(f"{len(diff)} бараа зөрүүтэй: " + ", ".join(
+                f"{x['code']} ({x['deal_qty']:g}→{x['erk_qty']:g})" for x in diff[:5]) + (" …" if len(diff) > 5 else ""))
+        if kind == "sale":
+            if abs(deal_total - erk_total) > 1:
+                st.append("SALES_AMOUNT_DIFF")
+                notes.append(f"Борлуулалт: deal {deal_total:,.0f} ≠ Эрхэт {erk_total:,.0f} "
+                             f"(зөрүү {deal_total - erk_total:+,.0f})")
+            if RECEIVABLE not in docs[main]["accounts"]:
+                st.append("CASH")
+                acc = ", ".join(sorted(docs[main]["accounts"])) or "дебет данс алга"
+                notes.append(f"Эрхэтийн баримт дт:{RECEIVABLE} биш ({acc})")
+    main_doc = docs.get(main) if main is not None else None
+    return {"found": bool(docs), "statuses": st, "notes": notes, "diff": diff[:300], "total": erk_total,
+            "date": main_doc["date"] if main_doc else "",
+            "docs": [{**d, "accounts": sorted(d["accounts"])} for d in sorted(docs.values(), key=lambda d: d["tr_id"])]}
+
+
 def classify(*, category: str, payments_data, deal_amount: float | None, created_at: str,
              check: dict | None, hists: list[dict], start: str = "", end: str = "",
-             expect_date_type: str = "created") -> dict:
+             expect_date_type: str = "created", kind: str = "sale", erk: dict | None = None) -> dict:
     """Deal-ийн статусууд (олон байж болно) + ноцтой байдал. Цэвэр функц — unit test-тэй.
 
-    hists — parse_history-ийн үр дүн (хуучнаас шинэ рүү эрэмблэгдсэн)."""
+    hists — parse_history-ийн үр дүн (хуучнаас шинэ рүү эрэмблэгдсэн).
+    erk — compare_erkhet-ийн үр дүн (Эрхэтийн бодит баримт). Байвал авлага/дүн/бараа/давхардлыг ҮҮГЭЭР шийднэ;
+    None (Эрхэтээс татаж чадаагүй) бол хуучин аргаар — sync түүхийн хариугаар."""
     st: list[str] = []
     notes: list[str] = []
     last = hists[-1] if hists else None
     # Эрхэт дээр үлдсэн баримт = хамгийн сүүлийн АМЖИЛТТАЙ sync (дараагийнх нь timeout болсон байж болно)
     eff = next((h for h in reversed(hists) if not h["no_response"] and h["resp_success"] is True
                 and h["resp_codes"]), None)
-    in_erkhet = bool(check and check.get("isSynced"))
+    in_erkhet = erk["found"] if erk is not None else bool(check and check.get("isSynced"))
+    if erk is not None and not erk["found"] and check and check.get("isSynced"):
+        notes.append("toCheckSynced «байгаа» гэсэн ч Эрхэтэд энэ дугаартай баримт олдсонгүй")
+    sale = kind == "sale"
 
-    if payments_bad(payments_data) or (last and last["has_undefined"]):
+    if sale and (payments_bad(payments_data) or (last and last["has_undefined"])):
         st.append("BAD_PAYMENTS")
     if category == "expected" and not in_erkhet:
         st.append("NOT_IN_ERKHET")
 
-    cash_sev = None
+    cash_sev = "error" if category == "expected" else "info" if category == "pending" else "warn"
     base = eff or (last if last and not last["no_response"] else None)
-    if in_erkhet and base:
+    if erk is not None:
+        if category != "cancel":
+            st += [s for s in erk["statuses"] if s not in st]
+            notes += erk["notes"]
+    elif sale and in_erkhet and base:
         codes = base["resp_codes"]
         if base["debt"] <= 0 or ("CASH" in codes and "PAYMENT_CARD" not in codes):
             st.append("CASH")
-            cash_sev = "error" if category == "expected" else "info" if category == "pending" else "warn"
             if base is not last:
                 notes.append("Сүүлийн sync амжилтгүй — Эрхэт дээр өмнөх бэлэн баримт үлдсэн")
     if last and last["no_response"]:
@@ -247,28 +360,37 @@ def classify(*, category: str, payments_data, deal_amount: float | None, created
     elif last and last["error"] and last["no_response"]:
         st.append("SYNC_ERROR")
 
-    # Дүн: deal, илгээсэн авлага, Эрхэтийн бүртгэсэн — зөрвөл AMOUNT_DIFF. paymentsData нь бараа хасагдсаны
-    # дараа шинэчлэгддэггүй тул тусад нь (PAYMENTS_DIFF, мэдээлэл) — 10/15–20-нд 201-ээс 42 ийм
     amounts = {}
-    if deal_amount:
-        amounts["deal"] = float(deal_amount)
-    if base and base["debt"] > 0:
-        amounts["debt"] = base["debt"]
-    if base and base["resp_total"]:
-        amounts["erkhet"] = float(base["resp_total"])
-    core = dict(amounts)
     ps = payments_sum(payments_data)
-    if ps:
-        amounts["payments"] = ps
-    if len(core) > 1 and max(core.values()) - min(core.values()) > 1:
-        st.append("AMOUNT_DIFF")
-        notes.append("Дүн: " + ", ".join(f"{k} {v:,.0f}" for k, v in amounts.items()))
-    elif ps and core and max(abs(ps - v) for v in core.values()) > 1:
-        st.append("PAYMENTS_DIFF")
-        notes.append(f"paymentsData {ps:,.0f} ≠ " + ", ".join(f"{k} {v:,.0f}" for k, v in core.items()))
+    if erk is not None:
+        # Гол шалгалт: deal-ийн дүн (tickUsed) ↔ Эрхэтийн баримт. paymentsData — зөвхөн мэдээлэл.
+        if deal_amount:
+            amounts["deal"] = float(deal_amount)
+        if erk["found"]:
+            amounts["erkhet" if sale else "erkhet_cost"] = erk["total"]      # хөдөлгөөн — өртгөөр
+        if ps and sale:
+            amounts["payments"] = ps
+    elif sale:
+        # Хуучин арга (Эрхэтийн баримт татаж чадаагүй үед): deal, илгээсэн авлага, Эрхэтийн хариу — зөрвөл
+        # AMOUNT_DIFF. paymentsData нь бараа хасагдсаны дараа шинэчлэгддэггүй тул тусад нь (PAYMENTS_DIFF)
+        if deal_amount:
+            amounts["deal"] = float(deal_amount)
+        if base and base["debt"] > 0:
+            amounts["debt"] = base["debt"]
+        if base and base["resp_total"]:
+            amounts["erkhet"] = float(base["resp_total"])
+        core = dict(amounts)
+        if ps:
+            amounts["payments"] = ps
+        if len(core) > 1 and max(core.values()) - min(core.values()) > 1:
+            st.append("AMOUNT_DIFF")
+            notes.append("Дүн: " + ", ".join(f"{k} {v:,.0f}" for k, v in amounts.items()))
+        elif ps and core and max(abs(ps - v) for v in core.values()) > 1:
+            st.append("PAYMENTS_DIFF")
+            notes.append(f"paymentsData {ps:,.0f} ≠ " + ", ".join(f"{k} {v:,.0f}" for k, v in core.items()))
 
-    # Огноо
-    erk_date = (check or {}).get("syncedDate") or ""
+    # Огноо — Эрхэтийн баримтын огноо (байвал), эс бөгөөс toCheckSynced / сүүлийн sync
+    erk_date = (erk or {}).get("date") or (check or {}).get("syncedDate") or ""
     erk_date = str(erk_date)[:10] if erk_date else (last["date"] if last else "")
     expect = ub_date(created_at) if expect_date_type == "created" else ""
     if in_erkhet and erk_date:
@@ -291,10 +413,31 @@ def classify(*, category: str, payments_data, deal_amount: float | None, created
     if in_erkhet and not last and category != "cancel":
         st.append("NO_HISTORY")
 
-    sev = {s: (cash_sev if s == "CASH" else STATUS_INFO[s][0]) for s in st}
+    sev = {s: STATUS_INFO[s][0] for s in st}
+    if "CASH" in sev:
+        sev["CASH"] = cash_sev
+    if erk is not None and category == "pending":
+        # Эцэслээгүй deal: бэлдэх config-оор бэлэн (CASH) байх нь хэвийн; гэвч Эрхэтэд аль хэдийн орсон баримтын
+        # дүн/бараа зөрвөл Эрхэтийн тайлан одоо буруу — анхааруулга
+        for s in CONTENT_STATUSES:
+            if s in sev and s != "CASH":
+                sev[s] = "warn"
+    # Эрхэтийн баримт бүрэн таарсан бол сүүлийн sync-ийн алдаа/хариугүй байдал нөлөөгүй (өмнөх sync үлдсэн)
+    content_ok = erk is not None and in_erkhet and category != "cancel" and not any(s in st for s in CONTENT_STATUSES)
+    if content_ok and ("SYNC_ERROR" in sev or "NO_RESPONSE" in sev):
+        for s in ("SYNC_ERROR", "NO_RESPONSE"):
+            if s in sev:
+                sev[s] = "info"
+        notes.append("Сүүлийн sync алдаатай ч Эрхэтийн баримт deal-тэй таарч байна")
     worst = max((sev[s] for s in st), key=lambda x: _SEV_RANK[x], default="ok")
-    if (in_erkhet and base and base["debt"] > 0 and "PAYMENT_CARD" in base["resp_codes"]
-            and worst != "error"):
+    if erk is not None:
+        ok = content_ok and worst != "error"
+    elif sale:
+        ok = bool(in_erkhet and base and base["debt"] > 0 and "PAYMENT_CARD" in base["resp_codes"]
+                  and worst != "error")
+    else:
+        ok = in_erkhet and worst != "error"
+    if ok:
         st.insert(0, "OK")
     if not st:
         if category == "pending":
@@ -303,7 +446,7 @@ def classify(*, category: str, payments_data, deal_amount: float | None, created
         else:
             st.append("OK")                     # cancel + Эрхэтэд байхгүй — зөв
     return {"statuses": st, "severity": worst, "status_sev": sev, "notes": notes,
-            "in_erkhet": in_erkhet, "pay_label": pay_label(base or last), "amounts": amounts,
+            "in_erkhet": in_erkhet, "pay_label": pay_label(base or last) if sale else "", "amounts": amounts,
             "erkhet_date": erk_date}
 
 
@@ -435,6 +578,72 @@ def check_synced(ids: list[str], progress: Callable[[str], None] | None = None) 
     return out
 
 
+def fetch_product_codes(ids) -> dict[str, str]:
+    """erxes productId → барааны код (идэвхтэй, дараа нь устгагдсан)."""
+    need = list(dict.fromkeys(i for i in ids if i))
+    out: dict[str, str] = {}
+    for status in (None, "deleted"):
+        rest = [i for i in need if i not in out]
+        for i in range(0, len(rest), 100):
+            chunk = rest[i:i + 100]
+            rows = _gql('query($ids:[String],$pp:Int,$st:String){ products(ids:$ids, perPage:$pp, status:$st)'
+                        '{ _id code } }', {"ids": chunk, "pp": len(chunk), "st": status}).get("products") or []
+            out.update({p["_id"]: (p.get("code") or "").strip() for p in rows})
+    return out
+
+
+def _erk_page(c, path: str) -> list[dict]:
+    from app.services.price_cost import items_from_response
+    for attempt in range(3):
+        try:
+            return items_from_response(c.ajax(path))
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(3 * (attempt + 1))
+    return []
+
+
+def fetch_erkhet_lines(d1: date, d2: date, progress: Callable[[str], None] | None = None
+                       ) -> dict[str, list[dict]]:
+    """Эрхэтийн барааны гүйлгээ (inventory/trs, ЗӨВХӨН уншина) — борлуулалт (-29) ба хөдөлгөөн (-5),
+    баримтын дугаар нь deal-ийн дугаар («2026/10/28-0066»). → {bill_number: [мөр]}.
+
+    Дугаараар (огноогүй) шүүвэл ~2 мин/deal удаан тул огнооны цонх + «YYYY/» угтвараар (POS-ын баримтыг хасна)."""
+    from urllib.parse import quote
+    from app.services.erkhet_client import get_client
+    c = get_client()
+    out: dict[str, list[dict]] = {}
+    seen: set = set()
+    for kind in ERKHET_KIND.values():
+        a = d1
+        while a <= d2:
+            b = min(d2, a + timedelta(days=ERK_WINDOW - 1))
+            for y in sorted({a.year, b.year}):
+                page = 1
+                while True:
+                    rows = _erk_page(c, f"inventory/trs/?kind={kind}&date1={a}&date2={b}"
+                                        f"&bill_number={quote(f'{y}/')}&paginate_by=500&page={page}")
+                    for x in rows:
+                        rid = x.get("record_id")
+                        if rid in seen:
+                            continue
+                        seen.add(rid)
+                        out.setdefault(str(x.get("bill_number") or "").strip(), []).append({
+                            "kind": int(x.get("kind") or kind), "tr_id": int(x.get("tr__id") or 0),
+                            "date": str(x.get("date") or "")[:10], "code": str(x.get("inventory__code") or "").strip(),
+                            "name": str(x.get("inventory__name") or "").strip(), "qty": _num(x.get("count")),
+                            "total": _money(x.get("total_with_vat")), "accounts": x.get("rel_accounts") or "",
+                            "location": x.get("inv_location__name") or "", "user": x.get("tr__user") or ""})
+                    if len(rows) < 500 or page > 200:
+                        break
+                    page += 1
+            if progress:
+                progress(f"Эрхэтийн {'борлуулалт' if kind == ERKHET_KIND['sale'] else 'хөдөлгөөн'}: {b.isoformat()}")
+            a = b + timedelta(days=1)
+    return out
+
+
 # ── Тохиргоо (DB) ────────────────────────────────────────────────────────────
 
 def load_settings(db) -> tuple[dict[str, str], dict[str, str]]:
@@ -447,6 +656,23 @@ def load_settings(db) -> tuple[dict[str, str], dict[str, str]]:
 
 def stage_category(stage_id: str, stage_name: str, saved: dict[str, str]) -> str:
     return saved.get(stage_id) or default_category(stage_name)
+
+
+def erk_window(deals: list[dict], check_map: dict) -> tuple[date, date]:
+    """Эрхэтээс татах огноо: хамгийн эртний (deal үүссэн / Эрхэтийн огноо) − 2 хоног … өнөөдөр
+    (дараа нь давхар sync хийгдсэн баримтыг ч барина)."""
+    today = datetime.now(UB).date()
+
+    def d(v):
+        try:
+            return date.fromisoformat(str(v)[:10])
+        except ValueError:
+            return None
+    created = [x for x in (d(ub_date(x.get("createdAt"))) for x in deals) if x]
+    lo = min(created, default=today)
+    synced = [x for x in (d(c.get("syncedDate")) for c in check_map.values() if isinstance(c, dict)) if x]
+    lo = min([lo] + [x for x in synced if x >= lo - timedelta(days=60)])      # хачин эртний огноог тоохгүй
+    return lo - timedelta(days=2), today
 
 
 # ── Шалгалт (background) ─────────────────────────────────────────────────────
@@ -470,8 +696,8 @@ def _set_run(run_id: int, **kw) -> None:
 def analyze_deals(deals: list[dict], stage_map: dict[str, dict], pipe_names: dict[str, str],
                   saved_st: dict[str, str], hist_since: date, start: str, end: str,
                   progress: Callable[[str], None], check_map: dict | None = None,
-                  hist_map: dict | None = None) -> list[dict]:
-    """Deal бүрийн detail + түүх + Эрхэт → classify → хадгалах мөр."""
+                  hist_map: dict | None = None, erk_map: dict | None = None) -> list[dict]:
+    """Deal бүрийн detail + түүх + Эрхэт (toCheckSynced + бодит баримтын мөр) → classify → хадгалах мөр."""
     ids = [d["_id"] for d in deals]
     details = {}
     for i, d in enumerate(deals):
@@ -483,6 +709,16 @@ def analyze_deals(deals: list[dict], stage_map: dict[str, dict], pipe_names: dic
         hist_map = fetch_histories(set(ids), hist_since - timedelta(days=1), today, progress)
     if check_map is None:
         check_map = check_synced(ids, progress)
+    progress("Барааны код татаж байна…")
+    codes = fetch_product_codes(p.get("productId") for det in details.values()
+                                for p in (det.get("productsData") or []) if isinstance(p, dict))
+    if erk_map is None:
+        try:
+            erk_map = fetch_erkhet_lines(*erk_window(deals, check_map), progress)
+        except Exception as e:                  # Эрхэт уналаа — хуучин аргаар (sync түүхээр) үргэлжлүүлнэ
+            traceback.print_exc()
+            progress(f"Эрхэтийн баримт татаж чадсангүй ({e}) — sync түүхээр шалгана")
+            erk_map = None
     out = []
     for d in deals:
         det = details.get(d["_id"]) or {}
@@ -493,16 +729,25 @@ def analyze_deals(deals: list[dict], stage_map: dict[str, dict], pipe_names: dic
         amt = _j(d.get("amount")) or {}
         amount = _num(amt.get("MNT")) if isinstance(amt, dict) else _num(amt)
         chk = check_map.get(d["_id"])
-        res = classify(category=cat, payments_data=det.get("paymentsData"), deal_amount=amount,
-                       created_at=d.get("createdAt"), check=chk, hists=hs, start=start, end=end)
-        last = hs[-1] if hs else None
+        kind = pipeline_kind(pipe_names.get(sg.get("pipelineId", ""), ""))
         prods = [p for p in (det.get("productsData") or []) if isinstance(p, dict)]
+        items = deal_items(prods, codes)
+        erk = None
+        if erk_map is not None:
+            bills = {d.get("number") or "", (chk or {}).get("syncedBillNumber") or ""} - {""}
+            erk = compare_erkhet(kind, items, round(sum(x["amount"] for x in items.values()), 2),
+                                 [x for b in bills for x in erk_map.get(b, [])])
+        res = classify(category=cat, payments_data=det.get("paymentsData"), deal_amount=amount,
+                       created_at=d.get("createdAt"), check=chk, hists=hs, start=start, end=end,
+                       kind=kind, erk=erk)
+        last = hs[-1] if hs else None
         out.append({
             "deal_id": d["_id"], "number": d.get("number") or "", "name": d.get("name") or "",
             "pipeline_id": sg.get("pipelineId", ""), "stage_id": sid, "category": cat, "amount": amount,
             "severity": res["severity"], "statuses": res["statuses"],
             "data": {
-                "pipeline": pipe_names.get(sg.get("pipelineId", ""), ""), "stage": sg.get("name", ""),
+                "pipeline": pipe_names.get(sg.get("pipelineId", ""), ""), "stage": sg.get("name", ""), "kind": kind,
+                "erk": ({"docs": erk["docs"], "diff": erk["diff"], "total": erk["total"]} if erk else None),
                 "createdAt": d.get("createdAt"), "stageChangedDate": d.get("stageChangedDate"),
                 "closeDate": d.get("closeDate"), "status": d.get("status"),
                 "paymentsData": _j(det.get("paymentsData")), "payments_bad": payments_bad(det.get("paymentsData")),
