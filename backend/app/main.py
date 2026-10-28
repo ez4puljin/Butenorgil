@@ -50,6 +50,7 @@ from app.models.brand_orderer import BrandOrderer  # noqa: F401 – registers ta
 from app.models.new_product import NewProduct  # noqa: F401 – registers tables
 from app.models.ebarimt_file import EbarimtFile  # noqa: F401 – registers table
 from app.models.ai_chat_log import AiChatLog  # noqa: F401 – registers table
+from app.models.ai_usage import AiUsageLog  # noqa: F401 – registers table
 from app.models.pos_recon import PosReconDay  # noqa: F401 – registers table
 from app.models.attendance import AttendancePunch, AttendanceAdjustmentRequest, AttendanceSchedule  # noqa: F401 – registers tables
 
@@ -1480,6 +1481,8 @@ from app.api.conversion import router as conversion_router  # noqa: E402
 app.include_router(conversion_router)
 from app.api.price_cost import router as price_cost_router  # noqa: E402
 app.include_router(price_cost_router)
+from app.api.ai_usage import router as ai_usage_router  # noqa: E402
+app.include_router(ai_usage_router)
 app.include_router(aclas_router)
 app.include_router(pallets_router)
 app.include_router(custom_master_router)

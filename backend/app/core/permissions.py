@@ -27,6 +27,7 @@ PERMISSION_MANIFEST = [
     {"key": "bank_statements",     "label": "Тооцоо хаах"},
     {"key": "ebarimt",             "label": "Ebarimt"},
     {"key": "ai_chat",             "label": "AI туслах"},
+    {"key": "ai_usage",            "label": "AI зарцуулалт"},
     {"key": "pos_sync",            "label": "POS татах"},
     {"key": "pos_recon",           "label": "Sync хяналт (POS тулгалт, Deal sync)"},
     {"key": "price_check",         "label": "Үнэ харах",       "universal": True},

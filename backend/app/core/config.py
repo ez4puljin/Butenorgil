@@ -20,6 +20,19 @@ class Settings(BaseSettings):
     # илүү хүчтэй Flash. env: GEMINI_VISION_MODEL
     gemini_vision_model: str = "gemini-3.5-flash"
 
+    # ── Claude AI (app/ai) — key ЗӨВХӨН .env-д ───────────────────────────
+    anthropic_api_key: str = ""                  # env: ANTHROPIC_API_KEY
+    ai_model_chat: str = "claude-haiku-5-5"      # env: AI_MODEL_CHAT — асуулт хариулт, тайлан
+    ai_model_invoice: str = "claude-sonnet-5-5"  # env: AI_MODEL_INVOICE — падаан, зураг унших
+    # Сарын нийт зардал энэ хэмжээнд хүрвэл chat зогсоно (USD). env: AI_MONTHLY_BUDGET_USD
+    ai_monthly_budget_usd: float = 180.0
+    # Падаан / зураг уншихыг энэ хүртэл зөвшөөрнө (Anthropic-ийн $200 хязгаараас өмнө). env: AI_INVOICE_BUDGET_USD
+    ai_invoice_budget_usd: float = 195.0
+    ai_daily_questions_per_user: int = 50        # env: AI_DAILY_QUESTIONS_PER_USER
+    # Загварын үнэ ($ / 1 сая токен) — шинэ загвар нэмэх/үнэ өөрчлөгдвөл кодгүйгээр:
+    # AI_PRICES='{"claude-haiku-5-5": {"in": 0.1, "out": 0.5, "cache_read": 0.01, "cache_write": 0.125}}'
+    ai_prices: str = ""
+
     # ── Эрхэт (erkhet.bto.mn) HTTP клиент ────────────────────────────────
     # Хоосон бол Эрхэтээс дата татах функцууд идэвхгүй.
     erkhet_url: str = "https://erkhet.bto.mn"   # env: ERKHET_URL
