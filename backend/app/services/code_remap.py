@@ -64,6 +64,34 @@ def new_code_for(p, idx) -> tuple[str, str, list[str]]:
     return "", ("олон" if cands else "олдсонгүй"), sorted(cands)[:5]
 
 
+_cache: dict = {"mtime": None, "idx": None}
+
+
+def master_index_cached():
+    """_master_index()-ийг master_latest.xlsx өөрчлөгдөх хүртэл санана (мастер өдөрт 3 удаа шинэчлэгддэг)."""
+    import os
+    try:
+        mtime = os.path.getmtime(MASTER)
+    except OSError:
+        return None
+    if _cache["mtime"] != mtime:
+        _cache["idx"], _cache["mtime"] = _master_index(), mtime
+    return _cache["idx"]
+
+
+def in_master(item_code) -> bool:
+    idx = master_index_cached()
+    return idx is None or _n(item_code) in idx[0]
+
+
+def display_code_for(p) -> str | None:
+    """Мастерт байхгүй (код солигдсон) бараанд шинэ кодыг буцаана; мастерт байгаа эсвэл олдохгүй бол None."""
+    idx = master_index_cached()
+    if p is None or idx is None or _n(p.item_code) in idx[0]:
+        return None
+    return new_code_for(p, idx)[0] or None
+
+
 def remap_month(db, month_start: date, apply: bool = False) -> dict:
     """month_start-аас хойшх захиалга (order_qty_box > 0) ба тулгалтын мөрүүдэд display_code бичнэ."""
     from app.models.product import Product

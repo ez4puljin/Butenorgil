@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_role
 from app.models.product import Product
 from app.services.custom_master import values_map as _custom_values
+from app.services.code_remap import in_master
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -59,6 +60,12 @@ def search_products(
         .all()
     )
     # Exact barcode match байвал эхэнд нь тавина
+    # Код солигдсон хуучин бараа (мастерт алга) шинэтэйгээ ижил нэр/баркодтой тул хамт гарч,
+    # хуучныг нь сонгоход тулгалтын ERP файл хуучин кодоор гардаг байсан → мастерт байгаа
+    # бараа олдвол хуучныг нь нууна (зөвхөн хуучин нь олдвол хэвээр харуулна).
+    current = [r for r in rows if in_master(r.item_code)]
+    if current:
+        rows = current
     exact = [r for r in rows if r.barcode == q]
     partial = [r for r in rows if r.barcode != q]
     ordered = exact + partial

@@ -21,6 +21,7 @@ from app.models.purchase_order import (
 from app.models.product import Product
 from app.models.user import User
 from app.models.logistics import Vehicle
+from app.services.code_remap import display_code_for
 
 router = APIRouter(prefix="/purchase-orders", tags=["purchase-orders"])
 
@@ -2042,6 +2043,7 @@ def add_line(
         order_qty_pcs=qty_pcs,
         computed_weight=weight,
         override_brand=override_brand,
+        display_code=display_code_for(p),   # код солигдсон бараа сонгогдсон бол шинэ кодоор
     )
     db.add(line)
     db.commit()

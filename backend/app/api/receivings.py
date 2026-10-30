@@ -18,6 +18,7 @@ from app.models.receiving import ReceivingSession, ReceivingLine, ReceivingBrand
 from app.models.product import Product
 from app.models.user import User
 from app.core.event_bus import publish as _publish_event
+from app.services.code_remap import display_code_for
 from collections import defaultdict
 
 
@@ -532,6 +533,7 @@ def add_line(
         unit_price=float(body.unit_price or 0),
         override_brand=incoming_override,
         note=body.note or "",
+        display_code=display_code_for(p),   # код солигдсон бараа сонгогдсон бол Эрхэт рүү шинэ кодоор
     )
     db.add(ln); db.commit(); db.refresh(ln)
     # Шинэ line нэмэгдсэний дараа: хэрэв тулгалтын дараа шинэ brand гарсан бол
