@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { X, Download, RefreshCw, AlertTriangle, CheckCircle2, ChevronDown } from "lucide-react";
 import { api } from "../lib/api";
 
-// Тооллогын хуудас → Эрхэтийн импорт Excel: илүүдэл = «Бараа материалын орлого»,
-// дутагдал = «Бараа материалын хангамжын зарлага». Нэгж үнэ = өртөг (Эрхэтийн байршлын өртгийг
-// арын ажлаар ~1-2 минут татна) эсвэл зарах үнэ. Логик: backend/app/services/count_erkhet.py
+// Тооллогын хуудас → Эрхэтийн импорт Excel: илүүдэл = «Бараа материалын орлого» (нэгж үнэ = өртөг —
+// Эрхэтийн байршлын өртгийг арын ажлаар ~1-2 минут татна — эсвэл зарах үнэ), дутагдал = «Бараа материалын
+// байнгын борлуулалт» (зарах үнээр; өртгийг Эрхэт өөрөө бодно). Логик: backend/app/services/count_erkhet.py
 
 type Brief = { code: string; name: string; qty: number; price: number; sell: number; src: string };
 type KindPreview = { rows: number; pieces: number; amount: number; by_src: Record<string, number>; review: Brief[]; skipped: Brief[] };
@@ -15,7 +15,7 @@ type Info = {
   price_src_label: Record<string, string>;
   kind_label: Record<"income" | "expense", string>;
   cost: CostState;
-  preview: Record<"income" | "expense", KindPreview> | null;
+  preview: { income: KindPreview | null; expense: KindPreview } | null;
 };
 type Mode = "cost" | "sell";
 
@@ -127,8 +127,7 @@ export default function CountErkhetExport({ countId, fileId, flush, onClose }: {
   const pv = info?.preview;
   const cost = info?.cost;
   const locName = info?.locations.find((l) => l.code === loc)?.name ?? "";
-  const review = pv ? [...pv.income.review.map((r) => ({ ...r, kind: "income" as const })),
-                      ...pv.expense.review.map((r) => ({ ...r, kind: "expense" as const }))] : [];
+  const review = (pv?.income?.review ?? []).map((r) => ({ ...r, kind: "income" as const }));
   const field = "w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-800 outline-none focus:border-blue-400";
 
   return (
@@ -137,7 +136,7 @@ export default function CountErkhetExport({ countId, fileId, flush, onClose }: {
         <div className="flex items-start gap-3 border-b border-gray-100 px-5 py-3">
           <div className="min-w-0 flex-1">
             <div className="text-base font-bold text-gray-900">Эрхэт рүү импортлох файл</div>
-            <div className="text-[12.5px] text-gray-500">Илүүдэл → Бараа материалын орлого · Дутагдал → Бараа материалын хангамжын зарлага</div>
+            <div className="text-[12.5px] text-gray-500">Илүүдэл → Бараа материалын орлого · Дутагдал → Бараа материалын байнгын борлуулалт</div>
           </div>
           <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={18} /></button>
         </div>
@@ -174,7 +173,7 @@ export default function CountErkhetExport({ countId, fileId, flush, onClose }: {
                   <input value={acc} onChange={(e) => setAcc(e.target.value.trim())} className={field} />
                 </label>
                 <div>
-                  <span className="mb-1 block text-[11.5px] font-semibold text-gray-500">Нэгж үнэ</span>
+                  <span className="mb-1 block text-[11.5px] font-semibold text-gray-500">Орлогын нэгж үнэ</span>
                   <div className="inline-flex rounded-lg bg-gray-100 p-0.5">
                     {([["cost", "Өртгөөр"], ["sell", "Зарах үнээр"]] as const).map(([k, l]) => (
                       <button key={k} onClick={() => setMode(k)}
@@ -234,7 +233,7 @@ export default function CountErkhetExport({ countId, fileId, flush, onClose }: {
                           <div className="text-[12px] text-gray-500">{p.rows} мөр · {nf2.format(p.pieces)} ширхэг</div>
                           <div className="mt-1.5 flex flex-wrap gap-1">
                             {Object.entries(p.by_src).filter(([, n]) => n > 0).map(([s, n]) => (
-                              <span key={s} className={`rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${s === "sell" && mode === "cost" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-600"}`}>
+                              <span key={s} className={`rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${s === "sell" && mode === "cost" && k === "income" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-600"}`}>
                                 {info.price_src_label[s] ?? s}: {n}
                               </span>
                             ))}
@@ -246,6 +245,7 @@ export default function CountErkhetExport({ countId, fileId, flush, onClose }: {
                       ) : (
                         <div className="mt-2 text-[12px] text-gray-400">{mode === "cost" ? "Эрхэтийн өртөг татагдсаны дараа тооцоолно." : "—"}</div>
                       )}
+                      {k === "expense" && <div className="mt-1.5 text-[11px] text-gray-400">Зарах үнээр, НӨАТ-гүй — өртгийг Эрхэт өөрөө бодно.</div>}
                       <button onClick={() => download(k)} disabled={!p || !p.rows || !!busy || !loc}
                         className={`mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-semibold text-white disabled:opacity-40 ${k === "income" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-red-600 hover:bg-red-700"}`}>
                         {busy === k ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />} {k === "income" ? "Орлогын" : "Зарлагын"} Excel татах
@@ -259,7 +259,7 @@ export default function CountErkhetExport({ countId, fileId, flush, onClose }: {
               {mode === "cost" && review.length > 0 && (
                 <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/60">
                   <button onClick={() => setShowReview((v) => !v)} className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-[12.5px] font-semibold text-amber-900">
-                    <AlertTriangle size={14} /> Шалгах: {review.length} барааны өртөг олдоогүй тул зарах үнээр бодсон
+                    <AlertTriangle size={14} /> Шалгах: илүүдлийн {review.length} барааны өртөг олдоогүй тул зарах үнээр орлого авна
                     <ChevronDown size={14} className={`ml-auto transition ${showReview ? "rotate-180" : ""}`} />
                   </button>
                   {showReview && (
@@ -284,7 +284,7 @@ export default function CountErkhetExport({ countId, fileId, flush, onClose }: {
               <div className="mt-4 rounded-xl bg-gray-50 px-3.5 py-2.5 text-[12px] leading-relaxed text-gray-600">
                 <b className="text-gray-800">Файл бүрийг Эрхэтэд НЭГ л удаа импортлоно</b> — дахин импортловол зөрүү 2 удаа бүртгэгдэнэ.
                 Эрхэтийн «Файл импортлох» дээр төрлийг орлогын файлд <b>«Бараа материалын орлого»</b>, зарлагын файлд
-                <b> «Бараа материалын хангамжын зарлага»</b> гэж сонгоно. Тоо = тооллогын хуудасны (засварласан) зөрүү.
+                <b> «Бараа материалын байнгын борлуулалт»</b> гэж сонгоно. Тоо = тооллогын хуудасны (засварласан) зөрүү.
               </div>
             </>
           )}

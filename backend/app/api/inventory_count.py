@@ -970,7 +970,7 @@ def compare_count_pdf(
         "Content-Disposition": f"inline; filename=count_{count_id}_diff.pdf; filename*=UTF-8''{quote(fname)}"})
 
 
-# ── Эрхэтийн импорт файл: илүүдэл → орлого, дутагдал → хангамжын зарлага (services/count_erkhet) ──
+# ── Эрхэтийн импорт файл: илүүдэл → орлого, дутагдал → байнгын борлуулалт (services/count_erkhet) ──
 
 class ErkhetCostIn(BaseModel):
     location: str
@@ -983,7 +983,7 @@ class ErkhetFileIn(BaseModel):
     location: str
     date: date
     excel_file_id: Optional[int] = None
-    mode: str = "cost"                         # cost (өртөг, санал болгох) | sell (зарах үнэ)
+    mode: str = "cost"                         # орлогын үнэ: cost (өртөг, санал болгох) | sell (зарах үнэ)
     no_erkhet_cost: bool = False               # Эрхэтийн байршлын өртөг татагдаагүй ч гаргах
     customer: str = ""
     related_account: str = ""
@@ -999,13 +999,15 @@ def _erk_loc(code: str) -> str:
 
 
 def _erk_rows(db: Session, c: InventoryCount, p: Path, loc: str, day: date, mode: str, no_cost: bool):
+    """→ (мөрүүд, орлого бэлэн эсэх). Орлогод (өртгөөр) Эрхэтийн байршлын өртөг хэрэгтэй;
+    зарлага (байнгын борлуулалт) зарах үнээр тул өртөг хүлээхгүй."""
     from app.services import count_erkhet as ce
     if mode not in ("cost", "sell"):
         raise HTTPException(400, "mode: cost | sell")
     cached = ce.cached_costs(loc, day) if mode == "cost" else None
-    if mode == "cost" and not cached and not no_cost:
-        return None
-    return ce.priced_rows(db, _compare_data(db, c, p)["rows"], (cached or {}).get("costs", {}), mode)
+    income_ready = mode == "sell" or bool(cached) or no_cost
+    rows = ce.priced_rows(db, _compare_data(db, c, p)["rows"], (cached or {}).get("costs", {}), mode)
+    return rows, income_ready
 
 
 @router.get("/counts/{count_id}/erkhet-export")
@@ -1029,8 +1031,9 @@ def erkhet_export_info(
            "price_src_label": ce.PRICE_SRC_LABEL, "kind_label": ce.KIND_LABEL,
            "cost": ce.job_state(loc, day) if loc else {"status": "none"}, "preview": None}
     if loc:
-        rows = _erk_rows(db, c, p, loc, day, mode, no_erkhet_cost)
-        out["preview"] = ce.preview(rows) if rows is not None else None
+        rows, income_ready = _erk_rows(db, c, p, loc, day, mode, no_erkhet_cost)
+        pv = ce.preview(rows)
+        out["preview"] = {"income": pv["income"] if income_ready else None, "expense": pv["expense"]}
     return out
 
 
@@ -1065,9 +1068,9 @@ def erkhet_export_file(
         raise HTTPException(400, "kind: income | expense")
     c, f, p = _count_excel(db, count_id, body.excel_file_id)
     loc = _erk_loc(body.location)
-    rows = _erk_rows(db, c, p, loc, body.date, body.mode, body.no_erkhet_cost)
-    if rows is None:
-        raise HTTPException(409, "Эрхэтийн нэгж өртгийг эхлээд татна уу.")
+    rows, income_ready = _erk_rows(db, c, p, loc, body.date, body.mode, body.no_erkhet_cost)
+    if body.kind == "income" and not income_ready:
+        raise HTTPException(409, "Орлогын файлд Эрхэтийн нэгж өртгийг эхлээд татна уу.")
     s = ce.save_settings({"customer": body.customer, "related_account": body.related_account, "account": body.account})
     try:
         data, fname, _stats = ce.build_xlsx(rows, kind=body.kind, day=body.date, loc_code=loc, count_id=c.id,

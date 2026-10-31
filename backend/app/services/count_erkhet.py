@@ -1,14 +1,17 @@
-"""Тооллогын хуудас → Эрхэтийн импорт Excel: илүүдэл = «Бараа материалын орлого» (inv_income),
-дутагдал = «Бараа материалын хангамжын зарлага» (inv_so — Эрхэтийн цорын ганц зарлагын импорт).
+"""Тооллогын хуудас → Эрхэтийн импорт Excel: илүүдэл = «Бараа материалын орлого» (inv_income, 23 багана),
+дутагдал = «Бараа материалын байнгын борлуулалт» (inv_csale, 25 багана — хэрэглэгчийн өгсөн Эрхэтийн
+толгой файл import_sample.xls, 2026-10-31).
 
 Тоо = тооллогын харьцуулалтын (засварласан) Зөрүү: Тооллого − Програм.
 Харилцагч 60018 «Тооллого», Харьцсан данс 313011 «Тооллогын зөрүү», Данс* 150101 (тохиргоонд хадгална).
 
-Нэгж үнэ = ӨРТӨГ, зарах үнэ БИШ. Эрхэт зарлагыг файлын үнээр нь бүртгэдэг (2026-10-31-нд хөрвүүлэлтийн
-зарлагаар шалгав: файлын 73,800₮ яг хэвээр орсон), орлого нь жигнэсэн дундаж өртгийг өөрчилнө. Тиймээс
-тухайн байршлын тухайн өдрийн «Нэгж өртөг»-ийг Эрхэтийн «Бараа материал /Өртгөөр/» тайлангаас татна
-(нэг байршил ~2 мин — арын ажлаар, диск дээр кэштэй) → байхгүй бол барааны сүүлийн авсан үнэ →
-тэр ч байхгүй бол мөрийг файлд оруулахгүй (0 өртөг дундаж өртгийг эвдэнэ), жагсаалтаар харуулна.
+Дутагдал (байнгын борлуулалт): нэгж үнэ = ЗАРАХ ҮНЭ, НӨАТ/НХАТ-гүй — Эрхэтэд гараар хийсэн тооллогын
+байнгын борлуулалтууд (харилцагч «Тооллого», дт:313011, кт:510101) яг ингэж бүртгэгдсэн (үнэ/зарах = 1.0,
+кредит = бүтэн дүн); өртгийг Эрхэт өөрөө бодно.
+Илүүдэл (орлого): нэгж үнэ = ӨРТӨГ — орлого жигнэсэн дундаж өртгийг өөрчилнө. Тухайн байршлын тухайн
+өдрийн «Нэгж өртөг»-ийг Эрхэтийн «Бараа материал /Өртгөөр/» тайлангаас татна (нэг байршил ~1-2 мин —
+арын ажлаар, диск дээр кэштэй); хэвийн биш бол агуулахын өртөг → сүүлийн авсан үнэ → зарах үнэ (шалгах).
+Эрхэтийн импортын дүрэм: *-тэй баганыг мөр бүрт, бусдыг баримтын эхний мөрөнд; тийм/үгүй = 1/0.
 """
 from __future__ import annotations
 
@@ -20,7 +23,15 @@ import traceback
 from datetime import date, datetime
 from pathlib import Path
 
-from app.services.conversion import INCOME_HEADERS, SO_HEADERS
+from app.services.conversion import INCOME_HEADERS
+
+# Эрхэтийн «Бараа материалын байнгын борлуулалт» (inv_csale) импортын толгой — яг энэ дарааллаар
+CSALE_HEADERS = ["Баримтын дугаар", "Огноо", "Гүйлгээний утга", "Харилцагч", "Харьцсан данс",
+                 "Харьцсан ялгаатай харилцагч", "Борлуулагч", "Баримт-НӨАТ-тэй эсэх", "НӨАТ автоматаар тооцох эсэх",
+                 "НӨАТ-н дүн", "НӨАТ-н үзүүлэлт", "НХАТ-тай эсэх", "НХАТ автоматаар бодох эсэх", "НХАТ ийн дүн",
+                 "Бараа материал*", "Барааны данс*", "Барааны байршил*", "Тоо хэмжээ*", "Нэгж үнэ*", "Нийт дүн*",
+                 "Мөр-НӨАТ тооцох эсэх*", "Мөр-НХАТ тооцох эсэх*", "НХАТ үзүүлэлт*", "Хөнгөлөгдсөн дүн*",
+                 "Хариуцагч РД"]
 
 SETTINGS_FILE = Path("app/data/count_erkhet_settings.json")
 CACHE_DIR = Path("app/data/cache/count_cost")
@@ -41,7 +52,7 @@ FALLBACK_LOCATIONS = [
     ("11", "Жижиглэн барааны агуулах"), ("12", "Гэрээт компаний агуулах"), ("13", "Гэр ахуйн барааны агуулах"),
     ("14", "Discrepancy Control"), ("17", "Аяны барааны гадна лангуу"),
 ]
-KIND_LABEL = {"income": "Бараа материалын орлого", "expense": "Бараа материалын хангамжын зарлага"}
+KIND_LABEL = {"income": "Бараа материалын орлого", "expense": "Бараа материалын байнгын борлуулалт"}
 KIND_SLUG = {"income": "orlogo", "expense": "zarlaga"}
 
 
@@ -255,30 +266,32 @@ def _sane(cost: float, sell: float) -> bool:
 def priced_rows(db, compare_rows: list[dict], costs: dict[str, float], mode: str = "cost",
                 lpp: dict[str, float] | None = None, wh: dict[str, float] | None = None) -> list[dict]:
     """Зөрүүтэй мөр бүрт нэгж үнэ.
-    mode="cost": Эрхэтийн байршлын өртөг → үндсэн агуулахын өртөг → сүүлийн авсан үнэ (тус бүр зарах үнийн
-    30–120%-д багтвал) → эс бөгөөс зарах үнэ (шалгах мөр). mode="sell": зарах үнэ."""
+    Дутагдал (байнгын борлуулалт): үргэлж зарах үнэ — өртгийг Эрхэт өөрөө бодно.
+    Илүүдэл (орлого) mode="cost": Эрхэтийн байршлын өртөг → үндсэн агуулахын өртөг → сүүлийн авсан үнэ (тус бүр
+    зарах үнийн 30–120%-д багтвал) → эс бөгөөс зарах үнэ (шалгах мөр). mode="sell": зарах үнэ."""
     from app.models.product import Product
     rows = [r for r in compare_rows if abs(r["diff"]) > EPS]
-    if lpp is None:
+    if lpp is None and mode == "cost":
         codes, lpp = [r["code"] for r in rows], {}
         for i in range(0, len(codes), 900):
             for code, price in (db.query(Product.item_code, Product.last_purchase_price)
                                   .filter(Product.item_code.in_(codes[i:i + 900])).all()):
                 lpp[code] = max(lpp.get(code, 0.0), float(price or 0))
+    lpp = lpp or {}
     if wh is None:
-        wh = warehouse_costs() if mode == "cost" else {}
+        wh = warehouse_costs() if mode == "cost" and any(r["diff"] > 0 for r in rows) else {}
     out = []
     for r in rows:
         sell = float(r.get("price") or 0)
+        kind = "income" if r["diff"] > 0 else "expense"
         cands = [("erkhet", costs.get(r["code"], 0.0)), ("warehouse", wh.get(r["code"], 0.0)),
                  ("last", lpp.get(r["code"], 0.0))]
-        if mode == "sell":
+        if mode == "sell" or kind == "expense":
             cands = []
         src, price = next(((s, c) for s, c in cands if _sane(c, sell)), ("sell", sell) if sell > 0 else ("none", 0.0))
         out.append({"code": r["code"], "name": r["name"], "brand": r.get("brand", ""), "diff": r["diff"],
                     "qty": abs(r["diff"]), "price": round(price, 2), "price_src": src, "sell": sell,
-                    "review": mode == "cost" and src in ("sell", "none"),
-                    "kind": "income" if r["diff"] > 0 else "expense"})
+                    "review": kind == "income" and mode == "cost" and src in ("sell", "none"), "kind": kind})
     return out
 
 
@@ -310,8 +323,8 @@ def note_text(kind: str, day: date, loc_code: str, count_id: int) -> str:
 
 def build_xlsx(rows: list[dict], *, kind: str, day: date, loc_code: str, count_id: int, customer: str,
                related_account: str, account: str, source_file: str = "") -> tuple[bytes, str, dict]:
-    """Эрхэтийн импорт Excel. kind: income (23 багана, огноо A) | expense (inv_so 12 багана, огноо B).
-    Нэг баримт: огноо, утга, харилцагч, харьцсан данс зөвхөн эхний мөрөнд (Эрхэтийн баримт-блок)."""
+    """Эрхэтийн импорт Excel. kind: income (inv_income 23 багана, огноо A) | expense (inv_csale 25 багана, огноо B).
+    Нэг баримт: *-гүй (баримтын) талбар зөвхөн эхний мөрөнд, *-тэй (барааны) талбар мөр бүрт."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     from app.services.erkhet_xlsx import apply_date_format, finalize_erkhet_xlsx
@@ -320,7 +333,7 @@ def build_xlsx(rows: list[dict], *, kind: str, day: date, loc_code: str, count_i
     picked = [r for r in sel if r["price"] > 0]
     skipped = [r for r in sel if r["price"] <= 0]
     if not picked:
-        raise ValueError(f"{'Илүүдэл' if kind == 'income' else 'Дутагдал'} бүхий (өртөгтэй) мөр алга — файл гаргах зүйлгүй.")
+        raise ValueError(f"{'Илүүдэл' if kind == 'income' else 'Дутагдал'} бүхий (үнэтэй) мөр алга — файл гаргах зүйлгүй.")
     note = note_text(kind, day, loc_code, count_id)
     d = datetime.combine(day, datetime.min.time())
     wb = Workbook()
@@ -336,12 +349,16 @@ def build_xlsx(rows: list[dict], *, kind: str, day: date, loc_code: str, count_i
                        _num(r["qty"]), _num(r["price"]), 1, _num(round(r["qty"] * r["price"], 2)), 0, 0, None])
         date_col = "A"
     else:
-        ws.append(SO_HEADERS)
+        ws.append(CSALE_HEADERS)
         for i, r in enumerate(picked):
             f = i == 0
+            z = 0 if f else None                    # баримтын тийм/үгүй, дүн — зөвхөн эхний мөрөнд
+            total = _num(round(r["qty"] * r["price"], 2))
             ws.append([None, d if f else None, note if f else None, customer if f else None,
-                       related_account if f else None, None, r["code"], account, loc_code,
-                       _num(r["qty"]), _num(r["price"]), _num(round(r["qty"] * r["price"], 2))])
+                       related_account if f else None, None, None,      # ялгаатай харилцагч, борлуулагч
+                       z, z, z, None, z, z, z,                         # НӨАТ-тэй, авто, дүн, үзүүлэлт · НХАТ-тай, авто, дүн
+                       r["code"], account, loc_code, _num(r["qty"]), _num(r["price"]), total,
+                       0, 0, 0, total, None])                          # мөр-НӨАТ, мөр-НХАТ, НХАТ үзүүлэлт, хөнгөлөгдсөн дүн, хариуцагч РД
         date_col = "B"
     apply_date_format(ws, date_col, 2, 2)
 

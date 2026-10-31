@@ -39,12 +39,19 @@ def test_priced_rows_picks_first_sane_source():
     out = {r["code"]: r for r in ce.priced_rows(None, rows, costs, "cost", lpp=lpp, wh=wh)}
     assert set(out) == {"A", "B", "C", "D"}                         # зөрүүгүй E орохгүй
     assert (out["A"]["price"], out["A"]["price_src"], out["A"]["kind"]) == (3150, "warehouse", "income")
-    assert (out["B"]["price"], out["B"]["price_src"], out["B"]["kind"], out["B"]["qty"]) == (3620, "warehouse", "expense", 2)
     assert (out["C"]["price"], out["C"]["price_src"]) == (2100, "erkhet")
-    assert (out["D"]["price"], out["D"]["price_src"], out["D"]["review"]) == (7100, "sell", True)
+    # дутагдал (байнгын борлуулалт) — өртөг байсан ч зарах үнээр, шалгах биш
+    assert (out["B"]["price"], out["B"]["price_src"], out["B"]["kind"], out["B"]["qty"], out["B"]["review"]) == \
+        (4540, "sell", "expense", 2, False)
+    assert (out["D"]["price"], out["D"]["price_src"], out["D"]["review"]) == (7100, "sell", False)
     sell = {r["code"]: r for r in ce.priced_rows(None, rows, costs, "sell", lpp=lpp, wh=wh)}
     assert all(r["price_src"] == "sell" and not r["review"] for r in sell.values())
     assert sell["A"]["price"] == 3500
+
+
+def test_income_without_sane_cost_is_review():
+    out = ce.priced_rows(None, [cmp("X", 4, 7100)], {"X": 526274.67}, "cost", lpp={"X": 0.0}, wh={})
+    assert (out[0]["price"], out[0]["price_src"], out[0]["review"]) == (7100, "sell", True)
 
 
 def test_preview_counts_and_skips_unpriced():
@@ -53,7 +60,7 @@ def test_preview_counts_and_skips_unpriced():
     assert (pv["income"]["rows"], pv["income"]["pieces"], pv["income"]["amount"]) == (1, 3, 2700)
     assert [r["code"] for r in pv["income"]["skipped"]] == ["B"]        # үнэгүй — орлогод оруулахгүй
     assert (pv["expense"]["rows"], pv["expense"]["pieces"], pv["expense"]["amount"]) == (1, 1.5, 600)
-    assert pv["expense"]["by_src"]["sell"] == 1 and len(pv["expense"]["review"]) == 1
+    assert pv["expense"]["by_src"]["sell"] == 1 and pv["expense"]["review"] == []
 
 
 def _sheet(data):
@@ -90,18 +97,32 @@ def test_income_file_layout():
     assert len(imp) == 3                                                 # дутагдал орлогод орохгүй
 
 
-def test_expense_file_is_inv_so_layout():
+SAMPLE_CSALE = ["Баримтын дугаар", "Огноо", "Гүйлгээний утга", "Харилцагч", "Харьцсан данс",
+                "Харьцсан ялгаатай харилцагч", "Борлуулагч", "Баримт-НӨАТ-тэй эсэх", "НӨАТ автоматаар тооцох эсэх",
+                "НӨАТ-н дүн", "НӨАТ-н үзүүлэлт", "НХАТ-тай эсэх", "НХАТ автоматаар бодох эсэх", "НХАТ ийн дүн",
+                "Бараа материал*", "Барааны данс*", "Барааны байршил*", "Тоо хэмжээ*", "Нэгж үнэ*", "Нийт дүн*",
+                "Мөр-НӨАТ тооцох эсэх*", "Мөр-НХАТ тооцох эсэх*", "НХАТ үзүүлэлт*", "Хөнгөлөгдсөн дүн*", "Хариуцагч РД"]
+
+
+def test_expense_file_is_csale_layout():
+    """Хэрэглэгчийн өгсөн Эрхэтийн толгой (import_sample.xls = inv_csale, 25 багана), зарах үнээр, НӨАТ-гүй."""
     rows = ce.priced_rows(None, [cmp("201", -120, 900), cmp("202", -29, 4250), cmp("203", 5, 100)],
                           {"201": 830.15}, "cost", lpp={}, wh={"202": 2932.26})
     data, fname, stats = ce.build_xlsx(rows, kind="expense", day=date(2026, 10, 31), loc_code="03", count_id=7, **SET)
-    assert fname.endswith("_03_zarlaga.xlsx") and stats["rows"] == 2 and stats["pieces"] == 149
+    assert fname.endswith("_03_zarlaga.xlsx")
+    assert stats == {"rows": 2, "skipped": 0, "pieces": 149, "amount": 120 * 900 + 29 * 4250}
     sh = _sheet(data)
     assert list(sh) == ["Import"]                                        # огноо B — Тайлбар хуудасгүй
     imp = sh["Import"]
-    assert imp[0] == conversion.SO_HEADERS and len(imp[0]) == 12
-    assert imp[1][0] == "" and imp[1][1] == date(2026, 10, 31) and "тооллогын дутагдал" in imp[1][2]
-    assert imp[1][3:] == ["60018", "313011", "", "201", "150101", "03", 120, 830.15, 99618]
-    assert imp[2][1] == "" and imp[2][6:] == ["202", "150101", "03", 29, 2932.26, 85035.54]
+    assert imp[0] == ce.CSALE_HEADERS == SAMPLE_CSALE
+    first, second = imp[1], imp[2]
+    assert first[0] == "" and first[1] == date(2026, 10, 31) and "тооллогын дутагдал" in first[2]
+    assert first[3:7] == ["60018", "313011", "", ""]
+    assert first[7:14] == [0, 0, 0, "", 0, 0, 0]                         # НӨАТ-гүй, НХАТ-гүй баримт
+    assert first[14:] == ["201", "150101", "03", 120, 900, 108000, 0, 0, 0, 108000, ""]
+    assert second[:14] == [""] * 14                                      # баримтын талбар зөвхөн эхний мөрөнд
+    assert second[14:24] == ["202", "150101", "03", 29, 4250, 123250, 0, 0, 0, 123250]   # *-тэй — мөр бүрт
+    assert len(imp) == 3                                                 # илүүдэл зарлагад орохгүй
 
 
 def test_build_refuses_empty_kind():
