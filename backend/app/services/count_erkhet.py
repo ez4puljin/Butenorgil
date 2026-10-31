@@ -305,7 +305,7 @@ def preview(rows: list[dict]) -> dict:
 def note_text(kind: str, day: date, loc_code: str, count_id: int) -> str:
     what = "илүүдэл" if kind == "income" else "дутагдал"
     name = location_name(loc_code)
-    return f"{day.isoformat()}-ний тооллогын {what} · {loc_code}{' ' + name if name else ''} (#{count_id})"
+    return f"{day.isoformat()}-ний тооллогын {what} · {loc_code}{' ' + name if name else ''}" + (f" (#{count_id})" if count_id else "")
 
 
 def build_xlsx(rows: list[dict], *, kind: str, day: date, loc_code: str, count_id: int, customer: str,
@@ -386,7 +386,7 @@ def build_xlsx(rows: list[dict], *, kind: str, day: date, loc_code: str, count_i
     buf = io.BytesIO()
     wb.save(buf)
     data = finalize_erkhet_xlsx(buf.getvalue(), date_col=date_col)
-    fname = f"{day:%Y%m%d}_toollogo{count_id}_{loc_code}_{KIND_SLUG[kind]}.xlsx"
+    fname = f"{day:%Y%m%d}_toollogo{count_id or ''}_{loc_code}_{KIND_SLUG[kind]}.xlsx"
     stats = {"rows": len(picked), "skipped": len(skipped), "pieces": _num(sum(r["qty"] for r in picked)),
              "amount": round(sum(r["qty"] * r["price"] for r in picked), 2)}
     return data, fname, stats
