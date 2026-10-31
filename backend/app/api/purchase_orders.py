@@ -21,7 +21,7 @@ from app.models.purchase_order import (
 from app.models.product import Product
 from app.models.user import User
 from app.models.logistics import Vehicle
-from app.services.code_remap import display_code_for
+from app.services.code_remap import display_code_for, in_master
 
 router = APIRouter(prefix="/purchase-orders", tags=["purchase-orders"])
 
@@ -1353,6 +1353,8 @@ def create_purchase_order(
     if selected_brands:
         q = q.filter(Product.brand.in_(selected_brands))
     products = q.order_by(Product.brand, Product.item_code).all()
+    # Мастерт байхгүй (код солигдсон / устгагдсан) хуучин барааг оруулахгүй — шинэ кодтой нь мастерт бий
+    products = [p for p in products if in_master(p.item_code)]
 
     for p in products:
         db.add(PurchaseOrderLine(
@@ -1839,6 +1841,10 @@ def set_lines(
                     ).all()
                     if len(sh_lines) == 1:
                         sh_lines[0].loaded_qty_box = new_loaded
+
+        # Код солигдсон (мастерт алга) барааны мөрөнд тоо орвол шинэ кодыг онооно
+        if not line.display_code and float(line.order_qty_box or 0) > 0:
+            line.display_code = display_code_for(p)
 
         after_snap = _snapshot(line)
         # Зөвхөн утга нь үнэхээр өөрчлөгдсөн line-уудыг audit-д бичнэ

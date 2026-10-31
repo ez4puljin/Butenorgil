@@ -20,7 +20,7 @@ import io
 import json
 import threading
 import traceback
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -299,6 +299,17 @@ def run_master_auto(user: str = "(автомат)", notify: bool = False) -> dic
                 custom_after_import(db, "product", Path(master_path), by=user)
                 log.message = "done (автомат)"
                 db.commit()
+                # Код солигдсон бараа: энэ сарын захиалга/тулгалтын мөрийг шинэ кодоор (display_code)
+                try:
+                    from app.services.code_remap import remap_month
+                    start = date.today().replace(day=1)
+                    if date.today().day <= 7:   # сарын эхэнд өмнөх сарын захиалга/тулгалт идэвхтэй хэвээр
+                        start = (start - timedelta(days=1)).replace(day=1)
+                    rm = remap_month(db, start, apply=True)
+                    print(f"[master] code_remap: {len(rm['changes'])} мөр, шийдэгдээгүй {len(rm['unresolved'])}")
+                except Exception:
+                    db.rollback()
+                    traceback.print_exc()
             except Exception as e:
                 db.rollback()
                 log.status, log.message = "fail", str(e)[:500]
