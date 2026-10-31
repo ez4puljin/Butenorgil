@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { X, Printer, RefreshCw, Search, CheckCircle2, AlertTriangle, Download, RotateCcw } from "lucide-react";
+import { X, Printer, RefreshCw, Search, CheckCircle2, AlertTriangle, Download, RotateCcw, FileSpreadsheet } from "lucide-react";
 import { api } from "../lib/api";
+import CountErkhetExport from "../components/CountErkhetExport";
 
 // Тооллогын хуудас (Эрхэт) — таарсан / таараагүй, брэндээр бүлэглэсэн, шалтгааны тайлбартай.
 // Зөрүү = Тооллого − Програм (дутагдал сөрөг), Зөрүүний дүн = Зөрүү × Зарах үнэ.
@@ -110,6 +111,7 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
   const [noteState, setNoteState] = useState<Record<string, SaveState>>({});
   const [adjState, setAdjState] = useState<Record<string, SaveState>>({});
   const [pdfBusy, setPdfBusy] = useState<"print" | "download" | null>(null);
+  const [erkOpen, setErkOpen] = useState(false);
   const pending = useRef(new Set<Promise<unknown>>());
 
   useEffect(() => {
@@ -209,11 +211,16 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
       }));
   };
 
-  const getPdf = async (mode: "print" | "download") => {
-    if (!data) return;
-    (document.activeElement as HTMLElement | null)?.blur?.();       // бичиж байсан утгыг хадгална
+  /** Бичиж байсан утгыг хадгалж, илгээгдэж буй хадгалалтыг хүлээнэ (PDF / Эрхэтийн файлын өмнө). */
+  const flush = async () => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
     await new Promise((r) => setTimeout(r, 0));
     await Promise.allSettled([...pending.current]);
+  };
+
+  const getPdf = async (mode: "print" | "download") => {
+    if (!data) return;
+    await flush();
     setPdfBusy(mode); setErr("");
     try {
       const r = await api.get(`/inventory-count/counts/${countId}/compare/pdf`, {
@@ -254,6 +261,11 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
                 {data.files.map((f) => <option key={f.id} value={f.id}>{f.original_filename}</option>)}
               </select>
             )}
+            <button onClick={async () => { await flush(); setErkOpen(true); }} disabled={!data}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+              title="Илүүдэл → Бараа материалын орлого, дутагдал → хангамжын зарлага — Эрхэтийн импорт Excel">
+              <FileSpreadsheet size={13} /> Эрхэт импорт
+            </button>
             <button onClick={() => getPdf("download")} disabled={!data || !!pdfBusy}
               className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
               title={brand ? `«${brand}» брэндийн зөрүүтэй бараа — A4 хэвтээ PDF` : "Зөрүүтэй бүх бараа — A4 хэвтээ PDF татах"}>
@@ -273,6 +285,10 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
         </div>
 
         {err && <div className="mx-4 mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12.5px] text-red-700 sm:mx-5">{err}</div>}
+
+        {erkOpen && data && (
+          <CountErkhetExport countId={countId} fileId={data.file.id} flush={flush} onClose={() => setErkOpen(false)} />
+        )}
 
         {loading && !data ? (
           <div className="flex flex-1 items-center justify-center gap-2 text-sm text-gray-400"><RefreshCw size={16} className="animate-spin" /> Тооллогын хуудсыг уншиж байна…</div>

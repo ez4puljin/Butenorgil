@@ -84,3 +84,5 @@ aclas_agent/AclasAgent.json
 aclas_agent/AclasAgent.exe
 aclas_agent/work/
 aclas_agent/agent.log
+backend/app/data/cache/
+backend/app/data/count_erkhet_settings.json

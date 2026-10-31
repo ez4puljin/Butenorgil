@@ -970,6 +970,114 @@ def compare_count_pdf(
         "Content-Disposition": f"inline; filename=count_{count_id}_diff.pdf; filename*=UTF-8''{quote(fname)}"})
 
 
+# ── Эрхэтийн импорт файл: илүүдэл → орлого, дутагдал → хангамжын зарлага (services/count_erkhet) ──
+
+class ErkhetCostIn(BaseModel):
+    location: str
+    date: date
+    force: bool = False
+
+
+class ErkhetFileIn(BaseModel):
+    kind: str                                  # income | expense
+    location: str
+    date: date
+    excel_file_id: Optional[int] = None
+    mode: str = "cost"                         # cost (өртөг, санал болгох) | sell (зарах үнэ)
+    no_erkhet_cost: bool = False               # Эрхэтийн байршлын өртөг татагдаагүй ч гаргах
+    customer: str = ""
+    related_account: str = ""
+    account: str = ""
+
+
+def _erk_loc(code: str) -> str:
+    from app.services import count_erkhet as ce
+    code = (code or "").strip()
+    if not any(l["code"] == code for l in ce.locations()):
+        raise HTTPException(400, f"«{code}» байршил Эрхэтэд алга")
+    return code
+
+
+def _erk_rows(db: Session, c: InventoryCount, p: Path, loc: str, day: date, mode: str, no_cost: bool):
+    from app.services import count_erkhet as ce
+    if mode not in ("cost", "sell"):
+        raise HTTPException(400, "mode: cost | sell")
+    cached = ce.cached_costs(loc, day) if mode == "cost" else None
+    if mode == "cost" and not cached and not no_cost:
+        return None
+    return ce.priced_rows(db, _compare_data(db, c, p)["rows"], (cached or {}).get("costs", {}), mode)
+
+
+@router.get("/counts/{count_id}/erkhet-export")
+def erkhet_export_info(
+    count_id: int,
+    location: Optional[str] = Query(None, max_length=8),
+    on: Optional[date] = Query(None, alias="date"),
+    excel_file_id: Optional[int] = Query(None),
+    mode: str = Query("cost"),
+    no_erkhet_cost: bool = Query(False),
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Тохиргоо (анхдагч байршил = агуулахаар, огноо = тооллогын), Эрхэтийн өртгийн төлөв, орлого/зарлагын урьдчилсан тоо."""
+    from app.services import count_erkhet as ce
+    c, f, p = _count_excel(db, count_id, excel_file_id)
+    loc = _erk_loc(location) if location else ce.WAREHOUSE_LOCATION.get(c.warehouse_key, "")
+    day = on or c.count_date
+    out = {"defaults": {"location": loc, "date": day.isoformat(), "mode": mode, **ce.load_settings()},
+           "locations": [{"code": l["code"], "name": l["name"]} for l in ce.locations()],
+           "price_src_label": ce.PRICE_SRC_LABEL, "kind_label": ce.KIND_LABEL,
+           "cost": ce.job_state(loc, day) if loc else {"status": "none"}, "preview": None}
+    if loc:
+        rows = _erk_rows(db, c, p, loc, day, mode, no_erkhet_cost)
+        out["preview"] = ce.preview(rows) if rows is not None else None
+    return out
+
+
+@router.post("/counts/{count_id}/erkhet-export/costs")
+def erkhet_export_costs(
+    count_id: int,
+    body: ErkhetCostIn,
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    """Эрхэтийн «Бараа материал /Өртгөөр/» тайлангаас байршлын нэгж өртгийг арын ажлаар татна (~1-2 мин, зөвхөн уншина)."""
+    from app.services import count_erkhet as ce
+    if not db.query(InventoryCount.id).filter(InventoryCount.id == count_id).first():
+        raise HTTPException(404, "Тооллого олдсонгүй")
+    try:
+        return ce.start_cost_job(_erk_loc(body.location), body.date, force=body.force)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/counts/{count_id}/erkhet-export/file")
+def erkhet_export_file(
+    count_id: int,
+    body: ErkhetFileIn,
+    db: Session = Depends(get_db),
+    _=Depends(require_role("admin", "supervisor", "manager")),
+):
+    from urllib.parse import quote
+    from app.services import count_erkhet as ce
+    from app.services.erkhet_xlsx import XLSX_MIME
+    if body.kind not in ("income", "expense"):
+        raise HTTPException(400, "kind: income | expense")
+    c, f, p = _count_excel(db, count_id, body.excel_file_id)
+    loc = _erk_loc(body.location)
+    rows = _erk_rows(db, c, p, loc, body.date, body.mode, body.no_erkhet_cost)
+    if rows is None:
+        raise HTTPException(409, "Эрхэтийн нэгж өртгийг эхлээд татна уу.")
+    s = ce.save_settings({"customer": body.customer, "related_account": body.related_account, "account": body.account})
+    try:
+        data, fname, _stats = ce.build_xlsx(rows, kind=body.kind, day=body.date, loc_code=loc, count_id=c.id,
+                                            source_file=f.original_filename or "", **s)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return Response(content=data, media_type=XLSX_MIME, headers={
+        "Content-Disposition": f"attachment; filename={fname}; filename*=UTF-8''{quote(fname)}"})
+
+
 @router.get("/calendar")
 def calendar_data(
     year: int,
