@@ -86,3 +86,4 @@ aclas_agent/work/
 aclas_agent/agent.log
 backend/app/data/cache/
 backend/app/data/count_erkhet_settings.json
+backend/app/data/red_report_settings.json

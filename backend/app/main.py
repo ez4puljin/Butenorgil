@@ -1487,6 +1487,8 @@ from app.api.stock_live import router as stock_live_router  # noqa: E402
 app.include_router(stock_live_router)
 from app.api.red_report import router as red_report_router  # noqa: E402
 app.include_router(red_report_router)
+from app.api.blocked_goods import router as blocked_goods_router  # noqa: E402
+app.include_router(blocked_goods_router)
 from app.api.conversion import router as conversion_router  # noqa: E402
 app.include_router(conversion_router)
 from app.api.price_cost import router as price_cost_router  # noqa: E402

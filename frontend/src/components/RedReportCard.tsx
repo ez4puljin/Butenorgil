@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, Loader2, Download, Printer, Settings2, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { RefreshCw, Loader2, Download, Settings2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { api } from "../lib/api";
 
 /* Хянах самбар → Улайлтын тайлан: Эрхэтэд сөрөг үлдэгдэлтэй бараа, тохируулсан байршлаар.
    Сервер ажлын цагаар (анхдагч 1 цаг тутам) Эрхэтээс байршил бүрийг ТУСАД НЬ татна — нэг тайланд
-   олон байршил асуухад Эрхэт 5 мин боловсруулаад унасан тул. «Хэвлэх» нь «Улайлт тайлан» хэлбэрээр. */
+   олон байршил асуухад Эрхэт 5 мин боловсруулаад унасан тул. Хэвлэх нь RedBlockedSection-д —
+   дарагдсан бараатай нэгтгэж агуулах бүр 1 хуудас. */
 
-interface Item {
+export interface Item {
   location: string; location_name: string; code: string; name: string; qty: number; amount: number;
   unit_cost: number; begin_qty: number; in_qty: number; out_qty: number;
 }
-interface Result {
+export interface Result {
   checked_at: string; day: string; seconds: number; locations: { code: string; name: string }[];
   count: number; amount: number; by_location: Record<string, number>; items: Item[]; errors?: Record<string, string>;
 }
@@ -21,9 +22,10 @@ function ub(iso?: string) {
   return new Date(new Date(iso).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
 }
 function n(v: number) { return v.toLocaleString("en-US", { maximumFractionDigits: 2 }); }
-function esc(s: string) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!)); }
 
-export default function RedReportCard() {
+export default function RedReportCard({ onResult }: { onResult?: (r: Result | null) => void }) {
+  const onRes = useRef(onResult);
+  onRes.current = onResult;
   const [res, setRes] = useState<Result | null>(null);
   const [st, setSt] = useState<{ running: boolean; error: string; next_manual_in: number } | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -37,6 +39,7 @@ export default function RedReportCard() {
     try {
       const r = await api.get("/red-report", { timeout: 60000 });
       setRes(r.data.result); setSt(r.data.status); setSettings(r.data.settings); setAll(r.data.all_locations ?? []);
+      onRes.current?.(r.data.result);
       return r.data.status;
     } catch (e: any) { setErr(e?.response?.data?.detail ?? "Улайлтын тайлан ачаалж чадсангүй"); return null; }
   }, []);
@@ -76,39 +79,12 @@ export default function RedReportCard() {
     a.click(); URL.revokeObjectURL(url);
   }
 
-  function print() {
-    if (!res) return;
-    const items = res.items.filter(i => !loc || i.location === loc);
-    const groups = res.locations.filter(l => !loc || l.code === loc).map(l => ({ l, rows: items.filter(i => i.location === l.code) }));
-    const html = `<!doctype html><html lang="mn"><head><meta charset="utf-8"><title>Улайлт тайлан</title>
-<style>
-@page{size:A4 portrait;margin:12mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111;margin:0}
-h1{font-size:18px;margin:0 0 2px}p.sub{margin:0 0 10px;color:#555}h2{font-size:13px;margin:14px 0 4px;border-bottom:2px solid #111;padding-bottom:2px}
-table{width:100%;border-collapse:collapse}th,td{border:1px solid #bbb;padding:3px 5px}th{background:#f3f4f6;text-align:left}
-td.n,th.n{text-align:right;white-space:nowrap}td.red{color:#dc2626;font-weight:bold}tr{page-break-inside:avoid}
-.foot{margin-top:12px;font-weight:bold}.sig{margin-top:28px;display:flex;gap:60px}
-</style></head><body>
-<h1>Улайлт тайлан</h1>
-<p class="sub">Эрхэтийн үлдэгдэл ${esc(ub(res.checked_at))}-ийн байдлаар · ${items.length} бараа</p>
-${groups.map(g => `<h2>${esc(g.l.code)} ${esc(g.l.name)} — ${g.rows.length} бараа</h2>
-<table><thead><tr><th style="width:28px">№</th><th style="width:70px">Код</th><th>Нэр</th><th class="n">Эхний</th><th class="n">Орлого</th><th class="n">Зарлага</th><th class="n">Эцсийн үлдэгдэл</th></tr></thead><tbody>
-${g.rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.code)}</td><td>${esc(r.name)}</td><td class="n">${n(r.begin_qty)}</td><td class="n">${n(r.in_qty)}</td><td class="n">${n(r.out_qty)}</td><td class="n red">${n(r.qty)}</td></tr>`).join("")}
-</tbody></table>`).join("")}
-<div class="foot">Нийт: ${items.length} бараа</div>
-<div class="sig"><span>Шалгасан: ____________________</span><span>Хариуцагч: ____________________</span></div>
-<script>window.onload=function(){setTimeout(function(){window.print()},200)}</script>
-</body></html>`;
-    const w = window.open("", "_blank", "width=900,height=700");
-    if (!w) { setErr("Хөтөч шинэ цонх нээхийг хориглолоо."); return; }
-    w.document.open(); w.document.write(html); w.document.close();
-  }
-
   const items = (res?.items ?? []).filter(i => !loc || i.location === loc);
   const bad = !!res && res.count > 0;
   return (
-    <div className="mt-6">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-semibold text-gray-900 sm:text-lg">Улайлтын тайлан</h2>
+    <div className="min-w-0">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-gray-900 sm:text-base">Улайлтын тайлан</h3>
         {res && <span className="text-xs text-gray-400">{ub(res.checked_at)}-ийн байдлаар</span>}
         <div className="ml-auto flex flex-wrap gap-2">
           <button onClick={() => setShowSet(v => !v)} title="Байршил тохируулах"
@@ -120,10 +96,6 @@ ${g.rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.code)}</td><td>${esc(r.
           <button onClick={download} disabled={!res}
             className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50">
             <Download size={12}/>Татах
-          </button>
-          <button onClick={print} disabled={!res}
-            className="flex items-center gap-1.5 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50">
-            <Printer size={12}/>Хэвлэх
           </button>
         </div>
       </div>
@@ -194,7 +166,7 @@ ${g.rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.code)}</td><td>${esc(r.
                 <tbody>
                   {items.map(i => (
                     <tr key={i.location + i.code} className="border-t border-gray-100">
-                      <td className="whitespace-nowrap px-2 py-1 text-gray-500">{i.location_name}</td>
+                      <td className="px-2 py-1 text-gray-500">{i.location_name}</td>
                       <td className="whitespace-nowrap px-2 py-1 font-mono text-gray-600">{i.code}</td>
                       <td className="px-2 py-1 text-gray-800">{i.name}</td>
                       <td className="whitespace-nowrap px-2 py-1 text-right font-mono text-gray-500">{n(i.begin_qty)}</td>
