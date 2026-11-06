@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     erkhet_url: str = "https://erkhet.bto.mn"   # env: ERKHET_URL
     erkhet_username: str = ""                    # env: ERKHET_USERNAME
     erkhet_password: str = ""                    # env: ERKHET_PASSWORD
-    erkhet_company_id: str = ""                  # env: ERKHET_COMPANY_ID (нэвтрэхэд автомат олдоно)
+    erkhet_company_id: str = "9514593312"        # env: ERKHET_COMPANY_ID (Бүтэн Оргил ХХК — бүртгэлд өөр компани бий)
     # Шөнийн автомат sync ажиллах цаг (0-23). env: ERKHET_SYNC_HOUR
     erkhet_sync_hour: int = 3
 

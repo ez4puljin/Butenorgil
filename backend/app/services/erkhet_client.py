@@ -125,10 +125,15 @@ class ErkhetClient:
         )
         if "/login" in r.url:
             raise ErkhetError("Эрхэтэд нэвтэрч чадсангүй — нэр/нууц үгээ шалгана уу.")
-        m = re.search(r"^https?://[^/]+/(\d+)/", r.url)
-        self._cid = m.group(1) if m else (settings.erkhet_company_id or "")
-        if not self._cid:
-            raise ErkhetError("Компанийн ID тодорхойлж чадсангүй.")
+        # Компанийг ЗӨВХӨН тохиргооноос. Бүртгэлд 2 компани бий (Бүтэн Оргил 9514593312, «pre 251025 BTO»
+        # 8722884653) — нэвтэрсний дараах чиглүүлэлтийг дагавал тайлан/импорт өөр компани руу очдог (2026-11).
+        cid = str(settings.erkhet_company_id or "").strip()
+        if not cid:
+            raise ErkhetError("Эрхэтийн компани тохируулаагүй байна. backend/.env-д ERKHET_COMPANY_ID нэмнэ үү.")
+        home = s.get(f"{self.base}/{cid}/", timeout=60)
+        if not re.match(rf"^https?://[^/]+/{re.escape(cid)}(/|$)", home.url) or home.status_code != 200:
+            raise ErkhetError(f"Эрхэтийн {cid} компани руу орж чадсангүй (HTTP {home.status_code}).")
+        self._cid = cid
         self._s = s
 
     def _session(self) -> requests.Session:
