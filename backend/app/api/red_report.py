@@ -1,14 +1,12 @@
 """Улайлтын тайлан — Эрхэтэд сөрөг үлдэгдэлтэй бараа (app/services/erkhet_red_report).
 
-  GET  /red-report            — сүүлийн үр дүн + тохиргоо + Эрхэтийн байршлууд + төлөв
-  PUT  /red-report/settings   — {locations, interval_min, start_hour, end_hour}
-  POST /red-report/run        — гараар шинэчлэх (5 минутын завсартай)
-  GET  /red-report/xlsx       — «Улайлт тайлан» Excel
+  GET  /red-report?locations=01,11  — сонгосон байршлын үр дүн + сүүлд сонгосон + Эрхэтийн байршлууд + төлөв
+  POST /red-report/run {locations}  — сонгосон байршлуудыг Эрхэтээс татах (автоматаар татахгүй)
+  GET  /red-report/xlsx?locations=  — «Улайлт тайлан» Excel
 """
 from __future__ import annotations
 
 import io
-import threading
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -33,44 +31,40 @@ def _all_locations() -> list[dict]:
             _locs.update(at=time.monotonic(), v=svc.locations())
         except Exception:
             pass
-    return _locs["v"]
+    if _locs["v"]:
+        return _locs["v"]
+    from app.services.count_erkhet import FALLBACK_LOCATIONS       # Эрхэт хүрэхгүй үед жагсаалт хоосрохгүй
+    return [{"id": "", "code": c, "name": n} for c, n in FALLBACK_LOCATIONS]
+
+
+def _codes(locations: Optional[str]) -> list[str]:
+    return [x.strip() for x in (locations or "").split(",") if x.strip()]
 
 
 @router.get("")
-def get_report(u: User = Depends(require_role(*VIEW))):
-    return {"result": svc.load_result(), "settings": svc.load_settings(), "status": svc.status(),
-            "all_locations": _all_locations()}
+def get_report(locations: Optional[str] = None, u: User = Depends(require_role(*VIEW))):
+    return {"result": svc.view(svc.load_result(), _codes(locations)), "settings": svc.load_settings(),
+            "status": svc.status(), "all_locations": _all_locations()}
 
 
-class SettingsIn(BaseModel):
-    locations: Optional[list[str]] = None
-    interval_min: Optional[int] = None
-    start_hour: Optional[int] = None
-    end_hour: Optional[int] = None
-
-
-@router.put("/settings")
-def put_settings(body: SettingsIn, u: User = Depends(require_role(*VIEW))):
-    return {"settings": svc.save_settings(body.model_dump(exclude_none=True))}
+class RunIn(BaseModel):
+    locations: list[str]
 
 
 @router.post("/run")
-def run(u: User = Depends(require_role(*VIEW))):
-    st = svc.status()
-    if st["running"]:
-        return {"started": False, "status": st}
-    if st["next_manual_in"]:
-        raise HTTPException(429, f"Эрхэтэд ачаалал үүсгэхгүйн тулд {st['next_manual_in']} секундын дараа дахин оролдоно уу.")
-    threading.Thread(target=svc.run, args=(True,), daemon=True, name="red-report").start()
-    return {"started": True}
+def run(body: RunIn, u: User = Depends(require_role(*VIEW))):
+    if not body.locations:
+        raise HTTPException(400, "Байршил сонгоно уу.")
+    svc.save_settings({"locations": body.locations})
+    return {"started": svc.start(body.locations)}
 
 
 @router.get("/xlsx")
-def xlsx(u: User = Depends(require_role(*VIEW))):
+def xlsx(locations: Optional[str] = None, u: User = Depends(require_role(*VIEW))):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
-    r = svc.load_result()
-    if not r:
+    r = svc.view(svc.load_result(), _codes(locations))
+    if not r or not r["checked_at"]:
         raise HTTPException(404, "Улайлтын тайлан хараахан гараагүй.")
     at = datetime.fromisoformat(r["checked_at"].rstrip("Z")) + timedelta(hours=8)
     wb = Workbook()

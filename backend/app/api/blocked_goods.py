@@ -1,7 +1,7 @@
 """Дарагдсан барааны тайлан — тухайн өдөр үүссэн deal-ийн tickUsed=false бараа (app/services/blocked_goods).
 
   GET /blocked-goods?day=YYYY-MM-DD&refresh=false  — агуулахаар нэгтгэсэн жагсаалт (10 мин кэштэй)
-  GET /blocked-goods/xlsx?day=YYYY-MM-DD           — Excel (агуулахаар + мөрөөр)
+  GET /blocked-goods/xlsx?day=YYYY-MM-DD&locations=01,11,_other — Excel (агуулахаар + мөрөөр); _other = байршилгүй
 """
 from __future__ import annotations
 
@@ -44,10 +44,16 @@ def get_report(day: Optional[str] = None, refresh: bool = False, u: User = Depen
 
 
 @router.get("/xlsx")
-def xlsx(day: Optional[str] = None, u: User = Depends(require_role(*VIEW))):
+def xlsx(day: Optional[str] = None, locations: Optional[str] = None, u: User = Depends(require_role(*VIEW))):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
-    r = _load(_day(day))
+    r = dict(_load(_day(day)))
+    if locations is not None:
+        want = {x.strip() for x in locations.split(",") if x.strip()}
+        r["items"] = [i for i in r["items"] if (i["location"] or "_other") in want]
+        r["lines"] = [ln for ln in r["lines"] if (ln["location"] or "_other") in want]
+        r["locations"] = [x for x in r["locations"] if (x["code"] or "_other") in want]
+        r["count"], r["deals_blocked"] = len(r["items"]), len({ln["deal_id"] for ln in r["lines"]})
     at = datetime.fromisoformat(r["checked_at"].rstrip("Z")) + timedelta(hours=8)
     head_fill = PatternFill("solid", start_color="F3F4F6")
     wb = Workbook()
