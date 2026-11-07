@@ -9,7 +9,7 @@ import CountErkhetExport from "../components/CountErkhetExport";
 // анхны утга доор нь харагдана.
 
 type Row = {
-  code: string; name: string; brand: string;
+  code: string; name: string; brand: string; tag?: string;
   program: number | null; program_orig: number | null; counted: number | null; counted_orig: number | null;
   diff: number; diff_orig: number; price: number; amount: number; amount_orig: number;
   adjusted: boolean; counted_adjusted: boolean; program_adjusted: boolean;
@@ -188,7 +188,7 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
     const byBrand = new Map<string, Row[]>();
     for (const r of rows) {
       if (brand && r.brand !== brand) continue;
-      if (needle && !`${r.code} ${r.name} ${r.brand}`.toLowerCase().includes(needle)) continue;
+      if (needle && !`${r.code} ${r.name} ${r.brand} ${r.tag ?? ""}`.toLowerCase().includes(needle)) continue;
       if (!pinned.has(r.code)) {
         if (view === "unmatched" && !r.diff) continue;
         if (view === "matched" && r.diff) continue;
@@ -385,12 +385,13 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
 
             {/* Хүснэгт */}
             <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 sm:px-5">
-              <table className="w-full min-w-[1040px] border-separate border-spacing-0 text-[12.5px]">
+              <table className="w-full min-w-[1160px] border-separate border-spacing-0 text-[12.5px]">
                 <thead className="sticky top-0 z-10">
                   <tr className="bg-[#1F4E78] text-left text-[11.5px] font-semibold text-white">
                     <th className="w-10 rounded-tl-lg px-2 py-2 text-center">№</th>
                     <th className="w-24 px-2 py-2">Код</th>
                     <th className="px-2 py-2">Нэр</th>
+                    <th className="w-36 px-2 py-2" title="Мастерын «Байршил tag»">Байршил tag</th>
                     <th className="w-24 px-2 py-2 text-right" title="Засах боломжтой — анхны утга доор нь">Програм ✎</th>
                     <th className="w-24 px-2 py-2 text-right" title="Засах боломжтой — анхны утга доор нь">Тооллого ✎</th>
                     <th className="w-24 px-2 py-2 text-right" title="Засах боломжтой — тоолсон = Програм + зөрүү">Зөрүү ✎</th>
@@ -401,7 +402,7 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
                 </thead>
                 <tbody>
                   {visible.length === 0 && (
-                    <tr><td colSpan={9} className="px-3 py-10 text-center text-gray-400">
+                    <tr><td colSpan={10} className="px-3 py-10 text-center text-gray-400">
                       {view === "unmatched" && !needle && !brand ? "Зөрүүтэй бараа алга — бүх бараа таарсан." : "Илэрц алга."}
                     </td></tr>
                   )}
@@ -426,6 +427,7 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
                             <td className="border-b border-gray-100 px-2 py-1.5 text-center tabular-nums text-gray-400">{no}</td>
                             <td onClick={() => openReport(r)} title="Эрхэтийн тайлан" className="cursor-pointer border-b border-gray-100 px-2 py-1.5 font-mono text-[12px] text-blue-700 hover:underline">{r.code}</td>
                             <td onClick={() => openReport(r)} title="Эрхэтийн тайлан" className="cursor-pointer border-b border-gray-100 px-2 py-1.5 text-gray-800 hover:text-blue-700 hover:underline">{r.name}</td>
+                            <td className="border-b border-gray-100 px-2 py-1.5 text-[12px] text-gray-600">{r.tag || <span className="text-gray-300">—</span>}</td>
                             {cell("program")}
                             {cell("counted")}
                             <td className="border-b border-gray-100 px-1 py-1 text-right">
@@ -587,7 +589,7 @@ function Stat({ label, value, sub, cls = "text-gray-900", icon, strong }: {
 function TotalRow({ label, t, bg, border }: { label: string; t: Totals; bg: string; border: string }) {
   return (
     <tr className={`font-bold text-gray-900 ${bg}`}>
-      <td colSpan={5} className={`border-t px-2 py-2 text-right ${border}`}>
+      <td colSpan={6} className={`border-t px-2 py-2 text-right ${border}`}>
         {label}
         <span className="ml-2 font-normal text-gray-500">
           (илүүдэл {fq(t.surplus_qty, true)} ш / {fa(t.surplus_amt, true)}₮ · дутагдал {fq(t.shortage_qty)} ш / {fa(t.shortage_amt)}₮)
@@ -607,7 +609,7 @@ function BrandBlock({ brand, t, active, onPick, children }: {
   return (
     <>
       <tr>
-        <td colSpan={9} className="border-b border-emerald-100 bg-emerald-50/70 px-2 py-1.5">
+        <td colSpan={10} className="border-b border-emerald-100 bg-emerald-50/70 px-2 py-1.5">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
             <button onClick={onPick} className="text-[13px] font-bold text-gray-900 hover:text-emerald-700 hover:underline"
               title={active ? "Бүх брэндийг харуулах" : "Зөвхөн энэ брэндийг харах"}>

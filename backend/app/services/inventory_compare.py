@@ -119,13 +119,16 @@ def totals(rows: list[dict]) -> dict:
 def build_compare(rows: list[dict], notes: dict[str, dict]) -> dict:
     """Брэнд, үнэ, зөрүүний дүн, тайлбар, тоолсон тооны залруулгыг нэмж брэндээр бүлэглэнэ.
     notes = {code: {"note", "by", "at", "counted"?, "counted_by"?, "counted_at"?, "program"?, …}}.
-    Зарах үнэ файлд байхгүй бол мастерын нэгж үнэ."""
+    Зарах үнэ файлд байхгүй бол мастерын нэгж үнэ. «Байршил tag» — мастерын (master_latest.xlsx)."""
+    from app.scripts.no_movement_report import _master_tags
     from app.services.mobile_pdf import master_products
     master = master_products()
+    tags = _master_tags()
     groups: dict[str, list] = {}
     for r in rows:
         m = master.get(r["code"])
         r["brand"] = (m["brand"] or NO_BRAND) if m else NOT_IN_MASTER
+        r["tag"] = tags.get(r["code"], "")
         if not r["price"] and m and m.get("price"):
             r["price"] = m["price"]
         r["price"] = r["price"] or 0.0
