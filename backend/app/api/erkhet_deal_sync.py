@@ -219,6 +219,13 @@ class ResyncIn(BaseModel):
     confirm: bool = False
 
 
+def _kind_mismatch(items: list[dict], configs: dict[str, str], cfgs: dict[str, dict]) -> list[str]:
+    """Хөдөлгөөний deal-ийг борлуулалтын config-оор (эсвэл эсрэгээр) sync хийвэл Эрхэтэд буруу төрлийн баримт үүснэ."""
+    names = {p["_id"]: p["name"] for b in _meta()["boards"] for p in b["pipelines"]}
+    return [x["number"] for x in items if (c := cfgs.get(configs.get(x["pipeline_id"], "")))
+            and c.get("kind", "sale") != svc.pipeline_kind(names.get(x["pipeline_id"], ""))]
+
+
 def _resync_items(db: Session, body: ResyncIn) -> list[dict]:
     ids = list(dict.fromkeys(body.deal_ids))
     if not ids:
@@ -242,6 +249,9 @@ def resync_preview(body: ResyncIn, db: Session = Depends(get_db), u: User = Depe
         raise HTTPException(400, "dateType буруу.")
     items = _resync_items(db, body)
     cfgs = {c["stageId"]: c for c in _meta()["configs"]}
+    wrong = _kind_mismatch(items, body.configs, cfgs)
+    if wrong:
+        raise HTTPException(400, f"Хөдөлгөөний deal-д хөдөлгөөний, борлуулалтынхад борлуулалтын config сонгоно уу: {', '.join(wrong[:5])}")
     groups: dict[str, dict] = {}
     no_cfg = []
     for x in items:
@@ -251,7 +261,9 @@ def resync_preview(body: ResyncIn, db: Session = Depends(get_db), u: User = Depe
             no_cfg.append(x["number"])
             continue
         g = groups.setdefault(cid, {"config_stage_id": cid, "title": c["title"], "defaultPay": c["defaultPay"],
-                                    "cash_warning": c["defaultPay"] != "debtAmount", "n": 0, "amount": 0.0})
+                                    "kind": c.get("kind", "sale"),
+                                    "cash_warning": c.get("kind", "sale") == "sale" and c["defaultPay"] != "debtAmount",
+                                    "n": 0, "amount": 0.0})
         g["n"] += 1
         g["amount"] += x["amount"]
     fix = [x["number"] for x in items if body.fixPayments and x["payments_bad"]]
@@ -267,10 +279,13 @@ def resync(body: ResyncIn, request: Request, db: Session = Depends(get_db), u: U
     if body.dateType not in {v for v, _ in svc.DATE_TYPES}:
         raise HTTPException(400, "dateType буруу.")
     items = _resync_items(db, body)
-    cfgs = {c["stageId"] for c in _meta()["configs"]}
-    bad = [x["number"] for x in items if body.configs.get(x["pipeline_id"]) not in cfgs]
+    cfg_map = {c["stageId"]: c for c in _meta()["configs"]}
+    bad = [x["number"] for x in items if body.configs.get(x["pipeline_id"]) not in cfg_map]
     if bad:
         raise HTTPException(400, f"Config сонгоогүй deal: {', '.join(bad[:5])}")
+    wrong = _kind_mismatch(items, body.configs, cfg_map)
+    if wrong:
+        raise HTTPException(400, f"Хөдөлгөөний deal-д хөдөлгөөний, борлуулалтынхад борлуулалтын config сонгоно уу: {', '.join(wrong[:5])}")
     busy = svc.lock_deals([x["deal_id"] for x in items])
     if busy:
         raise HTTPException(409, f"{len(busy)} deal дээр өөр sync ажиллаж байна.")

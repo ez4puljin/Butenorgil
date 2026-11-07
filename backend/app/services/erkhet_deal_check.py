@@ -478,19 +478,24 @@ def fetch_meta() -> dict:
     return {"boards": boards, "configs": fetch_configs()}
 
 
+CONFIG_CODES = (("ebarimtConfig", "sale"), ("stageInMoveConfig", "move"))   # борлуулалт (авлага) / хөдөлгөөн
+
+
 def fetch_configs() -> list[dict]:
-    raw = _gql('query { configsGetValue(code: "ebarimtConfig") }').get("configsGetValue")
-    v = _j(raw)
-    v = _j(v.get("value", v)) if isinstance(v, dict) and "value" in v else v
+    """erxes syncerkhet-ийн sync тохиргоо: борлуулалтын (ebarimtConfig) ба хөдөлгөөний (stageInMoveConfig).
+    toSyncDeals(configStageId) хоёуланг нь хүлээж авдаг — хөдөлгөөний deal-ийг хөдөлгөөний config-оор."""
     out = []
-    for k, c in (v or {}).items():
-        if not isinstance(c, dict):
-            continue
-        c = _scrub(c)
-        out.append({"stageId": c.get("stageId") or k, "title": c.get("title") or "", "boardId": c.get("boardId") or "",
-                    "pipelineId": c.get("pipelineId") or "", "userEmail": c.get("userEmail") or "",
-                    "defaultPay": c.get("defaultPay") or "", "hasVat": bool(c.get("hasVat")),
-                    "hasCitytax": bool(c.get("hasCitytax"))})
+    for code, kind in CONFIG_CODES:
+        v = _j(_gql('query($c: String!) { configsGetValue(code: $c) }', {"c": code}).get("configsGetValue"))
+        v = _j(v.get("value", v)) if isinstance(v, dict) and "value" in v else v
+        for k, c in (v or {}).items():
+            if not isinstance(c, dict):
+                continue
+            c = _scrub(c)
+            out.append({"stageId": c.get("stageId") or k, "title": c.get("title") or "", "boardId": c.get("boardId") or "",
+                        "pipelineId": c.get("pipelineId") or "", "userEmail": c.get("userEmail") or "",
+                        "defaultPay": c.get("defaultPay") or "", "hasVat": bool(c.get("hasVat")),
+                        "hasCitytax": bool(c.get("hasCitytax")), "kind": kind})
     return out
 
 

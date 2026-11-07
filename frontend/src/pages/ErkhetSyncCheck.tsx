@@ -11,7 +11,7 @@ type Sev = "error" | "warn" | "info" | "ok";
 interface Stage { _id: string; name: string; category: string; saved: boolean }
 interface Pipe { _id: string; name: string; included: boolean; stages: Stage[] }
 interface Board { _id: string; name: string; pipelines: Pipe[] }
-interface Cfg { stageId: string; title: string; pipelineId: string; userEmail: string; defaultPay: string; hasVat: boolean }
+interface Cfg { stageId: string; title: string; pipelineId: string; userEmail: string; defaultPay: string; hasVat: boolean; kind?: "sale" | "move" }
 interface Meta {
   boards: Board[]; defaultBoardId: string; configs: Cfg[];
   dateTypes: { value: string; label: string }[];
@@ -614,9 +614,14 @@ function ResyncModal({ run, items, meta, onClose, onStarted }: {
   run: Run; items: Item[]; meta: Meta; onClose: () => void; onStarted: (id: number) => void;
 }) {
   const pipes = [...new Map(items.map(x => [x.pipeline_id, x.data.pipeline])).entries()];
-  const debtCfgs = (pid: string) => meta.configs.filter(c => c.pipelineId === pid && c.defaultPay === "debtAmount");
-  // Санал: авлагатай (debtAmount) config-уудаас — өмнөх sync-ийн userEmail, НӨАТ (hasVat) таарсан, «Баримт хэвлэх»
+  const pipeKind = (pid: string) => (items.find(x => x.pipeline_id === pid)?.data.kind ?? "sale");
+  // Хөдөлгөөний deal → зөвхөн хөдөлгөөний config (stageInMoveConfig, жишээ «Бэлдсэн & Хяналт»), борлуулалтынх → борлуулалтын
+  const kindCfgs = (pid: string) => meta.configs.filter(c => (c.kind ?? "sale") === pipeKind(pid));
+  const debtCfgs = (pid: string) => meta.configs.filter(c => c.pipelineId === pid && c.defaultPay === "debtAmount" && (c.kind ?? "sale") === "sale");
+  // Санал: хөдөлгөөнд — тухайн pipeline-ийн хөдөлгөөний config; борлуулалтад — авлагатай (debtAmount) config-уудаас
+  // өмнөх sync-ийн userEmail, НӨАТ (hasVat) таарсан, «Баримт хэвлэх»
   function suggest(pid: string) {
+    if (pipeKind(pid) === "move") return kindCfgs(pid).find(c => c.pipelineId === pid)?.stageId ?? "";
     const cs = debtCfgs(pid);
     const its = items.filter(x => x.pipeline_id === pid);
     const top = <T,>(xs: T[]) => [...xs.reduce((m, u) => m.set(u, (m.get(u) ?? 0) + 1), new Map<T, number>()).entries()]
@@ -664,11 +669,15 @@ function ResyncModal({ run, items, meta, onClose, onStarted }: {
                 <select value={cfg[pid] ?? ""} onChange={e => setCfg(s => ({ ...s, [pid]: e.target.value }))}
                   className="w-full rounded-lg border border-gray-200 px-2 py-1.5">
                   <option value="">— Config сонгох —</option>
-                  {meta.configs.map(x => <option key={x.stageId} value={x.stageId}>
-                    {x.title}{x.pipelineId !== pid ? " (өөр pipeline)" : ""} · defaultPay={x.defaultPay || "хоосон"}
+                  {kindCfgs(pid).map(x => <option key={x.stageId} value={x.stageId}>
+                    {x.kind === "move" ? "Хөдөлгөөн: " : ""}{x.title}{x.pipelineId !== pid ? " (өөр pipeline)" : ""}
+                    {x.kind === "move" ? "" : ` · defaultPay=${x.defaultPay || "хоосон"}`}
                   </option>)}
                 </select>
-                {c && c.defaultPay !== "debtAmount" && (
+                {pipeKind(pid) === "move" && (
+                  <div className="mt-1 text-[11.5px] text-gray-500">Хөдөлгөөний deal — Эрхэтэд хөдөлгөөний баримтаар (авлагагүй) илгээнэ.</div>
+                )}
+                {c && (c.kind ?? "sale") === "sale" && c.defaultPay !== "debtAmount" && (
                   <div className="mt-1.5 flex items-center gap-1.5 rounded-lg bg-rose-50 px-2 py-1.5 text-[12px] font-semibold text-rose-700">
                     <ShieldAlert size={14}/>Энэ config-оор sync хийвэл авлага үүсэхгүй (CASH болно)
                   </div>

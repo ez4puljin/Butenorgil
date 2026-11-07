@@ -205,3 +205,30 @@ class ClassifyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from app.services import erkhet_deal_check as svc  # noqa: E402
+
+
+class MoveConfigTest(unittest.TestCase):
+    def test_fetch_configs_reads_sale_and_move(self):
+        from unittest import mock
+        vals = {"ebarimtConfig": {"s1": {"stageId": "s1", "title": "Баримт хэвлэх", "pipelineId": "P", "defaultPay": "debtAmount",
+                                         "apiKey": "SECRET"}},
+                "stageInMoveConfig": {"m1": {"stageId": "m1", "title": "Архины заал хөдөлгөөн", "pipelineId": "W",
+                                             "userEmail": "a@b", "catAccLocMap": []}}}
+        with mock.patch.object(svc, "_gql", lambda q, v=None, tries=3: {"configsGetValue": vals[v["c"]]}):
+            cs = {c["stageId"]: c for c in svc.fetch_configs()}
+        self.assertEqual((cs["s1"]["kind"], cs["m1"]["kind"], cs["m1"]["pipelineId"]), ("sale", "move", "W"))
+        self.assertNotIn("SECRET", json.dumps(cs))
+
+    def test_resync_rejects_wrong_kind_config(self):
+        from unittest import mock
+        from app.api import erkhet_deal_sync as api
+        meta = {"boards": [{"pipelines": [{"_id": "W", "name": "{Агуулах --> Архины заал} хөдөлгөөн"},
+                                          {"_id": "P", "name": "Мөрөн Борлуулалт"}]}]}
+        cfgs = {"s1": {"kind": "sale"}, "m1": {"kind": "move"}}
+        items = [{"number": "A", "pipeline_id": "W"}, {"number": "B", "pipeline_id": "P"}]
+        with mock.patch.object(api, "_meta", lambda fresh=False: meta):
+            self.assertEqual(api._kind_mismatch(items, {"W": "m1", "P": "s1"}, cfgs), [])
+            self.assertEqual(api._kind_mismatch(items, {"W": "s1", "P": "m1"}, cfgs), ["A", "B"])
