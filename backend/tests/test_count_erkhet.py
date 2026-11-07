@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 from python_calamine import CalamineWorkbook
 
-from app.services import conversion, count_erkhet as ce, erkhet_xlsx
+from app.services import conversion, count_erkhet as ce, erkhet_client, erkhet_xlsx
 
 
 @pytest.fixture(autouse=True)
@@ -129,3 +129,52 @@ def test_build_refuses_empty_kind():
     rows = ce.priced_rows(None, [cmp("1", -1, 500)], {}, "cost", lpp={}, wh={})
     with pytest.raises(ValueError, match="Илүүдэл"):
         ce.build_xlsx(rows, kind="income", day=date(2026, 10, 31), loc_code="03", count_id=1, **SET)
+
+
+def test_clean_report_html_strips_scripts_and_csrf():
+    raw = ('<html><head><title>T</title><script src="/static/js/jquery.js"></script></head><body>'
+           '<div id="nav_buttons" class="no-print"><form><input type="hidden" name="csrfmiddlewaretoken" value="SECRET"/>'
+           '<button onClick="window.print()">Хэвлэх</button></form></div><div class="loader" id="a"><img/></div>'
+           '<div id="report_container"><table><tr><td>106070</td></tr></table></div><script>alert(1)</script></body></html>')
+    out = ce.clean_report_html(raw, "https://erkhet.test")
+    assert "SECRET" not in out and "<script" not in out and "nav_buttons" not in out and "loader" not in out
+    assert '<base href="https://erkhet.test/"' in out and "106070" in out
+
+
+def test_item_report_sends_detail_flags_for_exact_item(monkeypatch):
+    sent = {}
+
+    class C:
+        base = "https://erkhet.test"
+
+        def find_inventory_id(self, code, name=""):
+            return "18870" if code == "106070" else ""
+
+        def report_html(self, path, params):
+            sent.update(params)
+            return "<html><head></head><body>ok</body></html>"
+
+    monkeypatch.setitem(ce._item_report, "client", C())
+    monkeypatch.setitem(ce._item_report, "ids", {})
+    monkeypatch.setattr(ce, "locations", lambda: [{"code": "02", "name": "Ус", "id": "2"}])
+    out = ce.item_report_html("106070", "02", date(2026, 11, 1), date(2026, 11, 6))
+    assert "ok" in out
+    assert (sent["inv_location"], sent["inventory"], sent["is_long"], sent["has_ptr_date"]) == (["2"], ["18870"], "on", "on")
+    assert (sent["begin_date"], sent["end_date"], sent["get_kind"]) == ("11/01/2026", "11/06/2026", "account_location")
+    with pytest.raises(ValueError, match="999"):
+        ce.item_report_html("999", "02", date(2026, 11, 1), date(2026, 11, 6))
+    with pytest.raises(ValueError, match="77"):
+        ce.item_report_html("106070", "77", date(2026, 11, 1), date(2026, 11, 6))
+
+
+def test_find_inventory_id_falls_back_to_exact_name(monkeypatch):
+    c = erkhet_client.ErkhetClient(base_url="https://erkhet.test", username="u", password="p")
+    opts = {"103408": [],
+            "Essa пиво лаазтай 0.5гр": [("37097", "103096 - Алтанторх рус ХХК - Essa пиво лаазтай 0.5гр @460566")],
+            "Essa": [("1", "103006 - А - Essa"), ("2", "103007 - Б - Essa")],
+            "106070": [("18870", "106070 - ТОТАЛ - Түмний алим 2л @865"), ("9", "1060701 - ТОТАЛ - Өөр")]}
+    monkeypatch.setattr(c, "_inventory_options", lambda search, form_path: opts.get(search, []))
+    assert c.find_inventory_id("106070") == "18870"
+    assert c.find_inventory_id("103408", "Essa пиво лаазтай 0.5гр") == "37097"      # код солигдсон
+    assert c.find_inventory_id("103408", "Essa") == ""                              # нэр олон бараатай — таамаглахгүй
+    assert c.find_inventory_id("103408") == ""

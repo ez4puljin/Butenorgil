@@ -1081,6 +1081,41 @@ def erkhet_export_file(
         "Content-Disposition": f"attachment; filename={fname}; filename*=UTF-8''{quote(fname)}"})
 
 
+@router.get("/counts/{count_id}/erkhet-report/options")
+def erkhet_report_options(count_id: int, db: Session = Depends(get_db),
+                          _=Depends(require_role("admin", "supervisor", "manager"))):
+    """Бараа дээр дарахад гарах Эрхэтийн тайлангийн анхны тохиргоо: байршил = агуулах, сарын эхнээс тооллогын өдөр."""
+    from app.services import count_erkhet as ce
+    c = db.get(InventoryCount, count_id)
+    if not c:
+        raise HTTPException(404, "Тооллого олдсонгүй")
+    return {"location": ce.WAREHOUSE_LOCATION.get(c.warehouse_key, ""), "begin": c.count_date.replace(day=1).isoformat(),
+            "end": c.count_date.isoformat(), "locations": [{"code": x["code"], "name": x["name"]} for x in ce.locations()]}
+
+
+class ErkhetReportIn(BaseModel):
+    code: str
+    name: str = ""
+    location: str
+    begin: date
+    end: date
+
+
+@router.post("/counts/{count_id}/erkhet-report")
+def erkhet_item_report(count_id: int, body: ErkhetReportIn, _=Depends(require_role("admin", "supervisor", "manager"))):
+    """Эрхэтийн «Бараа материал /Өртгөөр/» нэг бараагаар (Дэлгэрэнгүй, А.Г огноо) — ЗӨВХӨН уншина."""
+    from app.services import count_erkhet as ce
+    if body.begin > body.end:
+        raise HTTPException(400, "Эхний огноо эцсийн огнооноос хойш байна.")
+    try:
+        return Response(ce.item_report_html(body.code.strip(), body.location, body.begin, body.end, body.name),
+                        media_type="text/html; charset=utf-8")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Эрхэтээс тайлан авч чадсангүй: {str(e)[:200]}")
+
+
 @router.get("/calendar")
 def calendar_data(
     year: int,

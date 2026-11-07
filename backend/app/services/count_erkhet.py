@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import threading
 import time
 import traceback
@@ -81,6 +82,41 @@ def _client():
     """Тусдаа session — 2 минутын тайлан бусад Эрхэтийн дуудлагыг (дундын клиентийн lock) хаахгүй."""
     from app.services.erkhet_client import ErkhetClient
     return ErkhetClient(timeout=900)
+
+
+_item_report: dict = {"client": None, "ids": {}}   # тусдаа session — дундын клиентийн lock-д хүлээхгүй
+_item_lock = threading.Lock()
+
+
+def clean_report_html(raw: str, base: str) -> str:
+    """Эрхэтийн тайлан → цонхонд харуулах: script, Excel/Хэвлэх форм (CSRF токентой) хасаж, static/холбоосыг Эрхэт рүү."""
+    html = re.sub(r"<script\b.*?</script>", "", raw, flags=re.S | re.I)
+    html = re.sub(r'<div id="nav_buttons".*?(?=<div class="loader")', "", html, count=1, flags=re.S)
+    html = re.sub(r'<div class="loader".*?</div>', "", html, count=1, flags=re.S)
+    html = re.sub(r"<input[^>]*csrfmiddlewaretoken[^>]*>", "", html, flags=re.I)
+    return re.sub(r"<head([^>]*)>", lambda m: f'<head{m.group(1)}><base href="{base}/" target="_blank">'
+                  "<style>#prev,#next{display:none!important}</style>", html, count=1, flags=re.I)
+
+
+def item_report_html(code: str, loc_code: str, begin: date, end: date, name: str = "") -> str:
+    """Эрхэтийн «Бараа материал /Өртгөөр/» нэг бараа, нэг байршлаар — Дэлгэрэнгүй + А.Г огноотой. ЗӨВХӨН уншина."""
+    from app.services.erkhet_client import ErkhetClient
+    with _item_lock:
+        c = _item_report["client"] or ErkhetClient()
+        _item_report["client"] = c
+    loc = next((x["id"] for x in locations() if x["code"] == loc_code), "")
+    if not loc:
+        raise ValueError(f"Эрхэтэд {loc_code} байршил олдсонгүй.")
+    iid = _item_report["ids"].get(code) or c.find_inventory_id(code, name)
+    if not iid:
+        raise ValueError(f"Эрхэтэд {code} кодтой бараа олдсонгүй.")
+    _item_report["ids"][code] = iid
+    raw = c.report_html(COST_REPORT, {"inv_location": [loc], "inventory": [iid], "get_kind": "account_location",
+                                      "get_tr_kind": "all", "fraction": "2", "is_long": "on", "has_ptr_date": "on",
+                                      "begin_date": begin.strftime("%m/%d/%Y"), "end_date": end.strftime("%m/%d/%Y")})
+    if 'id="report_form"' in raw:
+        raise ValueError("Эрхэт тайлангийн формыг хүлээж авсангүй.")
+    return clean_report_html(raw, c.base)
 
 
 def locations() -> list[dict]:

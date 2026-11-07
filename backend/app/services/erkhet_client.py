@@ -197,6 +197,32 @@ class ErkhetClient:
                 return v
         return ""
 
+    def _inventory_options(self, search: str, form_path: str) -> list[tuple[str, str]]:
+        """Тайлангийн «Бараа материал» талбарын selectory-filter → [(дотоод id, «код - брэнд - нэр @баркод»)]."""
+        with self._lock:
+            self._get(form_path)                         # session/CSRF шинэчилнэ
+            s = self._session()
+            r = s.post(self._url("selectory-filter"),
+                       data={"csrfmiddlewaretoken": s.cookies.get("csrftoken", ""), "field": "inventory",
+                             "search": search, "multi": "true", "selected_ids": ""},
+                       headers={"Referer": self._url(form_path), "Origin": self.base, "X-Requested-With": "XMLHttpRequest"},
+                       timeout=60)
+            r.raise_for_status()
+        return [(v, _text(t)) for v, t in re.findall(r'<option[^>]*value="([^"]+)"[^>]*>(.*?)</option>',
+                                                     r.json().get("options", ""), re.S)]
+
+    def find_inventory_id(self, code: str, name: str = "", form_path: str = "inventory/report/generate/") -> str:
+        """Барааны кодоор Эрхэтийн дотоод id. Код солигдсон бол (Эрхэтэд хуучин код алга) яг ижил нэрээр — ганц таарвал."""
+        for v, label in self._inventory_options(code, form_path):
+            if label.startswith(f"{code} - "):
+                return v
+        name = " ".join(name.split())
+        if not name:
+            return ""
+        same = [v for v, label in self._inventory_options(name, form_path)
+                if " ".join(label.split("@")[0].split()).endswith(f" - {name}")]
+        return same[0] if len(same) == 1 else ""
+
     # ── тайлан ───────────────────────────────────────────────────────
     def report_html(self, path: str, params: dict[str, str | Iterable[str]],
                     timeout: int | None = None) -> str:

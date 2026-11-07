@@ -95,6 +95,8 @@ function printPdf(url: string) {
   document.body.appendChild(ifr);
 }
 
+interface ReportCfg { location: string; begin: string; end: string }
+
 export default function InventoryCountCompare({ countId, fileId, onClose }: {
   countId: number; fileId: number | null; onClose: () => void;
 }) {
@@ -113,6 +115,29 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
   const [pdfBusy, setPdfBusy] = useState<"print" | "download" | null>(null);
   const [erkOpen, setErkOpen] = useState(false);
   const pending = useRef(new Set<Promise<unknown>>());
+  const [rep, setRep] = useState<ReportCfg | null>(null);
+  const [repLocs, setRepLocs] = useState<{ code: string; name: string }[]>([]);
+  const [repRow, setRepRow] = useState<{ code: string; name: string } | null>(null);
+  const repOpen = useRef(false);
+  repOpen.current = !!repRow;
+
+  // Бараа дээр дарахад авах Эрхэтийн тайлангийн байршил + огноо — тооллого бүрээр санана
+  useEffect(() => {
+    let alive = true;
+    let saved: ReportCfg | null = null;
+    try { saved = JSON.parse(localStorage.getItem(`count_erk_report_${countId}`) ?? "null"); } catch { /* хоосон */ }
+    api.get(`/inventory-count/counts/${countId}/erkhet-report/options`).then((r) => {
+      if (!alive) return;
+      setRepLocs(r.data.locations);
+      setRep(saved ?? { location: r.data.location, begin: r.data.begin, end: r.data.end });
+    }).catch(() => { if (alive && saved) setRep(saved); });
+    return () => { alive = false; };
+  }, [countId]);
+  const setRepField = (k: keyof ReportCfg, v: string) => setRep((c) => {
+    const n = { ...(c ?? { location: "", begin: "", end: "" }), [k]: v };
+    try { localStorage.setItem(`count_erk_report_${countId}`, JSON.stringify(n)); } catch { /* зөвхөн тав тух */ }
+    return n;
+  });
 
   useEffect(() => {
     let alive = true;
@@ -125,7 +150,10 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
   }, [countId, fid]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !(e.target as HTMLElement)?.closest?.("input")) onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || (e.target as HTMLElement)?.closest?.("input")) return;
+      if (repOpen.current) setRepRow(null); else onClose();
+    };
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", onKey);
@@ -134,6 +162,11 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
 
   useEffect(() => { setPinned(new Set()); }, [view, brand, q]);
 
+  const openReport = (r: Row) => {
+    if (window.getSelection()?.toString()) return;              // кодыг хуулах гэж сонгож байвал нээхгүй
+    if (!rep?.location || !rep.begin || !rep.end) { flash("Эрхэтийн тайлангийн байршил, огноог тохируулна уу."); return; }
+    setRepRow({ code: r.code, name: r.name });
+  };
   const flash = (msg: string) => { setErr(msg); setTimeout(() => setErr((m) => (m === msg ? "" : m)), 4000); };
   const markSaved = (set: typeof setNoteState, code: string) => {
     set((s) => ({ ...s, [code]: "saved" }));
@@ -290,6 +323,8 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
           <CountErkhetExport countId={countId} fileId={data.file.id} flush={flush} onClose={() => setErkOpen(false)} />
         )}
 
+        {repRow && rep && <ErkhetReport countId={countId} row={repRow} cfg={rep} onClose={() => setRepRow(null)} />}
+
         {loading && !data ? (
           <div className="flex flex-1 items-center justify-center gap-2 text-sm text-gray-400"><RefreshCw size={16} className="animate-spin" /> Тооллогын хуудсыг уншиж байна…</div>
         ) : !data ? (
@@ -328,6 +363,19 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
                   return <option key={g.brand} value={g.brand}>{g.brand} — {s?.unmatched ?? 0}/{s?.items ?? 0}</option>;
                 })}
               </select>
+              <div className="flex flex-wrap items-center gap-1.5 rounded-lg bg-gray-50 px-2 py-1 text-[12px] text-gray-500" title="Бараа дээр дарахад Эрхэтийн «Бараа материал /Өртгөөр/» тайлан эдгээрээр гарна">
+                Эрхэт тайлан:
+                <select value={rep?.location ?? ""} onChange={(e) => setRepField("location", e.target.value)}
+                  className="max-w-[170px] rounded border border-gray-200 bg-white px-1.5 py-1 text-[12px] text-gray-700 outline-none">
+                  <option value="">Байршил…</option>
+                  {repLocs.map((l) => <option key={l.code} value={l.code}>{l.code} {l.name}</option>)}
+                </select>
+                <input type="date" value={rep?.begin ?? ""} onChange={(e) => setRepField("begin", e.target.value)}
+                  className="rounded border border-gray-200 bg-white px-1 py-0.5 text-[12px] text-gray-700 outline-none" />
+                –
+                <input type="date" value={rep?.end ?? ""} onChange={(e) => setRepField("end", e.target.value)}
+                  className="rounded border border-gray-200 bg-white px-1 py-0.5 text-[12px] text-gray-700 outline-none" />
+              </div>
               <div className="relative ml-auto w-full sm:w-64">
                 <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Код, нэр, брэнд…"
@@ -376,8 +424,8 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
                         return (
                           <tr key={`${b}-${r.code}`} className={`align-top ${r.adjusted ? "bg-violet-50/50" : ""} hover:bg-blue-50/40`}>
                             <td className="border-b border-gray-100 px-2 py-1.5 text-center tabular-nums text-gray-400">{no}</td>
-                            <td className="border-b border-gray-100 px-2 py-1.5 font-mono text-[12px] text-gray-600">{r.code}</td>
-                            <td className="border-b border-gray-100 px-2 py-1.5 text-gray-800">{r.name}</td>
+                            <td onClick={() => openReport(r)} title="Эрхэтийн тайлан" className="cursor-pointer border-b border-gray-100 px-2 py-1.5 font-mono text-[12px] text-blue-700 hover:underline">{r.code}</td>
+                            <td onClick={() => openReport(r)} title="Эрхэтийн тайлан" className="cursor-pointer border-b border-gray-100 px-2 py-1.5 text-gray-800 hover:text-blue-700 hover:underline">{r.name}</td>
                             {cell("program")}
                             {cell("counted")}
                             <td className="border-b border-gray-100 px-1 py-1 text-right">
@@ -436,6 +484,44 @@ export default function InventoryCountCompare({ countId, fileId, onClose }: {
 }
 
 /** Засварласан нүдний доорх «анх …» (+ ↺ анхны утга руу буцаах). */
+/* Эрхэтийн тайланг сервер татаж (компани 9514593312, Дэлгэрэнгүй + А.Г огноо) sandbox iframe-д харуулна —
+   Эрхэтийн форм CSRF-тэй тул хөтчөөс шууд бөглөж илгээх боломжгүй. */
+function ErkhetReport({ countId, row, cfg, onClose }: {
+  countId: number; row: { code: string; name: string }; cfg: ReportCfg; onClose: () => void;
+}) {
+  const [html, setHtml] = useState("");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    let alive = true;
+    api.post(`/inventory-count/counts/${countId}/erkhet-report`, { code: row.code, name: row.name, location: cfg.location, begin: cfg.begin, end: cfg.end },
+      { responseType: "text", timeout: 180000 })
+      .then((r) => { if (alive) setHtml(r.data); })
+      .catch((e) => {
+        if (!alive) return;
+        let m = "Эрхэтээс тайлан авч чадсангүй.";
+        try { m = JSON.parse(e?.response?.data ?? "").detail ?? m; } catch { /* анхны мессеж */ }
+        setErr(m);
+      });
+    return () => { alive = false; };
+  }, [countId, row.code, cfg.location, cfg.begin, cfg.end]);
+  return (
+    <div className="fixed inset-0 z-[60] flex bg-black/40 p-2 sm:p-6" onClick={onClose}>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 border-b border-gray-100 px-4 py-2.5">
+          <div className="min-w-0 flex-1 truncate text-sm font-bold text-gray-900">
+            <span className="font-mono">{row.code}</span> {row.name}
+            <span className="ml-2 text-xs font-normal text-gray-500">{cfg.location} байршил · {cfg.begin} – {cfg.end}</span>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Хаах (Esc)"><X size={18} /></button>
+        </div>
+        {err ? <div className="m-4 rounded-lg bg-red-50 px-3 py-2 text-[12.5px] text-red-700">{err}</div>
+          : !html ? <div className="flex flex-1 items-center justify-center gap-2 text-sm text-gray-400"><RefreshCw size={16} className="animate-spin" /> Эрхэтээс тайлан авч байна…</div>
+          : <iframe title="Эрхэтийн тайлан" srcDoc={html} sandbox="allow-popups" className="min-h-0 flex-1 border-0 bg-white" />}
+      </div>
+    </div>
+  );
+}
+
 function Orig({ value, title, onReset }: { value: string; title: string; onReset?: () => void }) {
   return (
     <div className="flex items-center justify-end gap-1 px-1 text-[10.5px] text-gray-400" title={title}>
