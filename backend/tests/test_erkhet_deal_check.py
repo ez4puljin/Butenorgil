@@ -210,6 +210,46 @@ if __name__ == "__main__":
 from app.services import erkhet_deal_check as svc  # noqa: E402
 
 
+class DiffLocationTest(unittest.TestCase):
+    def test_diff_rows_carry_warehouse(self):
+        prods = [{"productId": "p1", "quantity": 6, "amount": 600, "tickUsed": True, "departmentId": "D01"},
+                 {"productId": "p2", "quantity": 2, "amount": 200, "tickUsed": True, "departmentId": "D02"}]
+        items = deal_items(prods, {"p1": "101", "p2": "102"}, {"D01": "Бөөний агуулах", "D02": "Ус ундаа архи пиво"})
+        lines = [{"kind": -5, "tr_id": 1, "date": "2026-11-01", "code": "101", "name": "A", "qty": 6, "total": 0,
+                  "accounts": "", "location": "Бөөний агуулах"},
+                 {"kind": -5, "tr_id": 1, "date": "2026-11-01", "code": "103", "name": "C", "qty": 1, "total": 0,
+                  "accounts": "", "location": "Заал"}]
+        r = compare_erkhet("move", items, 800, lines)
+        self.assertEqual({d["code"]: d["location"] for d in r["diff"]}, {"102": "Ус ундаа архи пиво", "103": "Заал"})
+
+
+class RefreshCheckItemsTest(unittest.TestCase):
+    def test_only_resynced_deals_are_replaced_and_summary_recomputed(self):
+        from unittest import mock
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.core import db as dbm
+        from app.core.db import Base
+        from app.models.erkhet_sync_check import ErkhetSyncItem, ErkhetSyncRun
+        eng = create_engine("sqlite://")
+        Base.metadata.create_all(eng, tables=[ErkhetSyncRun.__table__, ErkhetSyncItem.__table__])
+        S = sessionmaker(bind=eng)
+        s = S()
+        s.add(ErkhetSyncRun(id=7, kind="check", status="done", params="{}", summary="{}"))
+        for d, sev, st in (("A", "error", ["CASH"]), ("B", "error", ["ITEMS_DIFF"])):
+            s.add(ErkhetSyncItem(run_id=7, deal_id=d, number=d, amount=100, severity=sev, statuses=json.dumps(st), data="{}"))
+        s.commit()
+        new = [{"deal_id": "A", "stage_id": "x", "category": "expected", "amount": 100, "severity": "ok",
+                "statuses": ["OK"], "data": {"k": 1}}]
+        with mock.patch.object(dbm, "SessionLocal", S):
+            self.assertEqual(svc.refresh_check_items(7, new), 1)
+        s = S()
+        got = {i.deal_id: (i.severity, json.loads(i.statuses)) for i in s.query(ErkhetSyncItem)}
+        self.assertEqual(got, {"A": ("ok", ["OK"]), "B": ("error", ["ITEMS_DIFF"])})
+        summ = json.loads(s.get(ErkhetSyncRun, 7).summary)
+        self.assertEqual((summ["by_severity"]["ok"]["n"], summ["by_severity"]["error"]["n"], summ["total"]), (1, 1, 2))
+
+
 class MoveConfigTest(unittest.TestCase):
     def test_fetch_configs_reads_sale_and_move(self):
         from unittest import mock

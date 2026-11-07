@@ -35,7 +35,7 @@ interface ItemData {
 }
 interface ErkCmp {
   docs: { tr_id: number; date: string; total: number; lines: number; accounts: string[]; user: string }[];
-  diff: { code: string; name: string; deal_qty: number; erk_qty: number; deal_amount: number; erk_amount: number }[];
+  diff: { code: string; name: string; location?: string; deal_qty: number; erk_qty: number; deal_amount: number; erk_amount: number }[];
   total: number;
 }
 interface Item {
@@ -121,7 +121,7 @@ function ErkSection({ d }: { d: ItemData }) {
         <div className="mt-1.5 overflow-auto rounded-lg border border-rose-200">
           <table className="w-full text-[11px]">
             <thead className="bg-rose-50 text-left text-gray-600">
-              <tr><th className="px-2 py-1">Код</th><th className="px-2 py-1">Нэр</th><th className="px-2 py-1 text-right">Deal тоо</th>
+              <tr><th className="px-2 py-1">Код</th><th className="px-2 py-1">Нэр</th><th className="px-2 py-1">Агуулах</th><th className="px-2 py-1 text-right">Deal тоо</th>
                 <th className="px-2 py-1 text-right">Эрхэт тоо</th>
                 {!move && <><th className="px-2 py-1 text-right">Deal дүн</th><th className="px-2 py-1 text-right">Эрхэт дүн</th></>}</tr>
             </thead>
@@ -129,6 +129,7 @@ function ErkSection({ d }: { d: ItemData }) {
               {e.diff.map(x => (
                 <tr key={x.code} className="border-t border-rose-100">
                   <td className="px-2 py-1 font-mono">{x.code}</td><td className="px-2 py-1">{x.name}</td>
+                  <td className="px-2 py-1 text-gray-500">{x.location || "—"}</td>
                   <td className="px-2 py-1 text-right tabular-nums">{x.deal_qty}</td>
                   <td className={`px-2 py-1 text-right tabular-nums ${x.deal_qty !== x.erk_qty ? "font-bold text-rose-600" : ""}`}>{x.erk_qty}</td>
                   {!move && <><td className="px-2 py-1 text-right font-mono">{fmt(x.deal_amount)}</td>
@@ -163,6 +164,7 @@ export default function ErkhetSyncCheck({ embedded = false }: { embedded?: boole
   const [fSev, setFSev] = useState<string>("problem");
   const [fStatus, setFStatus] = useState("");
   const [fCat, setFCat] = useState("");
+  const [fLoc, setFLoc] = useState("");
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState<Item | null>(null);
   const [showCfg, setShowCfg] = useState(false);
@@ -228,9 +230,24 @@ export default function ErkhetSyncCheck({ embedded = false }: { embedded?: boole
     if (fSev && fSev !== "problem" && x.severity !== fSev) return false;
     if (fStatus && !x.statuses.includes(fStatus)) return false;
     if (fCat && x.category !== fCat) return false;
+    if (fLoc && !(x.statuses.includes("ITEMS_DIFF") && x.data.erk?.diff.some(d => (d.location || "—") === fLoc))) return false;
     if (ql && !`${x.number} ${x.name} ${x.data.erkhet_bill} ${x.data.erkhet_customer}`.toLowerCase().includes(ql)) return false;
     return true;
-  }), [items, fSev, fStatus, fCat, ql]);
+  }), [items, fSev, fStatus, fCat, fLoc, ql]);
+  // Бараа зөрүүтэй deal-ийн зөрүүтэй бараа агуулахаар: {агуулах: [deal, бараа]} (шинэ шалгалтаас агуулах хадгалагдана)
+  const diffLocs = useMemo(() => {
+    const m = new Map<string, { deals: Set<string>; lines: number }>();
+    for (const x of items) {
+      if (!x.statuses.includes("ITEMS_DIFF")) continue;
+      for (const d of x.data.erk?.diff ?? []) {
+        const k = d.location || "—";
+        const v = m.get(k) ?? { deals: new Set(), lines: 0 };
+        v.deals.add(x.deal_id); v.lines += 1; m.set(k, v);
+      }
+    }
+    return [...m.entries()].sort((a, b) => Number(a[0] === "—") - Number(b[0] === "—") || a[0].localeCompare(b[0]));
+  }, [items]);
+  const hasLoc = diffLocs.some(([k]) => k !== "—");
   const sum = run?.summary ?? {};
   const kpi = (sev: Sev) => sum.by_severity?.[sev] ?? { n: 0, amount: 0 };
   const allSel = filtered.length > 0 && filtered.every(x => sel.has(x.deal_id));
@@ -396,6 +413,16 @@ export default function ErkhetSyncCheck({ embedded = false }: { embedded?: boole
               <option value="">Бүх ангилал</option>
               {Object.entries(CAT_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
             </select>
+            {(fStatus === "ITEMS_DIFF" || fLoc) && (hasLoc ? (
+              <select value={fLoc} onChange={e => setFLoc(e.target.value)}
+                className={`rounded-xl border px-2 py-1.5 text-[12px] ${fLoc ? "border-rose-300 bg-rose-50 font-semibold text-rose-700" : "border-gray-200 bg-white"}`}
+                title="Зөрүүтэй бараа нь энэ агуулахынх (хөдөлгөөнд — гаргах агуулах)">
+                <option value="">Бүх агуулах</option>
+                {diffLocs.map(([k, v]) => <option key={k} value={k}>{k === "—" ? "Агуулах тодорхойгүй" : k} — {v.deals.size} deal, {v.lines} бараа</option>)}
+              </select>
+            ) : (
+              <span className="text-[11.5px] text-amber-700">Агуулахаар шүүхийн тулд «Шалгах»-ыг дахин ажиллуулна уу (өмнөх шалгалтад агуулах хадгалагдаагүй).</span>
+            ))}
             <span className="text-[12px] text-gray-500">{filtered.length} / {items.length} deal</span>
             <div className="ml-auto flex items-center gap-2">
               <button onClick={exportXlsx} className="flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-gray-700 hover:bg-gray-50">
@@ -468,7 +495,12 @@ export default function ErkhetSyncCheck({ embedded = false }: { embedded?: boole
       {showCfg && meta && board && <SettingsModal board={board} onClose={() => setShowCfg(false)} onSaved={() => loadMeta(true)}/>}
       {showResync && meta && run && (
         <ResyncModal run={run} items={selItems} meta={meta} onClose={() => setShowResync(false)}
-          onStarted={id => { setShowResync(false); watch(id, setResyncRun); }}/>
+          onStarted={id => {
+            setShowResync(false);
+            const checkId = run.id;      // дууссаны дараа сервер эх шалгалтын зөвхөн эдгээр deal-ийг шинэчилсэн — дахин уншина
+            watch(id, setResyncRun, () => api.get(`/erkhet-sync/runs/${checkId}`)
+              .then(r => setRun(cur => (cur?.id === checkId ? r.data : cur))).catch(() => undefined));
+          }}/>
       )}
       {resyncRun && (
         <ResyncResult run={resyncRun} onClose={() => setResyncRun(null)}

@@ -243,14 +243,16 @@ def debit_accounts(rel: str) -> set[str]:
     return {x.split(":", 1)[1].strip() for x in (rel or "").split(",") if x.strip().startswith("дт:")}
 
 
-def deal_items(products_data, codes: dict[str, str]) -> dict[str, dict]:
-    """tickUsed=true бараа → {код: {qty, amount, name}} (нэг код олон мөртэй бол нийлбэр)."""
+def deal_items(products_data, codes: dict[str, str], dept_loc: dict[str, str] | None = None) -> dict[str, dict]:
+    """tickUsed=true бараа → {код: {qty, amount, name, location}} (нэг код олон мөртэй бол нийлбэр).
+    dept_loc — мөрийн departmentId → Эрхэтийн байршлын нэр (blocked_goods-ийн холбоосоор)."""
     out: dict[str, dict] = {}
     for p in products_data or []:
         if not isinstance(p, dict) or not p.get("tickUsed"):
             continue
         code = codes.get(p.get("productId") or "") or f"?{p.get('productId')}"
-        x = out.setdefault(code, {"qty": 0.0, "amount": 0.0, "name": ""})
+        x = out.setdefault(code, {"qty": 0.0, "amount": 0.0, "name": "",
+                                  "location": (dept_loc or {}).get(p.get("departmentId") or "", "")})
         x["qty"] += _num(p.get("quantity"))
         x["amount"] += _num(p.get("amount"))
     return out
@@ -286,7 +288,8 @@ def compare_erkhet(kind: str, items: dict[str, dict], deal_total: float, lines: 
     for x in own:
         if x["tr_id"] != main:
             continue
-        e = erk.setdefault(x["code"], {"qty": 0.0, "amount": 0.0, "name": x.get("name", "")})
+        e = erk.setdefault(x["code"], {"qty": 0.0, "amount": 0.0, "name": x.get("name", ""),
+                                       "location": x.get("location", "")})
         e["qty"] += x["qty"]
         e["amount"] += x["total"]
     erk_total = round(sum(e["amount"] for e in erk.values()), 2)
@@ -296,7 +299,8 @@ def compare_erkhet(kind: str, items: dict[str, dict], deal_total: float, lines: 
             a, b = items.get(code) or {}, erk.get(code) or {}
             dq, eq, da, ea = a.get("qty", 0.0), b.get("qty", 0.0), a.get("amount", 0.0), b.get("amount", 0.0)
             if abs(dq - eq) > 0.001 or (kind == "sale" and abs(da - ea) > 1):
-                diff.append({"code": code, "name": b.get("name") or a.get("name") or "", "deal_qty": dq,
+                diff.append({"code": code, "name": b.get("name") or a.get("name") or "",
+                             "location": a.get("location") or b.get("location") or "", "deal_qty": dq,
                              "erk_qty": eq, "deal_amount": round(da, 2), "erk_amount": round(ea, 2)})
         if diff:
             st.append("ITEMS_DIFF")
@@ -698,6 +702,22 @@ def _set_run(run_id: int, **kw) -> None:
         db.close()
 
 
+def dept_locations() -> dict[str, str]:
+    """erxes department _id → Эрхэтийн байршлын нэр («Бөөний агуулах») — бараа зөрүүг агуулахаар шүүхэд.
+    Хөдөлгөөнд deal-ийн мөрийн department = гаргах агуулах. Татаж чадаагүй бол хоосон."""
+    from app.services import blocked_goods as bg
+    try:
+        deps, names = bg.load_meta()["deps"], bg.location_names()
+    except Exception:
+        traceback.print_exc()
+        return {}
+    out = {}
+    for i, d in deps.items():
+        code = bg.DEPT_LOCATION.get(d.get("code", ""), "")
+        out[i] = names.get(code, "") if code else d.get("title", "")
+    return out
+
+
 def analyze_deals(deals: list[dict], stage_map: dict[str, dict], pipe_names: dict[str, str],
                   saved_st: dict[str, str], hist_since: date, start: str, end: str,
                   progress: Callable[[str], None], check_map: dict | None = None,
@@ -717,6 +737,7 @@ def analyze_deals(deals: list[dict], stage_map: dict[str, dict], pipe_names: dic
     progress("Барааны код татаж байна…")
     codes = fetch_product_codes(p.get("productId") for det in details.values()
                                 for p in (det.get("productsData") or []) if isinstance(p, dict))
+    dept_loc = dept_locations()
     if erk_map is None:
         try:
             erk_map = fetch_erkhet_lines(*erk_window(deals, check_map), progress)
@@ -736,7 +757,7 @@ def analyze_deals(deals: list[dict], stage_map: dict[str, dict], pipe_names: dic
         chk = check_map.get(d["_id"])
         kind = pipeline_kind(pipe_names.get(sg.get("pipelineId", ""), ""))
         prods = [p for p in (det.get("productsData") or []) if isinstance(p, dict)]
-        items = deal_items(prods, codes)
+        items = deal_items(prods, codes, dept_loc)
         erk = None
         if erk_map is not None:
             bills = {d.get("number") or "", (chk or {}).get("syncedBillNumber") or ""} - {""}
@@ -830,6 +851,38 @@ def run_check(run_id: int, params: dict) -> None:
     except Exception as e:
         traceback.print_exc()
         _set_run(run_id, status="error", error=str(e)[:2000], finished_at=datetime.utcnow())
+
+
+def refresh_check_items(check_run_id: int, rows: list[dict]) -> int:
+    """Дахин sync-ийн дараах шинэ шинжилгээгээр эх шалгалтын ЗӨВХӨН тэдгээр deal-ийн мөрийг солиод нийт дүнг
+    дахин бодно — бүх deal-ийг дахин шалгах шаардлагагүй. → шинэчилсэн мөрийн тоо."""
+    from app.core.db import SessionLocal
+    from app.models.erkhet_sync_check import ErkhetSyncItem, ErkhetSyncRun
+    if not check_run_id or not rows:
+        return 0
+    by_id = {r["deal_id"]: r for r in rows}
+    db = SessionLocal()
+    try:
+        run = db.get(ErkhetSyncRun, check_run_id)
+        if not run or run.kind != "check":
+            return 0
+        items = db.query(ErkhetSyncItem).filter(ErkhetSyncItem.run_id == check_run_id).all()
+        n = 0
+        for it in items:
+            r = by_id.get(it.deal_id)
+            if not r:
+                continue
+            it.stage_id, it.category, it.amount, it.severity = r["stage_id"], r["category"], r["amount"], r["severity"]
+            it.statuses = json.dumps(r["statuses"])
+            it.data = json.dumps(r["data"], ensure_ascii=False, default=str)
+            n += 1
+        run.summary = json.dumps(summarize([{"amount": it.amount, "severity": it.severity,
+                                             "statuses": json.loads(it.statuses or "[]")} for it in items]),
+                                 ensure_ascii=False)
+        db.commit()
+        return n
+    finally:
+        db.close()
 
 
 def summarize(rows: list[dict]) -> dict:
@@ -982,6 +1035,10 @@ def run_resync(run_id: int, params: dict, user_name: str) -> None:
                                  since, "", "", progress,
                                  hist_map={d: fetch_deal_histories(d, since - timedelta(days=60)) for d in synced})
         after = {r["deal_id"]: r for r in rows}
+        try:                                    # эх шалгалтад зөвхөн эдгээр deal-ийг шинэчилнэ
+            refresh_check_items(int(params.get("check_run_id") or 0), rows)
+        except Exception:
+            traceback.print_exc()
         db = SessionLocal()
         try:
             for x in items:
