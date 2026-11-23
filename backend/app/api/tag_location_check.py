@@ -369,8 +369,10 @@ def tag_location_check_pdf(
 
     pdf = FPDF(orientation="L", format="A4")
     pdf.set_auto_page_break(auto=True, margin=12)
-    pdf.add_font("Arial", fname="C:/Windows/Fonts/arial.ttf")
-    pdf.add_font("Arial", style="B", fname="C:/Windows/Fonts/arialbd.ttf")
+    from app.core.fonts import arial_fonts
+    font_reg, font_bold = arial_fonts()
+    pdf.add_font("Arial", fname=font_reg)
+    pdf.add_font("Arial", style="B", fname=font_bold)
     pdf.add_page()
 
     pdf.set_font("Arial", style="B", size=14)

@@ -21,15 +21,13 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from app.core.fonts import noto_fonts
 from app.services import code128
 
 COMPANY = "Бүтэн-Оргил ХХК"
 MASTER_FILE = Path("app/data/outputs/master_latest.xlsx")
 IMG_CACHE = Path("app/data/image_cache")
 LOGO = Path(__file__).resolve().parents[1] / "assets" / "butenorgil_logo.png"
-FONT_REG = "C:/Windows/Fonts/NotoSans-Regular.ttf"
-FONT_BOLD = "C:/Windows/Fonts/NotoSans-Bold.ttf"
-FONT_FALLBACK = ("C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/arialbd.ttf")
 THUMB_PX = 180            # утсан дээр ~60pt × 3 (retina)
 FAIL_TTL = 6 * 3600       # татаж чадаагүй зургийг (HEIC, 0 байт) 6 цаг дахин оролдохгүй
 
@@ -259,7 +257,7 @@ def build_product_list_pdf(*, title: str, period: str, groups: list, group_noun:
             self.cell(50, 12, f"{self.page_no()} / {{nb}}", align="R")
 
     pdf = PDF(orientation="P", unit="pt", format=(PW, PH))
-    reg, bold = (FONT_REG, FONT_BOLD) if Path(FONT_REG).exists() and Path(FONT_BOLD).exists() else FONT_FALLBACK
+    reg, bold = noto_fonts()
     pdf.add_font("Main", "", reg)
     pdf.add_font("Main", "B", bold)
     pdf.set_margins(M, M, M)

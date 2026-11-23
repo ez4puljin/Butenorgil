@@ -182,7 +182,8 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
     from fpdf import FPDF
     from fpdf.enums import TableHeadingsDisplay
     from fpdf.fonts import FontFace
-    from app.services.mobile_pdf import FONT_BOLD, FONT_FALLBACK, FONT_REG, fit
+    from app.core.fonts import noto_fonts
+    from app.services.mobile_pdf import fit
 
     INK, GRAY, LINE = (31, 41, 55), (107, 114, 128), (209, 213, 219)
     RED, GREEN, HEAD = (185, 28, 28), (21, 128, 61), (31, 78, 120)
@@ -221,7 +222,7 @@ def compare_pdf(*, warehouse: str, count_date: date, description: str, file_name
             self.cell(160, 12, f"Хуудас {self.page_no()} / {{nb}}", align="R")
 
     pdf = PDF(orientation="L", unit="pt", format="A4")
-    reg, bold = (FONT_REG, FONT_BOLD) if Path(FONT_REG).exists() and Path(FONT_BOLD).exists() else FONT_FALLBACK
+    reg, bold = noto_fonts()
     pdf.add_font("Main", "", reg)
     pdf.add_font("Main", "B", bold)
     pdf.set_margins(24, 57, 24)

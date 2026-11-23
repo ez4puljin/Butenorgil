@@ -2714,8 +2714,6 @@ def erkhet_import(
 
 # ── PDF Export ─────────────────────────────────────────────────────────────────
 
-FONT_REGULAR = "C:/Windows/Fonts/arial.ttf"
-FONT_BOLD    = "C:/Windows/Fonts/arialbd.ttf"
 
 # Default template data (user edits these in the modal)
 PDF_TEMPLATES = {
@@ -2812,8 +2810,10 @@ def _build_pdf(po: PurchaseOrder, body: PDFHeaderIn, db: Session) -> bytes:
         grouped[brand].sort(key=lambda x: x["item_code"])
 
     pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.add_font("Arial", fname=FONT_REGULAR)
-    pdf.add_font("Arial", style="B", fname=FONT_BOLD)
+    from app.core.fonts import arial_fonts
+    font_reg, font_bold = arial_fonts()
+    pdf.add_font("Arial", fname=font_reg)
+    pdf.add_font("Arial", style="B", fname=font_bold)
     pdf.set_margins(12, 12, 12)
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
