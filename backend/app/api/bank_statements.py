@@ -580,13 +580,19 @@ def export_fees(
     _: User = Depends(get_current_user),
 ):
     """Бүх хуулгын банкны шимтгэл гүйлгээг нэгтгэн
-    Мөнгөн хөрөнгийн харилцахын гүйлгээ Excel-ийг буцаана.
+    Мөнгөн хөрөнгийн харилцахын гүйлгээ Excel-ийг буцаана: өдөр × данс бүрт
+    нэг хаалтын мөр (сараар сонговол тухайн сарын өдөр бүрийн хаалт).
     Дансны код нь BankAccountConfig.erp_account_code-оос авна.
     """
     from datetime import date as dt_date
 
-    # ── date_from / date_to filter ─────────────────────────────────
-    day_expr = func.coalesce(BankStatement.date_from, func.date(BankStatement.uploaded_at))
+    # ── date_from / date_to filter — ГҮЙЛГЭЭНИЙ огноогоор ─────────────
+    # (хуулгын огноогоор шүүвэл өмнөх/дараа сарын гүйлгээ сарын хаалтад орох эсвэл гээгдэнэ)
+    day_expr = func.coalesce(
+        func.date(BankTransaction.txn_date),
+        BankStatement.date_from,
+        func.date(BankStatement.uploaded_at),
+    )
 
     q = (
         db.query(BankTransaction, BankStatement)

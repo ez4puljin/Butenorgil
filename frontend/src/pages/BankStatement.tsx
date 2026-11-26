@@ -143,6 +143,17 @@ function pad2(n: number) { return String(n).padStart(2, "0"); }
 function toDateStr(y: number, m: number, d: number) {
   return `${y}-${pad2(m)}-${pad2(d)}`;
 }
+/** "2026-11" → ["2026-11-01", "2026-11-30"]. */
+function monthRange(ym: string): [string, string] | null {
+  const [y, m] = ym.split("-").map(Number);
+  if (!y || !m) return null;
+  return [toDateStr(y, m, 1), toDateStr(y, m, new Date(y, m, 0).getDate())];
+}
+/** from/to нь яг нэг сарыг бүхэлд нь хамарвал "YYYY-MM", үгүй бол "". */
+function wholeMonthOf(from: string, to: string) {
+  const r = monthRange(from.slice(0, 7));
+  return r && r[0] === from && r[1] === to ? from.slice(0, 7) : "";
+}
 function daysInMonth(y: number, m: number) {
   return new Date(y, m, 0).getDate();
 }
@@ -897,8 +908,9 @@ export default function BankStatementPage() {
         params,
         responseType: "blob",
       });
-      const from = feeExportFrom || "all";
-      const to   = feeExportTo   ? `_${feeExportTo}` : "";
+      const month = wholeMonthOf(feeExportFrom, feeExportTo);
+      const from = month || feeExportFrom || "all";
+      const to   = month ? "" : (feeExportTo ? `_${feeExportTo}` : "");
       const url  = URL.createObjectURL(new Blob([r.data], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       }));
@@ -2054,6 +2066,35 @@ export default function BankStatementPage() {
             </div>
 
             <div className="space-y-3">
+              {/* Сараар: тухайн сарын өдөр бүрийн хаалт нэг файлд */}
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold text-gray-500">Сараар</label>
+                <div className="flex gap-2">
+                  <input type="month" value={wholeMonthOf(feeExportFrom, feeExportTo)}
+                    onChange={e => {
+                      const r = monthRange(e.target.value);
+                      if (r) { setFeeExportFrom(r[0]); setFeeExportTo(r[1]); }
+                    }}
+                    className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2 text-[12px] outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"/>
+                  {[0, 1].map(back => {
+                    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - back);
+                    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+                    const active = wholeMonthOf(feeExportFrom, feeExportTo) === ym;
+                    return (
+                      <button key={back} type="button"
+                        onClick={() => { const r = monthRange(ym)!; setFeeExportFrom(r[0]); setFeeExportTo(r[1]); }}
+                        className={`shrink-0 rounded-xl border px-2.5 py-2 text-[11px] font-semibold transition-colors ${
+                          active ? "border-amber-400 bg-amber-50 text-amber-700" : "border-gray-200 text-gray-500 hover:bg-gray-50"}`}>
+                        {back === 0 ? "Энэ сар" : "Өмнөх сар"}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-[10px] text-gray-400">
+                  Өдөр бүр, данс бүрийн шимтгэлийг нэг мөр болгон тухайн өдрөөр нь хаана
+                </p>
+              </div>
+
               {/* Date range */}
               <div className="grid grid-cols-2 gap-2">
                 <div>
