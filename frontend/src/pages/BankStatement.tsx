@@ -646,6 +646,39 @@ export default function BankStatementPage() {
 
   useEffect(() => { loadCalendar(year, month); }, [year, month]);
 
+  // ── Сарын хөл дүн: данс бүрийн гүйлгээний нийт дүн ─────────────────
+  type MonthTotalRow = {
+    account_number: string; partner_name: string; bank_name: string; erp_account_code: string;
+    count: number; days: number; credit: number; debit: number; net: number; fee: number;
+  };
+  type MonthTotals = {
+    month: string; accounts: MonthTotalRow[];
+    total: { count: number; credit: number; debit: number; net: number; fee: number };
+  };
+  const [totalsOpen,    setTotalsOpen]    = useState(false);
+  const [totalsYM,      setTotalsYM]      = useState<[number, number]>([now.getFullYear(), now.getMonth() + 1]);
+  const [totals,        setTotals]        = useState<MonthTotals | null>(null);
+  const [totalsLoading, setTotalsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!totalsOpen) return;
+    const [y, m] = totalsYM;
+    let alive = true;
+    setTotalsLoading(true);
+    api.get("/bank-statements/month-totals", { params: { year: y, month: m } })
+      .then(r => { if (alive) setTotals(r.data); })
+      .catch(() => { if (alive) { setTotals(null); setErr("Сарын хөл дүн татаж чадсангүй"); } })
+      .finally(() => { if (alive) setTotalsLoading(false); });
+    return () => { alive = false; };
+  }, [totalsOpen, totalsYM]);
+
+  function shiftTotalsMonth(delta: number) {
+    setTotalsYM(([y, m]) => {
+      const d = new Date(y, m - 1 + delta, 1);
+      return [d.getFullYear(), d.getMonth() + 1];
+    });
+  }
+
   // Хуучин өгөгдлийн нэг удаагийн засвар (сөрөг дебит + .0 данс)
   useEffect(() => {
     api.post("/bank-statements/fix-legacy-data").catch(() => {});
@@ -1211,6 +1244,10 @@ export default function BankStatementPage() {
                 </div>
                 <div className="mt-0.5 text-[11px] text-gray-500">хуулга оруулсан</div>
               </div>
+              <button onClick={() => { setTotalsYM([year, month]); setTotalsOpen(true); }}
+                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 py-2 text-[12px] font-semibold text-[#0071E3] hover:bg-blue-100 transition-colors">
+                <Landmark size={13}/>Сарын хөл дүн
+              </button>
               <button onClick={() => selectDay(today)}
                 className="mt-2 w-full rounded-xl border border-gray-200 bg-white py-2 text-[12px] font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
                 Өнөөдөр
@@ -2043,6 +2080,91 @@ export default function BankStatementPage() {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Сарын хөл дүн modal ─────────────────────────────────────── */}
+      {totalsOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center"
+          onClick={() => setTotalsOpen(false)}>
+          <div className="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-t-3xl bg-white shadow-2xl sm:rounded-2xl"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-6 py-4">
+              <div>
+                <h3 className="text-[15px] font-bold text-gray-900">Сарын хөл дүн — данс бүрээр</h3>
+                <p className="mt-0.5 text-[11px] text-gray-400">
+                  Гүйлгээний огноогоор тухайн сард орсон бүх гүйлгээний нийлбэр (шимтгэл зарлагад багтсан)
+                </p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => shiftTotalsMonth(-1)}
+                  className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                  <ChevronLeft size={16}/>
+                </button>
+                <div className="min-w-[92px] text-center text-[13px] font-bold text-gray-900">
+                  {totalsYM[0]} · {MN_MONTHS[totalsYM[1] - 1]}
+                </div>
+                <button onClick={() => shiftTotalsMonth(1)}
+                  className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                  <ChevronRight size={16}/>
+                </button>
+                <button onClick={() => setTotalsOpen(false)}
+                  className="ml-2 grid h-8 w-8 place-items-center rounded-lg text-gray-400 hover:bg-gray-100">
+                  <X size={16}/>
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+              {totalsLoading && !totals ? (
+                <div className="flex items-center justify-center gap-2 py-12 text-[13px] text-gray-400">
+                  <RefreshCw size={14} className="animate-spin"/>Тооцоолж байна…
+                </div>
+              ) : !totals ? null : (
+                <table className={`w-full text-[12px] ${totalsLoading ? "opacity-50" : ""}`}>
+                  <thead>
+                    <tr className="border-b border-gray-200 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                      <th className="py-2 pr-3 text-left">Данс</th>
+                      <th className="px-3 py-2 text-right">Гүйлгээ</th>
+                      <th className="px-3 py-2 text-right">Орлого</th>
+                      <th className="px-3 py-2 text-right">Зарлага</th>
+                      <th className="px-3 py-2 text-right">Цэвэр (орлого − зарлага)</th>
+                      <th className="py-2 pl-3 text-right">Үүнээс шимтгэл</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {totals.accounts.map(a => (
+                      <tr key={a.account_number} className="border-b border-gray-100 hover:bg-gray-50/60">
+                        <td className="py-2.5 pr-3">
+                          <div className="font-mono font-semibold text-gray-900">{a.account_number}</div>
+                          <div className="text-[11px] text-gray-400">
+                            {[a.partner_name, a.bank_name, a.erp_account_code && `Эрхэт ${a.erp_account_code}`].filter(Boolean).join(" · ")}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-700">
+                          {a.count ? <>{a.count.toLocaleString("mn-MN")}<div className="text-[10px] text-gray-400">{a.days} өдөр</div></> : "—"}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-green-600">{fmtMnt(a.credit)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-red-500">{fmtMnt(a.debit)}</td>
+                        <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${a.net < 0 ? "text-red-600" : "text-gray-900"}`}>{fmtMnt(a.net)}</td>
+                        <td className="py-2.5 pl-3 text-right tabular-nums text-amber-600">{fmtMnt(a.fee)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-gray-300 bg-gray-50 font-bold">
+                      <td className="py-2.5 pr-3 text-gray-900">Нийт ({totals.accounts.filter(a => a.count > 0).length} данс)</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-900">{totals.total.count ? totals.total.count.toLocaleString("mn-MN") : "—"}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-green-700">{fmtMnt(totals.total.credit)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-red-600">{fmtMnt(totals.total.debit)}</td>
+                      <td className={`px-3 py-2.5 text-right tabular-nums ${totals.total.net < 0 ? "text-red-700" : "text-gray-900"}`}>{fmtMnt(totals.total.net)}</td>
+                      <td className="py-2.5 pl-3 text-right tabular-nums text-amber-700">{fmtMnt(totals.total.fee)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
             </div>
           </div>
         </div>

@@ -4,7 +4,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from typing import Optional
 from pydantic import BaseModel
@@ -427,6 +427,64 @@ def get_calendar(
         func.strftime("%m", day_expr) == f"{month:02d}",
     ).group_by(day_expr).all()
     return {r.day: r.cnt for r in rows}
+
+
+@router.get("/month-totals")
+def get_month_totals(
+    year:  int = Query(...),
+    month: int = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Тухайн сарын данс бүрийн хөл дүн — гүйлгээний тоо, орлого (кредит), зарлага (дебит),
+    үүнээс шимтгэл. ГҮЙЛГЭЭНИЙ огноогоор (хуулгын огноогоор биш) шүүнэ."""
+    ym = f"{year:04d}-{month:02d}"
+    day_expr = func.coalesce(
+        func.date(BankTransaction.txn_date),
+        BankStatement.date_from,
+        func.date(BankStatement.uploaded_at),
+    )
+    rows = (
+        db.query(
+            BankStatement.account_number.label("acct"),
+            func.count(BankTransaction.id).label("cnt"),
+            func.coalesce(func.sum(BankTransaction.credit), 0.0).label("credit"),
+            func.coalesce(func.sum(BankTransaction.debit), 0.0).label("debit"),
+            func.coalesce(func.sum(
+                case((BankTransaction.is_fee == True, BankTransaction.debit), else_=0.0)  # noqa: E712
+            ), 0.0).label("fee"),
+            func.count(func.distinct(day_expr)).label("days"),
+        )
+        .join(BankStatement, BankTransaction.statement_id == BankStatement.id)
+        .filter(func.strftime("%Y-%m", day_expr) == ym)
+        .group_by(BankStatement.account_number)
+        .all()
+    )
+    by_acct = {r.acct: r for r in rows}
+    configs = {a.account_number: a for a in db.query(BankAccountConfig).all()}
+    order = [a.account_number for a in sorted(configs.values(), key=lambda a: (a.sort_order or 0, a.id))]
+    order += sorted(a for a in by_acct if a not in configs)
+
+    accounts = []
+    for acct in order:
+        r, cfg = by_acct.get(acct), configs.get(acct)
+        credit, debit = float(r.credit) if r else 0.0, float(r.debit) if r else 0.0
+        accounts.append({
+            "account_number":   acct,
+            "partner_name":     cfg.partner_name if cfg else "",
+            "bank_name":        cfg.bank_name if cfg else "",
+            "erp_account_code": (cfg.erp_account_code or "") if cfg else "",
+            "count":            int(r.cnt) if r else 0,
+            "days":             int(r.days) if r else 0,
+            "credit":           round(credit, 2),
+            "debit":            round(debit, 2),
+            "net":              round(credit - debit, 2),
+            "fee":              round(float(r.fee), 2) if r else 0.0,
+        })
+    keys = ("count", "credit", "debit", "net", "fee")
+    total = {k: round(sum(a[k] for a in accounts), 2) for k in keys}
+    total["count"] = int(total["count"])
+    return {"month": ym, "accounts": accounts, "total": total}
 
 
 @router.get("/by-date")
