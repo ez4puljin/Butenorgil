@@ -72,6 +72,63 @@ const formFromCfg = (cfg: CfgCore, withOverrides = true): Form => ({
   box_weight_kg_override: withOverrides && cfg.box_weight_kg_override ? String(cfg.box_weight_kg_override) : "", note: cfg.note || "",
 });
 
+/* Скан хийхэд автоматаар сонгогдох загвар — нэрэндээ «модон» гэсэн, эс бөгөөс эхнийх (backend-тэй ижил дүрэм) */
+const defaultTplId = (tpls: Tpl[], fromServer?: number | null) =>
+  (fromServer && tpls.some((t) => t.id === fromServer) ? fromServer
+    : ([...tpls].sort((a, b) => a.id - b.id).find((t) => t.name.toLowerCase().includes("модон")) ?? tpls[0])?.id) ?? 0;
+
+/* Оролтын цэвэрлэгээ: зөвхөн цифр ба нэг аравтын тэмдэг (таслалыг цэг болгоно); бүхэл тооны талбарт зөвхөн цифр */
+const INT_FIELDS: (keyof Form)[] = ["boxes_per_layer", "layers"];
+const cleanNum = (raw: string, int: boolean) => {
+  if (int) return raw.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+  const s = raw.replace(",", ".").replace(/[^\d.]/g, "");
+  const i = s.indexOf(".");
+  return i < 0 ? s : s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, "");
+};
+
+// Backend-ийн хязгаартай ижил (app/api/pallets.py)
+const LIMITS: Partial<Record<keyof Form, number>> = {
+  box_length_cm: 300, box_width_cm: 300, box_height_cm: 300, boxes_per_layer: 500, layers: 60,
+  pcs_per_box_override: 10000, unit_weight_kg_override: 2000, box_weight_kg_override: 2000,
+};
+const REQUIRED_DIMS: (keyof Form)[] = ["box_length_cm", "box_width_cm", "box_height_cm"];
+
+/* Поддонд нэг үед хэдэн хайрцаг багтах вэ — хоёр чиглэлийн аль ихийг нь (энгийн эгнээгээр өрөхөд) */
+function fitPerLayer(tpl: Tpl | undefined, l: number, w: number) {
+  if (!tpl || l <= 0 || w <= 0) return 0;
+  const a = Math.floor(tpl.length_cm / l) * Math.floor(tpl.width_cm / w);
+  const b = Math.floor(tpl.length_cm / w) * Math.floor(tpl.width_cm / l);
+  return Math.max(a, b);
+}
+
+/* Хадгалахаас өмнөх шалгалт: errors — хадгалахыг хориглоно, hints — анхааруулга (хадгалж болно) */
+function validateForm(f: Form, tpl: Tpl | undefined, p: Prod | null) {
+  const errors: Partial<Record<keyof Form, string>> = {};
+  const hints: string[] = [];
+  const dimName: Record<string, string> = { box_length_cm: "Урт", box_width_cm: "Өргөн", box_height_cm: "Өндөр" };
+  for (const k of REQUIRED_DIMS) {
+    if (!String(f[k]).trim()) errors[k] = `${dimName[k]} заавал`;
+    else if (n(f[k]) <= 0) errors[k] = "0-ээс их байна";
+  }
+  for (const [k, mx] of Object.entries(LIMITS) as [keyof Form, number][]) {
+    if (!errors[k] && n(f[k]) > mx) errors[k] = k in dimName ? `${mx} см-ээс их — мм биш см-ээр` : `${mx}-аас их — шалгана уу`;
+  }
+  if (!tpl) hints.push("Поддоны загвар сонгогдоогүй — модон поддоноор хадгалагдана");
+  const L = n(f.box_length_cm), W = n(f.box_width_cm), H = n(f.box_height_cm);
+  if ([L, W, H].some((v) => v > 0 && v < 3)) hints.push("Хайрцагны хэмжээ 3 см-ээс бага байна — метрээр бичсэн бол см болгоно уу");
+  const per = Math.floor(n(f.boxes_per_layer)), lay = Math.floor(n(f.layers));
+  if ((per > 0) !== (lay > 0)) hints.push("Поддонд хэдэн хайрцаг орохыг бодохын тулд «Нэг үед хайрцаг» ба «Үе»-г хоёуланг нь оруулна");
+  const fit = fitPerLayer(tpl, L, W);
+  if (per > 0 && fit > 0 && per > fit * 1.15) hints.push(`Нэг үед ${per} хайрцаг — ${tpl!.length_cm}×${tpl!.width_cm} поддонд ойролцоогоор ${fit} л багтана`);
+  if (tpl && lay > 0 && H > 0 && tpl.height_cm + lay * H > 250) hints.push(`Нийт өндөр ${(tpl.height_cm + lay * H).toFixed(0)} см — хэт өндөр биш эсэхийг шалгана уу`);
+  const pcs = n(f.pcs_per_box_override) > 0 ? n(f.pcs_per_box_override) : (p?.pack_ratio ?? 0);
+  const calcW = (n(f.unit_weight_kg_override) > 0 ? n(f.unit_weight_kg_override) : (p?.unit_weight ?? 0)) * pcs;
+  const bw = n(f.box_weight_kg_override);
+  if (bw > 0 && calcW > 0 && (bw > calcW * 3 || bw < calcW / 3)) hints.push(`Хайрцагны жин ${bw} кг — бодолтоор ${calcW.toFixed(2)} кг, шалгана уу`);
+  if (n(f.pcs_per_box_override) > 0 && !Number.isInteger(n(f.pcs_per_box_override))) hints.push("Ширхэг/хайрцаг бутархай байна — шалгана уу");
+  return { errors, hints, ok: Object.keys(errors).length === 0, fit };
+}
+
 /* Frontend дээр бодох (backend calc-тай ижил томьёо) — оруулж байх үед шууд харуулна */
 function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
   const pcsBox = n(f.pcs_per_box_override) > 0 ? n(f.pcs_per_box_override) : (p?.pack_ratio ?? 0);
@@ -101,7 +158,7 @@ function calcLocal(f: Form, tpl: Tpl | undefined, p: Prod | null): Calc {
 const STALE_SERVER = "Сервер шинэчлэгдээгүй байна — «хуулах» боломж серверийг дахин асаасны дараа ажиллана.";
 
 type CopyField = "template" | "box_dims" | "boxes_per_layer" | "layers" | "pcs_per_box" | "unit_weight" | "box_weight" | "note";
-const REQUIRED_NEW: CopyField[] = ["template", "box_dims", "boxes_per_layer", "layers"];
+const REQUIRED_NEW: CopyField[] = ["template", "box_dims"];   // тохиргоогүй бараанд шинээр үүсгэхэд хамгийн багадаа
 const FIELD_KEYS: Record<CopyField, (keyof Form)[]> = {
   template: ["template_id"], box_dims: ["box_length_cm", "box_width_cm", "box_height_cm"], boxes_per_layer: ["boxes_per_layer"],
   layers: ["layers"], pcs_per_box: ["pcs_per_box_override"], unit_weight: ["unit_weight_kg_override"],
@@ -110,8 +167,8 @@ const FIELD_KEYS: Record<CopyField, (keyof Form)[]> = {
 const FIELD_META: { key: CopyField; label: string; value: (c: Cfg) => string }[] = [
   { key: "template", label: "Поддоны загвар", value: (c) => c.template_name || "—" },
   { key: "box_dims", label: "Хайрцагны хэмжээ", value: (c) => `${fmt(c.box_length_cm)}×${fmt(c.box_width_cm)}×${fmt(c.box_height_cm)} см` },
-  { key: "boxes_per_layer", label: "Нэг үеийн хайрцаг", value: (c) => `${c.boxes_per_layer} ш` },
-  { key: "layers", label: "Үеийн тоо", value: (c) => `${c.layers} үе` },
+  { key: "boxes_per_layer", label: "Нэг үеийн хайрцаг", value: (c) => (c.boxes_per_layer ? `${c.boxes_per_layer} ш` : "оруулаагүй") },
+  { key: "layers", label: "Үеийн тоо", value: (c) => (c.layers ? `${c.layers} үе` : "оруулаагүй") },
   { key: "pcs_per_box", label: "Ширхэг/хайрцаг", value: (c) => (c.pcs_per_box_override ? `${fmt(c.pcs_per_box_override, 0)} ш` : "мастераас") },
   { key: "unit_weight", label: "Хувийн жин", value: (c) => (c.unit_weight_kg_override ? `${fmt(c.unit_weight_kg_override, 3)} кг` : "мастераас") },
   { key: "box_weight", label: "Хайрцагны жин", value: (c) => (c.box_weight_kg_override ? `${fmt(c.box_weight_kg_override, 2)} кг` : "бодолтоор") },
@@ -212,7 +269,7 @@ function CopyModal({ src, cfg, tpls, onClose, onDone }: {
   // Бараа бүрд юу болохыг урьдчилан бодно (сервер дээрхтэй ижил дүрэм)
   const plan = (c: Cand): { skip: string } | { k: Calc } => {
     if (c.config && !overwrite) return { skip: "тохиргоотой — солихыг сонгоогүй" };
-    if (!c.config && !fullNew) return { skip: "тохиргоогүй — загвар, хэмжээ, үе хэрэгтэй" };
+    if (!c.config && !fullNew) return { skip: "тохиргоогүй — загвар, хайрцагны хэмжээ хэрэгтэй" };
     const f: Form = c.config ? formFromCfg(c.config) : { ...EMPTY_FORM };
     chosen.forEach((k) => FIELD_KEYS[k].forEach((key) => { (f as any)[key] = srcForm[key]; }));
     return { k: calcLocal(f, tpls.find((t) => t.id === f.template_id), c) };
@@ -323,7 +380,7 @@ function CopyModal({ src, cfg, tpls, onClose, onDone }: {
                   );
                 })}
               </div>}
-              {fieldsOpen && !fullNew && <p className="mt-1.5 text-[11px] text-amber-700">Поддоны тохиргоогүй бараанд шинээр үүсгэхэд загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийн тоо заавал — эдгээрийг сонгоогүй бол зөвхөн тохиргоотой бараа шинэчлэгдэнэ.</p>}
+              {fieldsOpen && !fullNew && <p className="mt-1.5 text-[11px] text-amber-700">Поддоны тохиргоогүй бараанд шинээр үүсгэхэд загвар, хайрцагны хэмжээ заавал — эдгээрийг сонгоогүй бол зөвхөн тохиргоотой бараа шинэчлэгдэнэ.</p>}
             </div>
 
             {/* 2. Хаана хуулах — бүх бараа */}
@@ -548,8 +605,11 @@ export default function PalletsPage() {
   // lookup нь жагсаалтын state-ээс хамааралгүй байхаар ref-ээр дамжуулна (жагсаалт доор тодорхойлогдоно)
   const tagRef = useRef(DEFAULT_TAG);
   const findNextRef = useRef<(code: string) => void>(() => {});
+  const unsavedRef = useRef<{ code: string; dirty: boolean }>({ code: "", dirty: false });
   const lookup = useCallback(async (code: string): Promise<boolean> => {
     const c = code.trim(); if (!c) return false;
+    const u = unsavedRef.current;
+    if (u.dirty && c !== u.code && !confirm(`${u.code} — хадгалаагүй өөрчлөлт байна. Хадгалалгүйгээр өөр бараа руу шилжих үү?`)) return false;
     setBusy(true); setNotFound("");
     try {
       const r = await api.get("/pallets/lookup", { params: { q: c, tag: tagRef.current } });
@@ -559,7 +619,8 @@ export default function PalletsPage() {
       findNextRef.current(r.data.product.item_code);
       const cfg: Cfg | null = r.data.config;
       setExisting(cfg);
-      setForm(cfg ? formFromCfg(cfg) : { ...EMPTY_FORM, template_id: tpls[0]?.id ?? 0 });
+      setForm(cfg ? formFromCfg(cfg) : { ...EMPTY_FORM, template_id: defaultTplId(tpls, r.data.default_template_id) });
+      setTouched(false);
       setTab("product");
       return true;
     } catch (e: any) { flash("err", errMsg(e, "Хайлт амжилтгүй")); return false; }
@@ -568,10 +629,22 @@ export default function PalletsPage() {
   // Хуулах — зөвхөн ХАДГАЛСАН тохиргоог хуулна (засаад хадгалаагүй бол эхлээд хадгална)
   const [copyOpen, setCopyOpen] = useState(false);
   const dirty = useMemo(() => !!existing && JSON.stringify(formFromCfg(existing)) !== JSON.stringify(form), [existing, form]);
+  // Шинэ бараанд ямар нэг тоо оруулсан бол бас «хадгалаагүй» гэж үзнэ
+  const unsaved = existing ? dirty
+    : !!prod && (Object.keys(EMPTY_FORM) as (keyof Form)[]).some((k) => k !== "template_id" && String(form[k]).trim() !== "");
+  unsavedRef.current = { code: prod?.item_code ?? "", dirty: unsaved };
+  const check = useMemo(() => validateForm(form, tpl, prod), [form, tpl, prod]);
+  const [touched, setTouched] = useState(false);     // «Хадгалах» дарсны дараа алдааг улаанаар харуулна
   const openCopy = async (code: string) => { if (await lookup(code)) setCopyOpen(true); };
 
   const save = async () => {
     if (!prod) return;
+    setTouched(true);
+    if (!check.ok) {
+      const first = REQUIRED_DIMS.concat(Object.keys(LIMITS) as (keyof Form)[]).find((k) => check.errors[k]);
+      if (first) document.getElementById(`pf-${first}`)?.focus();
+      flash("err", "Улаанаар тэмдэглэсэн талбарыг засна уу"); return;
+    }
     setSaving(true);
     try {
       const r = await api.put(`/pallets/products/${encodeURIComponent(prod.item_code)}`, {
@@ -579,13 +652,14 @@ export default function PalletsPage() {
         box_height_cm: n(form.box_height_cm), boxes_per_layer: Math.floor(n(form.boxes_per_layer)), layers: Math.floor(n(form.layers)),
         pcs_per_box_override: n(form.pcs_per_box_override), unit_weight_kg_override: n(form.unit_weight_kg_override), box_weight_kg_override: n(form.box_weight_kg_override), note: form.note,
       });
-      setExisting(r.data); flash("ok", `${prod.item_code} хадгалагдлаа`); loadList(); findNext(prod.item_code);
+      setExisting(r.data); setForm(formFromCfg(r.data)); setTouched(false); unsavedRef.current = { code: prod.item_code, dirty: false };
+      flash("ok", `${prod.item_code} хадгалагдлаа`); loadList(); findNext(prod.item_code);
     } catch (e: any) { flash("err", errMsg(e, "Хадгалж чадсангүй")); }
     finally { setSaving(false); }
   };
   const remove = async () => {
     if (!prod || !confirm(`${prod.item_code} — поддоны тохиргоог устгах уу?`)) return;
-    try { await api.delete(`/pallets/products/${encodeURIComponent(prod.item_code)}`); setExisting(null); setForm({ ...EMPTY_FORM, template_id: tpls[0]?.id ?? 0 }); flash("ok", "Устгалаа"); loadList(); }
+    try { await api.delete(`/pallets/products/${encodeURIComponent(prod.item_code)}`); setExisting(null); setForm({ ...EMPTY_FORM, template_id: defaultTplId(tpls) }); setTouched(false); flash("ok", "Устгалаа"); loadList(); }
     catch (e: any) { flash("err", errMsg(e, "Устгаж чадсангүй")); }
   };
 
@@ -653,14 +727,34 @@ export default function PalletsPage() {
 
   // Render-функц (компонент БИШ): компонент болговол render бүрд шинэ төрөл үүсч
   // input дахин mount болж, нэг тоо бичих бүрд фокус/гар алга болдог.
-  const F = (k: keyof Form, label: string, unit?: string, ph?: string) => (
-    <label key={k} className="block text-[11px] text-gray-500">
-      {label}{unit && <span className="text-gray-400"> ({unit})</span>}
-      <input value={form[k] as string} onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))} inputMode="decimal" placeholder={ph}
-        disabled={!canEdit}
-        className="mt-0.5 w-full rounded-lg border border-gray-200 px-2.5 py-2 text-[14px] font-semibold text-gray-900 outline-none focus:border-emerald-400 disabled:bg-gray-50" />
-    </label>
-  );
+  const FIELD_ORDER: (keyof Form)[] = ["box_length_cm", "box_width_cm", "box_height_cm", "boxes_per_layer", "layers",
+    "pcs_per_box_override", "unit_weight_kg_override", "box_weight_kg_override"];
+  const F = (k: keyof Form, label: string, unit?: string, ph?: string) => {
+    const req = REQUIRED_DIMS.includes(k);
+    const int = INT_FIELDS.includes(k);
+    const err = check.errors[k];
+    const showErr = !!err && (touched || String(form[k]).trim() !== "");   // хоосон заавал талбарыг зөвхөн «Хадгалах»-ын дараа
+    return (
+      <label key={k} className="block text-[11px] text-gray-500">
+        {label}{unit && <span className="text-gray-400"> ({unit})</span>}{req && <span className="ml-0.5 font-bold text-rose-500">*</span>}
+        <input id={`pf-${k}`} value={form[k] as string}
+          onChange={(e) => { const v = cleanNum(e.target.value, int); setForm((f) => ({ ...f, [k]: v })); }}
+          onKeyDown={(e) => {
+            if (!isEnter(e)) return;
+            e.preventDefault();
+            const i = FIELD_ORDER.indexOf(k);
+            const next = i >= 0 && i < (req ? 2 : FIELD_ORDER.length - 1) ? FIELD_ORDER[i + 1] : null;
+            if (next) document.getElementById(`pf-${next}`)?.focus(); else save();
+          }}
+          onFocus={(e) => e.currentTarget.select()}
+          inputMode={int ? "numeric" : "decimal"} enterKeyHint={req && k !== "box_height_cm" ? "next" : "done"} autoComplete="off" placeholder={ph}
+          disabled={!canEdit} aria-invalid={showErr || undefined}
+          className={`mt-0.5 w-full rounded-lg border px-2.5 py-2 text-[14px] font-semibold text-gray-900 outline-none disabled:bg-gray-50 ${
+            showErr ? "border-rose-400 bg-rose-50/40 focus:border-rose-500" : req ? "border-gray-300 focus:border-emerald-400" : "border-gray-200 focus:border-emerald-400"}`} />
+        {showErr && <span className="mt-0.5 block text-[10.5px] font-semibold text-rose-600">{err}</span>}
+      </label>
+    );
+  };
   const Stat = (label: string, v: string, unit?: string, cls?: string) => (
     <div key={label} className="rounded-xl bg-white p-2.5 shadow-sm">
       <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</div>
@@ -763,11 +857,24 @@ export default function PalletsPage() {
                       {tpls.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.length_cm}×{t.width_cm}×{t.height_cm} см{t.max_weight_kg ? ` · ${t.max_weight_kg} кг` : ""}</option>)}
                     </select>
                   </label>
-                  {F("box_length_cm", "Хайрцаг урт", "см")}
-                  {F("box_width_cm", "Хайрцаг өргөн", "см")}
-                  {F("box_height_cm", "Хайрцаг өндөр", "см")}
-                  {F("boxes_per_layer", "Нэг үед хайрцаг", "ш", "жишээ 16")}
+                  <div className="col-span-2 -mb-1 mt-1 text-[10.5px] font-bold uppercase tracking-wider text-gray-500 sm:col-span-3">
+                    Хайрцагны хэмжээ <span className="normal-case tracking-normal text-rose-500">— заавал</span>
+                  </div>
+                  {F("box_length_cm", "Урт", "см", "жишээ 34")}
+                  {F("box_width_cm", "Өргөн", "см", "жишээ 22")}
+                  {F("box_height_cm", "Өндөр", "см", "жишээ 30")}
+                  <div className="col-span-2 -mb-1 mt-2 text-[10.5px] font-bold uppercase tracking-wider text-gray-400 sm:col-span-3">
+                    Нэмэлт мэдээлэл <span className="normal-case tracking-normal">— заавал биш, мэдэхгүй бол хоосон үлдээнэ</span>
+                  </div>
+                  {F("boxes_per_layer", "Нэг үед хайрцаг", "ш", check.fit > 0 ? `≈ ${check.fit} багтана` : "жишээ 16")}
                   {F("layers", "Үе (давхар)", "", "жишээ 4")}
+                  {canEdit && check.fit > 0 && !form.boxes_per_layer && (
+                    <button type="button" onClick={() => setForm((f) => ({ ...f, boxes_per_layer: String(check.fit) }))}
+                      className="self-end rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-2 text-left text-[11px] font-semibold leading-tight text-emerald-700 hover:bg-emerald-100">
+                      Нэг үед {check.fit} хайрцаг гэж бөглөх
+                      <span className="block font-normal text-emerald-600">{tpl?.length_cm}×{tpl?.width_cm} поддонд багтах тоо</span>
+                    </button>
+                  )}
                   {F("pcs_per_box_override", "Ширхэг/хайрцаг засах", undefined, `мастер ${fmt(prod.pack_ratio, 0)}`)}
                   {F("unit_weight_kg_override", "Хувийн жин (1 ш)", "кг", `мастер ${fmt(prod.unit_weight, 3)}`)}
                   {F("box_weight_kg_override", "Хайрцагны жин засах", "кг", `бодолт ${fmt(live.unit_weight_kg * live.pcs_per_box, 2)}`)}
@@ -777,9 +884,17 @@ export default function PalletsPage() {
                   </label>
                 </div>
 
+                {canEdit && check.hints.length > 0 && (
+                  <ul className="mt-3 space-y-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-800">
+                    {check.hints.map((h) => <li key={h} className="flex gap-1.5"><AlertCircle size={12} className="mt-0.5 shrink-0" />{h}</li>)}
+                  </ul>
+                )}
+                {canEdit && touched && !check.ok && (
+                  <p className="mt-2 text-[11.5px] font-semibold text-rose-600">Хадгалахын өмнө: {Object.values(check.errors).join(" · ")}</p>
+                )}
                 {canEdit && (
                   <div className="mt-3 flex gap-2">
-                    <button onClick={save} disabled={saving || !form.template_id}
+                    <button onClick={save} disabled={saving}
                       className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-[14px] font-bold text-white disabled:opacity-40">
                       {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}Хадгалах
                     </button>

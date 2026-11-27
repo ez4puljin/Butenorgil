@@ -229,8 +229,10 @@ def lookup(q: str = Query(..., min_length=1, max_length=80), tag: str = Query(DE
     except Exception as e:                                        # борлуулалтгүй ч тохиргоо оруулж болно
         print(f"[pallets] sales алдаа: {e}")
         sales = None
+    dtpl = default_template(db)
     return {"query": q, "found": True, "product": _product_dict(p),
-            "config": _cfg_dict(cfg, tpl, p) if cfg else None, "sales": sales}
+            "config": _cfg_dict(cfg, tpl, p) if cfg else None, "sales": sales,
+            "default_template_id": dtpl.id if dtpl else None}
 
 
 @router.get("/products")
@@ -256,8 +258,22 @@ def list_products(q: str = Query("", max_length=80), template_id: Optional[int] 
     return {"total": len(out), "items": out}
 
 
+# Хэрэглэгчийн алдаанаас сэргийлэх хязгаар (мм-ээр, эсвэл илүү 0 бичсэнийг барина)
+BOX_DIM_MAX_CM = 300
+BOXES_PER_LAYER_MAX = 500
+LAYERS_MAX = 60
+PCS_PER_BOX_MAX = 10000
+WEIGHT_MAX_KG = 2000
+
+
+def default_template(db: Session) -> Optional[PalletTemplate]:
+    """Скан хийхэд автоматаар сонгогдох загвар — нэрэндээ «модон» гэсэн загвар, эс бөгөөс эхнийх."""
+    tpls = db.query(PalletTemplate).order_by(PalletTemplate.id).all()
+    return next((t for t in tpls if "модон" in (t.name or "").lower()), tpls[0] if tpls else None)
+
+
 class ProductPalletIn(BaseModel):
-    template_id: int
+    template_id: int = 0                 # 0 = модон поддон (анхдагч)
     box_length_cm: float = 0
     box_width_cm: float = 0
     box_height_cm: float = 0
@@ -276,20 +292,32 @@ def upsert_product(item_code: str, body: ProductPalletIn, request: Request, db: 
     p = db.query(Product).filter(Product.item_code == code).first()
     if not p:
         raise HTTPException(404, f"«{code}» бараа мастерт олдсонгүй.")
-    tpl = db.query(PalletTemplate).filter(PalletTemplate.id == body.template_id).first()
+    tpl = (db.query(PalletTemplate).filter(PalletTemplate.id == body.template_id).first()
+           if body.template_id else default_template(db))
     if not tpl:
         raise HTTPException(400, "Поддоны загвар сонгоно уу.")
-    if body.boxes_per_layer <= 0 or body.layers <= 0:
-        raise HTTPException(400, "Нэг үеийн хайрцаг ба үеийн тоо 0-ээс их байх ёстой.")
-    if body.box_height_cm <= 0:
-        raise HTTPException(400, "Хайрцагны өндөр оруулна уу (нийт өндөр бодоход хэрэгтэй).")
+    # Заавал: хайрцагны урт, өргөн, өндөр. Бусад нь заавал биш (0 = оруулаагүй).
+    missing = [n for n, v in (("урт", body.box_length_cm), ("өргөн", body.box_width_cm), ("өндөр", body.box_height_cm)) if v <= 0]
+    if missing:
+        raise HTTPException(400, f"Хайрцагны {', '.join(missing)} оруулна уу (см).")
+    for n, v in (("урт", body.box_length_cm), ("өргөн", body.box_width_cm), ("өндөр", body.box_height_cm)):
+        if v > BOX_DIM_MAX_CM:
+            raise HTTPException(400, f"Хайрцагны {n} {v:g} см — хэт их байна. Сантиметрээр оруулна уу (мм биш).")
+    for label, v, mx in (("Нэг үеийн хайрцаг", body.boxes_per_layer, BOXES_PER_LAYER_MAX), ("Үе", body.layers, LAYERS_MAX),
+                         ("Ширхэг/хайрцаг", body.pcs_per_box_override, PCS_PER_BOX_MAX),
+                         ("Хувийн жин", body.unit_weight_kg_override, WEIGHT_MAX_KG),
+                         ("Хайрцагны жин", body.box_weight_kg_override, WEIGHT_MAX_KG)):
+        if v < 0:
+            raise HTTPException(400, f"{label} сөрөг байж болохгүй.")
+        if v > mx:
+            raise HTTPException(400, f"{label} {v:g} — хэт их байна, шалгана уу.")
     cfg = db.query(ProductPallet).filter(ProductPallet.item_code == code).first()
     if not cfg:
         cfg = ProductPallet(item_code=code)
         db.add(cfg)
     cfg.template_id = tpl.id
-    cfg.box_length_cm, cfg.box_width_cm, cfg.box_height_cm = max(body.box_length_cm, 0), max(body.box_width_cm, 0), body.box_height_cm
-    cfg.boxes_per_layer, cfg.layers = int(body.boxes_per_layer), int(body.layers)
+    cfg.box_length_cm, cfg.box_width_cm, cfg.box_height_cm = body.box_length_cm, body.box_width_cm, body.box_height_cm
+    cfg.boxes_per_layer, cfg.layers = max(int(body.boxes_per_layer), 0), max(int(body.layers), 0)
     cfg.pcs_per_box_override = max(body.pcs_per_box_override, 0)
     cfg.unit_weight_kg_override = max(body.unit_weight_kg_override, 0)
     cfg.box_weight_kg_override = max(body.box_weight_kg_override, 0)
@@ -351,7 +379,8 @@ COPY_FIELDS = {
     "note": ("note",),
 }
 # Тохиргоогүй бараанд шинээр үүсгэхэд заавал хэрэгтэй (загвар, өндөр, үе байхгүй бол тохиргоо хүчингүй)
-REQUIRED_NEW = ("template", "box_dims", "boxes_per_layer", "layers")
+REQUIRED_NEW = ("template", "box_dims", "boxes_per_layer", "layers")   # хуулахын анхдагч (өрөлт бүтнээрээ)
+NEW_MIN = ("template", "box_dims")       # тохиргоогүй бараанд шинээр үүсгэхэд хамгийн багадаа
 OVERRIDE_FIELDS = ("pcs_per_box", "unit_weight", "box_weight")
 
 
@@ -488,7 +517,7 @@ class CopyIn(BaseModel):
 def copy_product(item_code: str, body: CopyIn, request: Request, db: Session = Depends(get_db),
                  u: User = Depends(require_role(*EDIT_ROLES))):
     """Эх барааны поддоны тохиргооноос СОНГОСОН талбаруудыг бусад бараанд хуулна.
-    Тохиргоогүй бараанд шинээр үүсгэхэд загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үе заавал;
+    Тохиргоогүй бараанд шинээр үүсгэхэд загвар, хайрцагны хэмжээ заавал (үе, нэг үеийн хайрцаг заавал биш);
     тохиргоотой бараанд overwrite үед зөвхөн сонгосон талбарууд солигдоно (бусад нь хэвээр)."""
     src_code = re.sub(r"\s+", "", item_code.strip())
     src = db.query(ProductPallet).filter(ProductPallet.item_code == src_code).first()
@@ -500,7 +529,7 @@ def copy_product(item_code: str, body: CopyIn, request: Request, db: Session = D
         fields = [f for f in COPY_FIELDS if f in set(body.fields)]
     if not fields:
         raise HTTPException(400, "Юуг хуулахаа сонгоно уу.")
-    full_new = all(f in fields for f in REQUIRED_NEW)
+    full_new = all(f in fields for f in NEW_MIN)
     targets = []
     for t in body.targets:
         c = re.sub(r"\s+", "", str(t or ""))
@@ -526,7 +555,7 @@ def copy_product(item_code: str, body: CopyIn, request: Request, db: Session = D
         if not cfg:
             if not full_new:
                 skipped.append({"item_code": code, "name": p.name or "",
-                                "reason": "Поддоны тохиргоогүй — загвар, хайрцагны хэмжээ, нэг үеийн хайрцаг, үеийг мөн хуулах шаардлагатай"})
+                                "reason": "Поддоны тохиргоогүй — загвар, хайрцагны хэмжээг мөн хуулах шаардлагатай"})
                 continue
             cfg = ProductPallet(item_code=code, pcs_per_box_override=0.0, unit_weight_kg_override=0.0,
                                 box_weight_kg_override=0.0, note="")
